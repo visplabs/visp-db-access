@@ -99,8 +99,10 @@ jobs:
       - run: npm test
         working-directory: web
       # Browser tests run against the in-memory mock API (playwright.config.ts
-      # starts `npm run dev:mock`), so they need no server or database.
-      - run: npx playwright install --with-deps chromium
+      # starts `npm run dev:mock`), so they need no server or database. The
+      # binary is the version `npm ci` installed from the lockfile; nothing is
+      # fetched on demand.
+      - run: ./node_modules/.bin/playwright install --with-deps chromium
         working-directory: web
       - run: npm run test:e2e
         working-directory: web
