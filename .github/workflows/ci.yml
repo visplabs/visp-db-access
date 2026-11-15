@@ -69,12 +69,13 @@ jobs:
           GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO shop_writer;
           SQL
           jq '(.resources[] | select(.identifier == "local-shop-aurora") | .port) = 5432' scripts/fixtures/rds-discovery.json > "$VDA_DISCOVERY_FAKE_FIXTURE"
-          export VDA_MASTER_KEY="$(target-server/debug/visp-db-access gen-key)"
+          VDA_MASTER_KEY="$(target-server/debug/visp-db-access gen-key)"
+          export VDA_MASTER_KEY
           target-server/debug/visp-db-access serve > /tmp/vda-smoke-server.log 2>&1 &
           gateway_pid=$!
           trap 'kill "$gateway_pid" 2>/dev/null || true; wait "$gateway_pid" 2>/dev/null || true' EXIT
           ready=false
-          for attempt in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl --fail --silent http://127.0.0.1:8080/readyz > /dev/null; then ready=true; break; fi
             if ! kill -0 "$gateway_pid" 2>/dev/null; then cat /tmp/vda-smoke-server.log; exit 1; fi
             sleep 1
@@ -141,12 +142,16 @@ jobs:
         with: {fetch-depth: 0}
       - name: Workflow files (actionlint)
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color
+      # Each linter runs even when an earlier one fails, so one run shows all.
       - name: Dockerfile (hadolint)
+        if: ${{ !cancelled() }}
         uses: hadolint/hadolint-action@v3.1.0
         with: {dockerfile: Dockerfile, failure-threshold: warning}
       - name: Shell scripts (shellcheck)
+        if: ${{ !cancelled() }}
         run: shellcheck scripts/*.sh
       - name: Committed secrets (gitleaks)
+        if: ${{ !cancelled() }}
         run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 git /repo --redact --no-banner
   # Line coverage of the Rust workspace, with the same databases as the rust
   # job so the live tests count.

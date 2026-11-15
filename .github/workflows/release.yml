@@ -101,6 +101,8 @@ jobs:
             on && /^\[.*\]: / {exit}
             on {print}
           ' CHANGELOG.md > notes.md
+          # The backticks are Markdown, not a command.
+          # shellcheck disable=SC2016
           printf '\nDocker image: `%s:%s`\n' "$IMAGE" "$VERSION" >> notes.md
           prerelease=""
           [[ $VERSION == *-* ]] && prerelease="--prerelease"
