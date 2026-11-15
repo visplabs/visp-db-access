@@ -104,6 +104,14 @@ jobs:
         working-directory: web
       - run: npm run lint
         working-directory: web
+      - run: npm run format:check
+        working-directory: web
+      # Packages that ship in the console must have no known vulnerability;
+      # build and test tooling may not carry a high or critical one.
+      - run: npm audit --omit=dev
+        working-directory: web
+      - run: npm audit --audit-level=high
+        working-directory: web
       - run: npm test
         working-directory: web
       # Browser tests run against the in-memory mock API (playwright.config.ts
@@ -118,3 +126,65 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: failure()
         with: {name: playwright-results, path: web/test-results, retention-days: 7, if-no-files-found: ignore}
+  # Known vulnerabilities, licenses and crate sources (deny.toml).
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with: {command: check}
+  # Linters for the files no compiler reads, and a scan for committed secrets.
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Workflow files (actionlint)
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color
+      - name: Dockerfile (hadolint)
+        uses: hadolint/hadolint-action@v3.1.0
+        with: {dockerfile: Dockerfile, failure-threshold: warning}
+      - name: Shell scripts (shellcheck)
+        run: shellcheck scripts/*.sh
+      - name: Committed secrets (gitleaks)
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 git /repo --redact --no-banner
+  # Line coverage of the Rust workspace, with the same databases as the rust
+  # job so the live tests count.
+  coverage:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env: {POSTGRES_USER: vda, POSTGRES_PASSWORD: test-password, POSTGRES_DB: vda}
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U vda -d vda" --health-interval 5s --health-timeout 3s --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env: {MYSQL_ROOT_PASSWORD: test-password, MYSQL_DATABASE: vda, MYSQL_USER: vda, MYSQL_PASSWORD: test-password}
+        ports: ['3306:3306']
+        options: --health-cmd "mysqladmin ping -h localhost -ptest-password" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      VDA_TEST_DATABASE_URL: postgres://vda:test-password@localhost:5432/vda
+      VDA_TEST_POSTGRES_URL: postgres://vda:test-password@localhost:5432/vda
+      VDA_TEST_PG_URL: postgres://vda:test-password@localhost:5432/vda
+      VDA_TEST_MYSQL_URL: mysql://vda:test-password@localhost:3306/vda
+      VDA_TEST_PG_PASSWORD: test-password
+      VDA_TEST_MYSQL_PASSWORD: test-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: {components: llvm-tools-preview}
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with: {tool: cargo-llvm-cov}
+      # The session-reset test creates a role and a stored function. The image's
+      # application account may do neither, and binary logging refuses function
+      # creation without log_bin_trust_function_creators.
+      - name: Let the MySQL test account create roles and functions
+        env: {MYSQL_PWD: test-password}
+        run: |
+          mysql --protocol=tcp -h 127.0.0.1 -uroot -e "SET GLOBAL log_bin_trust_function_creators = 1; GRANT CREATE ROLE, DROP ROLE, ROLE_ADMIN ON *.* TO 'vda'@'%'; GRANT SELECT ON performance_schema.* TO 'vda'@'%'"
+      - run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      - run: cargo llvm-cov report --summary-only
+      - uses: actions/upload-artifact@v4
+        with: {name: rust-coverage, path: lcov.info, retention-days: 14}

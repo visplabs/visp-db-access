@@ -1,0 +1,22 @@
+[package]
+name = "vda-guard-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+vda-guard = { path = ".." }
+
+# Not a member of the main workspace: it needs nightly and libFuzzer.
+[workspace]
+
+[[bin]]
+name = "analyze"
+path = "fuzz_targets/analyze.rs"
+test = false
+doc = false
+bench = false
