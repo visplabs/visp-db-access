@@ -156,3 +156,29 @@ with the changelog section and a Linux x86_64 binary.
   development-only `/ui?kitchen-sink` route.
 - `docs/API.md` is the authoritative API contract; update it together with the
   server and `web/src/api/types.ts`.
+
+## Verification tools
+
+CI runs every check below; run them locally before you push.
+
+| Check                                       | Command                                                                                  |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Rust format and lint                        | `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` |
+| Rust tests, attack corpus and mutation test | `cargo test --workspace`                                                                 |
+| Vulnerable crates, licenses, crate sources  | `cargo deny check` (rules in `deny.toml`)                                                |
+| Rust line coverage                          | `cargo llvm-cov --workspace --summary-only`                                              |
+| Web lint, format, types                     | `npm run lint`, `npm run format:check`, `npm run typecheck` in `web/`                    |
+| Web tests                                   | `npm test` and `npm run test:e2e` in `web/`                                              |
+| Vulnerable npm packages                     | `npm audit --omit=dev` and `npm audit --audit-level=high` in `web/`                      |
+| Workflow files, Dockerfile, shell scripts   | `actionlint`, `hadolint Dockerfile`, `shellcheck scripts/*.sh`                           |
+| Committed secrets                           | `gitleaks git .`                                                                         |
+
+The SQL guard also has a libFuzzer target that runs weekly in CI
+(`.github/workflows/fuzz.yml`). To run it locally you need the nightly
+toolchain and `cargo-fuzz`:
+
+```sh
+cd crates/vda-guard && cargo +nightly fuzz run analyze -- -max_total_time=600
+```
+
+An advisory may be ignored in `deny.toml` only with a written reason.

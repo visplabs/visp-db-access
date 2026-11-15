@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Sourced by e2e-smoke.sh after its authenticated core checks.
+# The variables it reads are assigned in e2e-smoke.sh.
+# shellcheck disable=SC2154
 fixture=$VDA_DISCOVERY_FAKE_FIXTURE
 checked_in_fixture="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/fixtures/rds-discovery.json"
 if [[ ! -f $fixture || ! -w $fixture || $fixture -ef $checked_in_fixture ]]; then
