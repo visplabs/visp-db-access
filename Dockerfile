@@ -6,7 +6,7 @@ COPY docs/API.md docs/ARCHITECTURE.md /app/docs/
 COPY web/ ./
 RUN npm run build
 
-FROM rust:1.93-bookworm AS builder
+FROM rust:1.99-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ ./crates/
