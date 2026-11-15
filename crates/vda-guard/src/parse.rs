@@ -43,6 +43,9 @@ pub(crate) fn parse(sql: &str, dialect: Dialect) -> Result<Parsed, ParseFailure>
         .filter(|t| !matches!(t, Token::Whitespace(_)))
         .collect();
     bound_complexity(&tokens)?;
+    if dialect == Dialect::Postgres {
+        normalize_explain_analyse(&mut tokens);
+    }
     if dialect == Dialect::MySql {
         if tokens.iter().any(|t| matches!(t, Token::Assignment))
             || tokens.windows(2).any(|w| {
@@ -117,6 +120,20 @@ pub(crate) fn parse(sql: &str, dialect: Dialect) -> Result<Parsed, ParseFailure>
         statements,
         lock_syntax,
     })
+}
+
+// PostgreSQL accepts `EXPLAIN ANALYSE` as a synonym for `EXPLAIN ANALYZE`, but
+// sqlparser only knows the Z spelling. Analysis must see the statement as
+// executing; the gateway still runs the caller's original text.
+fn normalize_explain_analyse(tokens: &mut [Token]) {
+    for position in 1..tokens.len() {
+        if keyword(tokens.get(position - 1), "EXPLAIN") && keyword(tokens.get(position), "ANALYSE")
+        {
+            if let Some(token) = tokens.get_mut(position) {
+                *token = Token::make_keyword("ANALYZE");
+            }
+        }
+    }
 }
 
 fn keyword(token: Option<&Token>, value: &str) -> bool {

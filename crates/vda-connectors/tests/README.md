@@ -38,6 +38,14 @@ Coverage includes row/byte truncation, empty-result metadata, read-only
 transactions, cancellation and dropped futures, timeouts, rollback on affected
 row caps, bounded PostgreSQL RETURNING, schema, health, EXPLAIN and type decoding.
 
+The `*_session_state_never_survives_release` tests use the production pool factory
+and prove no session state reaches the next request: PostgreSQL advisory locks,
+committed settings, temporary tables and LISTEN; MySQL/MariaDB GET_LOCK locks, and a
+role, session variable and user variable set by an invoker-rights function, plus
+temporary tables from writes. They also check clean connections are still reused.
+`VDA_TEST_PG_PASSWORD` is optional (trust auth); the MySQL test needs
+`VDA_TEST_MYSQL_PASSWORD` and permission to create roles and functions.
+
 Without Docker, use the local database scripts:
 
 ```sh

@@ -202,6 +202,38 @@ test('cluster wizard tests a connection and creates the cluster', async ({
     page.getByRole('row', { name: 'Open support-staging', exact: true }),
   ).toBeVisible();
 });
+test('cluster wizard explains a TLS failure against a no-TLS demo database', async ({
+  page,
+}) => {
+  await page.getByRole('link', { name: 'Clusters', exact: true }).click();
+  await page.getByRole('button', { name: 'Add cluster' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('combobox', { name: 'Project', exact: true }).click();
+  await page.getByRole('option', { name: 'Commerce', exact: true }).click();
+  await page.getByLabel('Cluster name', { exact: true }).fill('demo-shop');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(
+    dialog.getByRole('combobox', { name: 'TLS mode', exact: true }),
+  ).toHaveText(/verify full/);
+  await page.getByLabel('Host', { exact: true }).fill('localhost');
+  await expect(dialog.getByRole('note')).toContainText(
+    'set TLS mode to “disable”',
+  );
+  await page.getByLabel('Host', { exact: true }).fill('demo-postgres');
+  await expect(dialog.getByRole('note')).toHaveCount(0);
+  await page.getByLabel('Database', { exact: true }).fill('shop');
+  await page.getByLabel('Username', { exact: true }).fill('demo');
+  await page.getByLabel('Password', { exact: true }).fill('demo-local-only');
+  await page.getByRole('button', { name: 'Test connection' }).click();
+  const alert = dialog.getByRole('alert');
+  await expect(alert).toContainText('Target database unavailable');
+  await expect(alert).toContainText('TLS mode is “verify full”');
+  await dialog.getByRole('combobox', { name: 'TLS mode', exact: true }).click();
+  await page.getByRole('option', { name: 'disable', exact: true }).click();
+  await expect(alert).toHaveCount(0);
+  await page.getByRole('button', { name: 'Test connection' }).click();
+  await expect(page.getByText('18 ms')).toBeVisible();
+});
 test('all routes render at 768 px and capture console/overview screenshots', async ({
   page,
 }) => {

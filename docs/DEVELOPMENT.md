@@ -59,7 +59,11 @@ Demo database accounts:
 | `vda` (Postgres, no password) / `vda` / `vda_local_pw` (MySQL) |                  | Local admin for tests                            |
 
 In the console, add a cluster for `127.0.0.1:55432` (PostgreSQL) or
-`127.0.0.1:33306` (MySQL), database `shop`, user `shop_reader`.
+`127.0.0.1:33306` (MySQL), database `shop`, user `shop_reader`, with
+environment `development` and TLS mode `disable`. The local databases have no
+certificate the gateway can verify, so the default `verify full` fails the
+connection test. Loopback
+hosts work here only because `dev-local.sh` sets `VDA_ALLOW_PRIVATE_TARGETS`.
 
 To work on the UI against the real server with hot reload, keep `dev-local.sh`
 running and start `npm run dev` in `web/`; it proxies API requests to port 8080.
@@ -104,6 +108,9 @@ npx playwright install chromium   # once
 npm run test:e2e      # browser tests against mock mode
 npm run build         # fails if the initial JavaScript exceeds 250 KiB gzip
 ```
+
+CI runs lint, the unit tests, the build and the browser tests (Chromium only)
+on every push and pull request.
 
 The browser tests include an accessibility scan (axe) of every route at desktop
 and phone sizes in both themes. Screenshots they write go to the ignored

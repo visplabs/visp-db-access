@@ -40,9 +40,9 @@ pub fn matches_column(pattern: &str, column: &str, tables: &[String]) -> bool {
         None => glob(pattern, column),
         Some((table, col)) => {
             glob(col, column)
-                && tables.iter().any(|name| {
-                    glob(table, name) || glob(table, name.rsplit('.').next().unwrap_or(name))
-                })
+                && tables
+                    .iter()
+                    .any(|name| vda_guard::relation_matches(table, name))
         }
     }
 }
@@ -87,9 +87,7 @@ pub fn touches_masked(analysis: &vda_guard::Analysis, patterns: &[String]) -> bo
                 .iter()
                 .any(|pattern| match pattern.rsplit_once('.') {
                     None => true,
-                    Some((table, _)) => {
-                        glob(table, name) || glob(table, name.rsplit('.').next().unwrap_or(name))
-                    }
+                    Some((table, _)) => vda_guard::relation_matches(table, name),
                 })
         })
 }

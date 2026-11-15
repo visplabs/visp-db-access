@@ -24,6 +24,7 @@ jobs:
       VDA_TEST_POSTGRES_URL: postgres://vda:test-password@localhost:5432/vda
       VDA_TEST_PG_URL: postgres://vda:test-password@localhost:5432/vda
       VDA_TEST_MYSQL_URL: mysql://vda:test-password@localhost:3306/vda
+      VDA_TEST_PG_PASSWORD: test-password
       VDA_TEST_MYSQL_PASSWORD: test-password
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +33,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with: {cache-directories: target-server}
       - run: cargo fmt --all -- --check
+      # The session-reset test creates a role and a stored function. The image's
+      # application account may do neither, and binary logging refuses function
+      # creation without log_bin_trust_function_creators.
+      - name: Let the MySQL test account create roles and functions
+        env: {MYSQL_PWD: test-password}
+        run: |
+          mysql --protocol=tcp -h 127.0.0.1 -uroot -e "SET GLOBAL log_bin_trust_function_creators = 1; GRANT CREATE ROLE, DROP ROLE, ROLE_ADMIN ON *.* TO 'vda'@'%'; GRANT SELECT ON performance_schema.* TO 'vda'@'%'"
       - run: cargo clippy --workspace --all-targets ${{ matrix.features }} -- -D warnings
       - run: cargo test --workspace ${{ matrix.features }}
       - name: Build fake-provider gateway
@@ -96,3 +104,17 @@ jobs:
         working-directory: web
       - run: npm run lint
         working-directory: web
+      - run: npm test
+        working-directory: web
+      # Browser tests run against the in-memory mock API (playwright.config.ts
+      # starts `npm run dev:mock`), so they need no server or database. The
+      # binary is the version `npm ci` installed from the lockfile; nothing is
+      # fetched on demand.
+      - run: ./node_modules/.bin/playwright install --with-deps chromium
+        working-directory: web
+      - run: npm run test:e2e
+        working-directory: web
+        timeout-minutes: 15
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with: {name: playwright-results, path: web/test-results, retention-days: 7, if-no-files-found: ignore}

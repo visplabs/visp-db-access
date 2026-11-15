@@ -78,6 +78,23 @@ fn masks_respect_table_context_and_wildcards() {
     assert!(matches_column("users.ssn", "ssn", &["public.users".into()]));
     assert!(!matches_column("users.ssn", "ssn", &["customers".into()]));
     assert!(matches_column("email", "EMAIL", &[]));
+    // An unqualified table can resolve to any schema, so a schema-qualified
+    // mask must still apply to it.
+    assert!(matches_column(
+        "public.users.email",
+        "email",
+        &["users".into()]
+    ));
+    assert!(matches_column(
+        "public.users.email",
+        "email",
+        &["public.users".into()]
+    ));
+    assert!(!matches_column(
+        "public.users.email",
+        "email",
+        &["other.users".into()]
+    ));
 }
 
 #[test]

@@ -621,3 +621,262 @@ async fn mysql_server_execution_timeout_really_interrupts_work() {
     assert!(pool.health().await.ok);
     pool.close().await;
 }
+
+/// Production factory pool (with its session hooks) for the URL in the engine's variable.
+/// PostgreSQL may omit `VDA_TEST_PG_PASSWORD` for trust-auth fixtures.
+fn factory(engine: Engine) -> Option<(String, TargetPool)> {
+    let (variable, secret) = match engine {
+        Engine::Postgres => ("VDA_TEST_PG_URL", "VDA_TEST_PG_PASSWORD"),
+        Engine::Mysql => ("VDA_TEST_MYSQL_URL", "VDA_TEST_MYSQL_PASSWORD"),
+    };
+    let url = std::env::var(variable).ok()?;
+    let password = match (engine, std::env::var(secret)) {
+        (_, Ok(password)) => password,
+        (Engine::Postgres, Err(_)) => String::new(),
+        (Engine::Mysql, Err(_)) => {
+            eprintln!("Skipping session reset test: {secret} is unset");
+            return None;
+        }
+    };
+    let (host, port, database, username) = match engine {
+        Engine::Postgres => {
+            let options: sqlx::postgres::PgConnectOptions = url.parse().unwrap();
+            (
+                options.get_host().to_owned(),
+                options.get_port(),
+                options.get_database().unwrap_or("postgres").to_owned(),
+                options.get_username().to_owned(),
+            )
+        }
+        Engine::Mysql => {
+            let options: sqlx::mysql::MySqlConnectOptions = url.parse().unwrap();
+            (
+                options.get_host().to_owned(),
+                options.get_port(),
+                options.get_database().unwrap().to_owned(),
+                options.get_username().to_owned(),
+            )
+        }
+    };
+    let spec = vda_connectors::ConnectionSpec {
+        engine,
+        host,
+        port,
+        database,
+        username,
+        password: secrecy::SecretString::from(password),
+        tls: vda_connectors::TlsMode::Disable,
+        ca_cert_pem: None,
+        application_name: "vda-reset-test".into(),
+    };
+    // One slot: each request can only start after the previous release finished.
+    let options = vda_connectors::PoolOptions {
+        max_connections: 1,
+        ..Default::default()
+    };
+    Some((url, TargetPool::new_lazy(&spec, options).unwrap()))
+}
+fn first(result: &vda_connectors::QueryResult) -> &[Value] {
+    result.rows.first().unwrap()
+}
+
+#[tokio::test]
+async fn postgres_session_state_never_survives_release() {
+    use sqlx::Connection;
+    let Some((url, pool)) = factory(Engine::Postgres) else {
+        return;
+    };
+    let mut observer = sqlx::PgConnection::connect(&url).await.unwrap();
+    let mut leaks = Vec::new();
+    let initial = read(&pool, "SELECT current_setting('search_path')").await;
+    let lock = read(
+        &pool,
+        "SELECT pg_try_advisory_lock_shared(424242), pg_backend_pid()",
+    )
+    .await;
+    assert_eq!(first(&lock)[0], json!(true));
+    let settings = read(
+        &pool,
+        "SELECT pg_backend_pid(), current_setting('default_transaction_read_only'), \
+         current_setting('TimeZone'), current_setting('application_name')",
+    )
+    .await;
+    if first(&settings)[0] != first(&lock)[1] {
+        leaks.push("clean connection was not reused".to_owned());
+    }
+    assert_eq!(
+        first(&settings)[1..],
+        [json!("on"), json!("UTC"), json!("vda-reset-test")]
+    );
+    let held: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = 424242",
+    )
+    .fetch_one(&mut observer)
+    .await
+    .unwrap();
+    if held != 0 {
+        leaks.push(format!(
+            "advisory lock still held after the request: {held}"
+        ));
+    }
+    // Committed writes may change session state that ROLLBACK cannot undo.
+    write(
+        &pool,
+        "SELECT set_config('search_path', 'pg_catalog', false)",
+        10,
+    )
+    .await
+    .unwrap();
+    write(
+        &pool,
+        "CREATE TEMPORARY TABLE vda_reset_probe AS SELECT 1 AS a",
+        10,
+    )
+    .await
+    .unwrap();
+    write(&pool, "LISTEN vda_reset_probe", 10).await.unwrap();
+    let after = read(
+        &pool,
+        "SELECT current_setting('search_path'), to_regclass('pg_temp.vda_reset_probe') IS NULL, \
+         (SELECT count(*) FROM pg_listening_channels()), \
+         current_setting('default_transaction_read_only'), pg_backend_pid()",
+    )
+    .await;
+    if first(&after)[0] != first(&initial)[0] {
+        leaks.push(format!("search_path survived: {}", first(&after)[0]));
+    }
+    if first(&after)[1] != json!(true) {
+        leaks.push("temporary table survived".to_owned());
+    }
+    if first(&after)[2] != json!(0) {
+        leaks.push("LISTEN survived".to_owned());
+    }
+    assert_eq!(first(&after)[3], json!("on"));
+    if first(&after)[4] != first(&lock)[1] {
+        leaks.push("connection was not reused after a write".to_owned());
+    }
+    pool.close().await;
+    observer.close().await.unwrap();
+    assert!(leaks.is_empty(), "session state leaked: {leaks:#?}");
+}
+
+#[tokio::test]
+async fn mysql_session_state_never_survives_release() {
+    use sqlx::{Connection, Executor};
+    let Some((url, pool)) = factory(Engine::Mysql) else {
+        return;
+    };
+    let mut admin = sqlx::MySqlConnection::connect(&url).await.unwrap();
+    // MySQL role names are limited to 32 characters.
+    let mut suffix = uuid::Uuid::new_v4().simple().to_string();
+    suffix.truncate(16);
+    let (role, function, lock) = (
+        format!("vda_role_{suffix}"),
+        format!("vda_fn_{suffix}"),
+        format!("vda_lock_{suffix}"),
+    );
+    admin
+        .execute(format!("CREATE ROLE {role}").as_str())
+        .await
+        .unwrap();
+    admin
+        .execute(format!("GRANT {role} TO CURRENT_USER()").as_str())
+        .await
+        .unwrap();
+    // An invoker-rights function can change role, session and user variables.
+    admin
+        .execute(
+            format!(
+                "CREATE FUNCTION {function}() RETURNS INT DETERMINISTIC NO SQL SQL SECURITY INVOKER \
+                 BEGIN SET ROLE {role}; SET SESSION sql_select_limit = 1; SET @vda_inner = 7; RETURN 1; END"
+            )
+            .as_str(),
+        )
+        .await
+        .unwrap();
+    let mut leaks = Vec::new();
+    let id = |result: &vda_connectors::QueryResult| first(result).last().unwrap().clone();
+
+    let locked = read(
+        &pool,
+        &format!("SELECT GET_LOCK('{lock}', 0), CONNECTION_ID()"),
+    )
+    .await;
+    assert_eq!(first(&locked)[0], json!(1));
+    let reused = read(&pool, "SELECT CONNECTION_ID()").await;
+    if id(&reused) != id(&locked) {
+        leaks.push("clean connection was not reused".to_owned());
+    }
+    let holder: Option<i64> = sqlx::query_scalar("SELECT CAST(IS_USED_LOCK(?) AS SIGNED)")
+        .bind(&lock)
+        .fetch_one(&mut admin)
+        .await
+        .unwrap();
+    if holder.is_some() {
+        leaks.push(format!("GET_LOCK still held by connection {holder:?}"));
+    }
+
+    let dirty = read(&pool, &format!("SELECT {function}(), CONNECTION_ID()")).await;
+    let limited = read(
+        &pool,
+        "SELECT n, CONNECTION_ID() FROM (SELECT 1 AS n UNION ALL SELECT 2) t",
+    )
+    .await;
+    if limited.row_count != 2 {
+        leaks.push("sql_select_limit survived".to_owned());
+    }
+    let role_now = read(&pool, "SELECT IFNULL(CURRENT_ROLE(), 'NONE')").await;
+    if first(&role_now)[0] != json!("NONE") {
+        leaks.push(format!("role survived: {}", first(&role_now)[0]));
+    }
+    let inner = read(&pool, "SELECT @vda_inner").await;
+    if first(&inner)[0] != Value::Null {
+        leaks.push("user variable set inside a function survived".to_owned());
+    }
+    if id(&limited) == id(&dirty) {
+        leaks.push("dirty connection was reused".to_owned());
+    }
+
+    read(&pool, "SELECT @vda_direct := 5").await;
+    let direct = read(&pool, "SELECT @vda_direct").await;
+    if first(&direct)[0] != Value::Null {
+        leaks.push("user variable survived".to_owned());
+    }
+
+    let temporary = format!("vda_tmp_{suffix}");
+    write(
+        &pool,
+        &format!("CREATE TEMPORARY TABLE {temporary} (a INT)"),
+        0,
+    )
+    .await
+    .unwrap();
+    if pool
+        .execute_read(
+            &format!("SELECT COUNT(*) FROM {temporary}"),
+            &limits(),
+            CancellationToken::new(),
+        )
+        .await
+        .is_ok()
+    {
+        leaks.push("temporary table survived".to_owned());
+    }
+    let clean = read(&pool, "SELECT CONNECTION_ID()").await;
+    let again = read(&pool, "SELECT CONNECTION_ID()").await;
+    if id(&clean) != id(&again) {
+        leaks.push("clean connection was not reused".to_owned());
+    }
+
+    pool.close().await;
+    admin
+        .execute(format!("DROP FUNCTION {function}").as_str())
+        .await
+        .unwrap();
+    admin
+        .execute(format!("DROP ROLE {role}").as_str())
+        .await
+        .unwrap();
+    admin.close().await.unwrap();
+    assert!(leaks.is_empty(), "session state leaked: {leaks:#?}");
+}

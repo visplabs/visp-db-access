@@ -31,6 +31,12 @@ impl<DB: Database> GuardedConnection<DB> {
     pub(crate) fn clean(&mut self) {
         self.clean = true;
     }
+    /// The work finished, but the session may hold state no reset can verify:
+    /// close the connection instead of pooling it, without server-side cancellation.
+    pub(crate) fn retire(&mut self) {
+        self.clean = false;
+        self.discard_hook = None;
+    }
     pub(crate) fn discard(&mut self) {
         self.clean = false;
     }
@@ -68,6 +74,30 @@ pub(crate) async fn race<T>(
         _ = tokio::time::sleep(timeout) => Err(ConnectorError::Timeout),
         result = future => result,
     }
+}
+
+/// Deadline for resetting a released connection. The pool slot stays reserved
+/// while the reset runs; on expiry the connection is closed instead of reused.
+const RESET_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Bounds an `after_release` reset. An error makes SQLx close the connection.
+pub(crate) async fn bounded_reset(
+    reset: impl Future<Output = Result<bool, sqlx::Error>>,
+) -> Result<bool, sqlx::Error> {
+    deadline(reset, RESET_TIMEOUT).await
+}
+async fn deadline(
+    reset: impl Future<Output = Result<bool, sqlx::Error>>,
+    limit: Duration,
+) -> Result<bool, sqlx::Error> {
+    tokio::time::timeout(limit, reset)
+        .await
+        .unwrap_or_else(|_| {
+            Err(sqlx::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "session reset timed out",
+            )))
+        })
 }
 
 pub(crate) async fn postgres(pool: &sqlx::PgPool, pid: i32) {
@@ -170,5 +200,21 @@ mod tests {
             .await,
             Err(ConnectorError::Timeout)
         ));
+    }
+    #[tokio::test]
+    async fn stalled_or_failed_resets_never_return_connections() {
+        let stalled = deadline(std::future::pending(), Duration::from_millis(1)).await;
+        assert!(
+            matches!(stalled, Err(sqlx::Error::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut)
+        );
+        assert!(matches!(
+            bounded_reset(async { Err(sqlx::Error::PoolClosed) }).await,
+            Err(sqlx::Error::PoolClosed)
+        ));
+        assert!(matches!(
+            bounded_reset(async { Ok(false) }).await,
+            Ok(false)
+        ));
+        assert!(matches!(bounded_reset(async { Ok(true) }).await, Ok(true)));
     }
 }

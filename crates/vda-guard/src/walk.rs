@@ -3,8 +3,9 @@ use crate::{
     classify, functions, predicates, rewrite, tables, Dialect, Issue, Severity, StatementKind,
 };
 use sqlparser::ast::{
-    Expr, FromTable, JoinOperator, ObjectName, Query, Select, SelectItem, SetExpr,
-    ShowCreateObject, Statement, TableFactor, TableObject, Value, Visit, Visitor,
+    Expr, FromTable, FunctionArg, FunctionArgExpr, JoinOperator, ObjectName, Query, Select,
+    SelectItem, SetExpr, ShowCreateObject, Statement, TableFactor, TableObject, Value, Visit,
+    Visitor,
 };
 use std::{
     collections::{BTreeSet, HashMap},
@@ -72,6 +73,11 @@ impl Walker {
         if self.table_functions.last().and_then(Option::as_ref) == Some(&normalized) {
             return;
         }
+        if is_only(name, self.dialect) {
+            // A misread ONLY that `only_relations` did not resolve.
+            self.only(&[]);
+            return;
+        }
         if name.0.len() == 1 {
             if let Some(ident) = name.0.first().and_then(|p| p.as_ident()) {
                 let key = tables::cte_key(ident, self.dialect);
@@ -83,7 +89,31 @@ impl Walker {
         self.facts.tables.insert(normalized);
     }
 
+    /// Record the relations behind a PostgreSQL `ONLY`, or deny when the
+    /// form is not understood.
+    fn only(&mut self, relations: &[ObjectName]) {
+        if relations.is_empty() {
+            if !self
+                .facts
+                .issues
+                .iter()
+                .any(|i| i.code == "unsupported_syntax")
+            {
+                self.facts.issues.push(Issue::new(Severity::Block, "unsupported_syntax", "This ONLY clause could not be analyzed safely. Write it as FROM ONLY table_name, or omit ONLY."));
+            }
+            return;
+        }
+        for name in relations {
+            // Never hidden by a CTE of the same name: fail closed.
+            self.facts.tables.insert(tables::normalize(name));
+        }
+    }
+
     fn write_target(&mut self, factor: &TableFactor) {
+        if let Some(relations) = only_relations(factor, self.dialect) {
+            self.only(&relations);
+            return;
+        }
         if let TableFactor::Table {
             name, args: None, ..
         } = factor
@@ -206,6 +236,12 @@ impl Visitor for Walker {
     }
 
     fn pre_visit_table_factor(&mut self, factor: &TableFactor) -> ControlFlow<Self::Break> {
+        if let Some(relations) = only_relations(factor, self.dialect) {
+            self.only(&relations);
+            // Suppress the misread relation (or table function) named `only`.
+            self.table_functions.push(Some("only".to_owned()));
+            return ControlFlow::Continue(());
+        }
         let function = match factor {
             TableFactor::Table {
                 name,
@@ -294,6 +330,55 @@ impl Visitor for Walker {
         }
         ControlFlow::Continue(())
     }
+}
+
+/// PostgreSQL reserves `ONLY`, so an unquoted relation whose first part is
+/// `only` is always sqlparser misreading inheritance syntax: `ONLY users`
+/// becomes table `only` with alias `users`, and `ONLY (users)` becomes a table
+/// function `only(users)`. MySQL does not reserve the word.
+fn is_only(name: &ObjectName, dialect: Dialect) -> bool {
+    dialect == Dialect::Postgres
+        && name
+            .0
+            .first()
+            .and_then(|part| part.as_ident())
+            .is_some_and(|i| i.quote_style.is_none() && i.value.eq_ignore_ascii_case("only"))
+}
+
+/// The real relations behind a misread `ONLY`. `None` when the factor is not
+/// an ONLY form; an empty list when it is one that cannot be resolved.
+fn only_relations(factor: &TableFactor, dialect: Dialect) -> Option<Vec<ObjectName>> {
+    let TableFactor::Table {
+        name, alias, args, ..
+    } = factor
+    else {
+        return None;
+    };
+    if !is_only(name, dialect) {
+        return None;
+    }
+    if name.0.len() != 1 {
+        return Some(vec![]);
+    }
+    let relations = match (args, alias) {
+        (Some(args), _) => args
+            .args
+            .iter()
+            .map(|arg| match arg {
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
+                    Some(ObjectName::from(vec![ident.clone()]))
+                }
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::CompoundIdentifier(idents))) => {
+                    Some(ObjectName::from(idents.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default(),
+        (None, Some(alias)) => vec![ObjectName::from(vec![alias.name.clone()])],
+        (None, None) => vec![],
+    };
+    Some(relations)
 }
 
 pub(crate) fn aggregate_read(body: &SetExpr) -> bool {

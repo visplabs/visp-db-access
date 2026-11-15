@@ -11,6 +11,7 @@ import {
   ErrorPanel,
 } from '../../components/ui';
 import { defaultPolicy } from '../../api/fixtures';
+import { localTlsSuggestion, tlsFailureHint } from '../../lib/tls';
 export type ClusterDraft = Omit<
   Cluster,
   'id' | 'health' | 'my_access' | 'created_at' | 'updated_at'
@@ -89,104 +90,112 @@ export function ConnectionFields({
   update: (values: Partial<ClusterDraft>) => void;
   requirePassword?: boolean;
 }) {
+  const suggestion = localTlsSuggestion(draft.host, draft.tls_mode);
   return (
-    <div className="form-grid">
-      <Field label="Database engine">
-        <Picker
-          value={draft.engine}
-          label="Database engine"
-          options={[
-            { value: 'postgres', label: 'PostgreSQL' },
-            { value: 'mysql', label: 'MySQL' },
-          ]}
-          onChange={(engine) =>
-            update({
-              engine: engine as Engine,
-              port: engine === 'postgres' ? 5432 : 3306,
-            })
-          }
-        />
-      </Field>
-      <Field label="TLS mode">
-        <Picker
-          value={draft.tls_mode}
-          label="TLS mode"
-          options={options(['disable', 'prefer', 'require', 'verify_full'])}
-          onChange={(value) =>
-            update({ tls_mode: value as ClusterDraft['tls_mode'] })
-          }
-        />
-      </Field>
-      <Field label="Host">
-        <input
-          required
-          value={draft.host}
-          onChange={(e) => update({ host: e.target.value })}
-          placeholder="database.internal.example.com"
-        />
-      </Field>
-      <Field label="Port">
-        <input
-          type="number"
-          required
-          min={1}
-          max={65535}
-          value={draft.port}
-          onChange={(e) => update({ port: Number(e.target.value) })}
-        />
-      </Field>
-      <Field label="Database">
-        <input
-          required
-          value={draft.database}
-          onChange={(e) => update({ database: e.target.value })}
-        />
-      </Field>
-      <Field label="Username">
-        <input
-          required
-          value={draft.username}
-          onChange={(e) => update({ username: e.target.value })}
-          autoComplete="off"
-        />
-      </Field>
-      <Field
-        label={requirePassword ? 'Password' : 'Rotate password (optional)'}
-        hint={
-          requirePassword
-            ? 'Changing the connection endpoint requires re-entering the password'
-            : 'Write-only. Stored encrypted by the gateway.'
-        }
-      >
-        <input
-          type="password"
-          required={requirePassword}
-          value={draft.password}
-          onChange={(e) => update({ password: e.target.value })}
-          autoComplete="new-password"
-          placeholder={
-            requirePassword ? '' : 'Leave blank to keep current password'
-          }
-        />
-      </Field>
-      <Field label="Read replica host (optional)">
-        <input
-          value={draft.replica_host ?? ''}
-          onChange={(e) => update({ replica_host: e.target.value || null })}
-        />
-      </Field>
-      {draft.replica_host && (
-        <Field label="Read replica port">
-          <input
-            type="number"
-            min={1}
-            max={65535}
-            value={draft.replica_port ?? draft.port}
-            onChange={(e) => update({ replica_port: Number(e.target.value) })}
+    <>
+      <div className="form-grid">
+        <Field label="Database engine">
+          <Picker
+            value={draft.engine}
+            label="Database engine"
+            options={[
+              { value: 'postgres', label: 'PostgreSQL' },
+              { value: 'mysql', label: 'MySQL' },
+            ]}
+            onChange={(engine) =>
+              update({
+                engine: engine as Engine,
+                port: engine === 'postgres' ? 5432 : 3306,
+              })
+            }
           />
         </Field>
+        <Field label="TLS mode">
+          <Picker
+            value={draft.tls_mode}
+            label="TLS mode"
+            options={options(['disable', 'prefer', 'require', 'verify_full'])}
+            onChange={(value) =>
+              update({ tls_mode: value as ClusterDraft['tls_mode'] })
+            }
+          />
+        </Field>
+        <Field label="Host">
+          <input
+            required
+            value={draft.host}
+            onChange={(e) => update({ host: e.target.value })}
+            placeholder="database.internal.example.com"
+          />
+        </Field>
+        <Field label="Port">
+          <input
+            type="number"
+            required
+            min={1}
+            max={65535}
+            value={draft.port}
+            onChange={(e) => update({ port: Number(e.target.value) })}
+          />
+        </Field>
+        <Field label="Database">
+          <input
+            required
+            value={draft.database}
+            onChange={(e) => update({ database: e.target.value })}
+          />
+        </Field>
+        <Field label="Username">
+          <input
+            required
+            value={draft.username}
+            onChange={(e) => update({ username: e.target.value })}
+            autoComplete="off"
+          />
+        </Field>
+        <Field
+          label={requirePassword ? 'Password' : 'Rotate password (optional)'}
+          hint={
+            requirePassword
+              ? 'Changing the connection endpoint requires re-entering the password'
+              : 'Write-only. Stored encrypted by the gateway.'
+          }
+        >
+          <input
+            type="password"
+            required={requirePassword}
+            value={draft.password}
+            onChange={(e) => update({ password: e.target.value })}
+            autoComplete="new-password"
+            placeholder={
+              requirePassword ? '' : 'Leave blank to keep current password'
+            }
+          />
+        </Field>
+        <Field label="Read replica host (optional)">
+          <input
+            value={draft.replica_host ?? ''}
+            onChange={(e) => update({ replica_host: e.target.value || null })}
+          />
+        </Field>
+        {draft.replica_host && (
+          <Field label="Read replica port">
+            <input
+              type="number"
+              min={1}
+              max={65535}
+              value={draft.replica_port ?? draft.port}
+              onChange={(e) => update({ replica_port: Number(e.target.value) })}
+            />
+          </Field>
+        )}
+      </div>
+      {suggestion && (
+        <div className="callout" role="note">
+          {suggestion}
+        </div>
       )}
-    </div>
+    </>
   );
 }
 export function ConnectionTest({
@@ -243,7 +252,21 @@ export function ConnectionTest({
         {test.isPending ? 'Testing…' : 'Test connection'}
       </Button>
       {test.error && <ErrorPanel error={test.error} />}
-      {test.data && (
+      {test.data?.status === 'down' && (
+        <div className="callout danger" role="alert">
+          <HealthBadge status="down" latency={null} />
+          <div>
+            <strong>
+              {test.data.error ?? 'The gateway could not connect.'}
+            </strong>
+            <p>
+              {tlsFailureHint('down', draft.tls_mode) ??
+                'Check the host, port, database, username and password.'}
+            </p>
+          </div>
+        </div>
+      )}
+      {test.data && test.data.status !== 'down' && (
         <div className="callout success">
           <HealthBadge
             status={test.data.status}

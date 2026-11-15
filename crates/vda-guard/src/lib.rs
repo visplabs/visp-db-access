@@ -204,6 +204,14 @@ pub fn analyze(sql: &str, dialect: Dialect, level: AccessLevel, policy: &GuardPo
     })
 }
 
+/// Whether a blocked-table or masking table `pattern` covers a relation as
+/// recorded in [`StatementAnalysis::tables`]. Case-insensitive; `*` globs.
+/// An unqualified relation matches a schema-qualified pattern whenever the
+/// table part matches, because the server may resolve it to any schema.
+pub fn relation_matches(pattern: &str, relation: &str) -> bool {
+    tables::matches(pattern, relation)
+}
+
 impl Issue {
     pub(crate) fn new(severity: Severity, code: &str, message: impl Into<String>) -> Self {
         Self {
