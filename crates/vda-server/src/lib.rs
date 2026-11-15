@@ -1,6 +1,7 @@
 //! HTTP gateway, security primitives and metadata storage for visp-db-access.
 mod access;
 mod admin;
+pub mod agents;
 pub mod app;
 pub mod approvals;
 pub mod auth;

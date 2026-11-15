@@ -81,6 +81,11 @@ calls `query::analyze` or `query::run`. The web console is the first caller;
 any other door into the gateway uses the same functions, so the rules cannot
 differ between them.
 
+An `Actor` can carry an agent scope. Access is then the owner's access, narrowed
+to the agent's clusters and capped at its level (`access::narrow`). `agents`
+resolves a bearer token to such an actor; only the token's SHA-256 digest is
+stored.
+
 ### crates/vda-server (binary `visp-db-access`)
 
 axum HTTP API + embedded SPA. Metadata in Postgres (sqlx migrations). Owns

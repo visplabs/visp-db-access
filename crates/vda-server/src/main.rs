@@ -125,7 +125,7 @@ async fn serve(
     .with_graceful_shutdown(async move {
         shutdown_signal().await;
         for query in shutdown_state.core.active.iter() {
-            query.1.cancel();
+            query.cancel.cancel();
         }
     })
     .await;

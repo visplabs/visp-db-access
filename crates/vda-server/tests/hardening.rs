@@ -1341,3 +1341,857 @@ async fn master_key_change_reports_unreadable_credentials_and_new_password_recov
     }
     f.close().await;
 }
+
+async fn bearer(f: &Fixture, path: &str, token: &str) -> (StatusCode, Value) {
+    call(
+        &f.app,
+        "GET",
+        &format!("/api/v1{path}"),
+        "",
+        None,
+        Some(&format!("Bearer {token}")),
+        "127.0.0.1:1234",
+    )
+    .await
+}
+async fn new_agent(f: &Fixture, cookie: &str, name: &str, level: &str) -> Uuid {
+    let (s, v) = f
+        .request(
+            "POST",
+            "/agents",
+            cookie,
+            Some(json!({"name":name,"max_level":level,"cluster_ids":[f.cluster]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v["id"].as_str().unwrap().parse().unwrap()
+}
+async fn new_token(f: &Fixture, cookie: &str, agent: Uuid) -> (Uuid, String) {
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/agents/{agent}/tokens"),
+            cookie,
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    (
+        v["id"].as_str().unwrap().parse().unwrap(),
+        v["token"].as_str().unwrap().to_owned(),
+    )
+}
+
+#[tokio::test]
+async fn agents_are_owned_scoped_and_managed_only_by_the_right_people() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let recipient_cookie = Fixture::session(&f.db, f.recipient).await;
+    // A person cannot give an agent a cluster that they cannot reach.
+    let (s, v) = f
+        .request(
+            "POST",
+            "/agents",
+            &recipient_cookie,
+            Some(json!({"name":"Reach","cluster_ids":[f.cluster]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    for body in [
+        json!({"name":"","cluster_ids":[f.cluster]}),
+        json!({"name":"x".repeat(101),"cluster_ids":[f.cluster]}),
+        json!({"name":"No clusters","cluster_ids":[]}),
+        json!({"name":"Unknown","cluster_ids":[Uuid::new_v4()]}),
+        json!({"name":"Admin level","max_level":"admin","cluster_ids":[f.cluster]}),
+        json!({"name":"Extra","cluster_ids":[f.cluster],"owner_id":f.admin}),
+        json!({"name":"Control\u{1}","cluster_ids":[f.cluster]}),
+        json!({"name":"Reporter\u{200b}","cluster_ids":[f.cluster]}),
+        json!({"name":"\u{202e}retropeR","cluster_ids":[f.cluster]}),
+        json!({"name":"   ","cluster_ids":[f.cluster]}),
+        json!({"name":"a\u{3164}b","cluster_ids":[f.cluster]}),
+        json!({"name":"a\u{a0}b","cluster_ids":[f.cluster]}),
+        json!({"name":"a\u{fe0f}b","cluster_ids":[f.cluster]}),
+        json!({"name":"a\u{e0001}b","cluster_ids":[f.cluster]}),
+        json!({"name":"a\u{2028}b","cluster_ids":[f.cluster]}),
+        json!({"name":"Reporter\u{200d}","cluster_ids":[f.cluster]}),
+        json!({"name":"Reporter\u{fe0f}","cluster_ids":[f.cluster]}),
+    ] {
+        let (s, v) = f
+            .request("POST", "/agents", &f.grantor_cookie, Some(body))
+            .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    }
+    // Real names in other scripts, and emoji, are accepted.
+    for name in [
+        "Zoë's reader",
+        "レポート 作成",
+        "\u{2764}\u{fe0f} favourite",
+        "\u{1f469}\u{200d}\u{1f4bb} dev agent",
+        "\u{0dc1}\u{0dca}\u{200d}\u{0dbb}\u{0dd3}",
+        "\u{0645}\u{06cc}\u{200c}\u{062e}\u{0648}\u{0627}\u{0647}\u{0645}",
+    ] {
+        let id = new_agent(&f, &f.grantor_cookie, name, "read").await;
+        let (s, _) = f
+            .request("DELETE", &format!("/agents/{id}"), &f.grantor_cookie, None)
+            .await;
+        assert_eq!(s, StatusCode::NO_CONTENT, "{name}");
+    }
+    let agent = new_agent(&f, &f.grantor_cookie, "Reporter", "read").await;
+    let (s, v) = f
+        .request(
+            "POST",
+            "/agents",
+            &f.grantor_cookie,
+            Some(json!({"name":"reporter","cluster_ids":[f.cluster]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let path = format!("/agents/{agent}");
+    // Another member cannot see or touch it; it looks like it does not exist.
+    for (method, body) in [
+        ("GET", None),
+        ("PATCH", Some(json!({"paused":true}))),
+        ("DELETE", None),
+    ] {
+        let (s, v) = f.request(method, &path, &recipient_cookie, body).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{method} {v}");
+    }
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("{path}/tokens"),
+            &recipient_cookie,
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    let (s, v) = f.request("GET", "/agents", &recipient_cookie, None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["items"], json!([]));
+    // An administrator sees it and can stop it, but cannot reshape it or mint a
+    // token that would act as its owner.
+    let (s, v) = f.request("GET", "/agents", &f.admin_cookie, None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["items"][0]["id"], json!(agent));
+    assert_eq!(v["items"][0]["owner"]["id"], json!(f.grantor));
+    // A request that changes nothing is refused before any write or audit row.
+    for body in [json!({}), json!({"paused":null,"name":null})] {
+        let (s, v) = f.request("PATCH", &path, &f.admin_cookie, Some(body)).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    }
+    for body in [
+        json!({"name":"Renamed"}),
+        json!({"max_level":"write"}),
+        json!({"cluster_ids":[f.cluster]}),
+        json!({"description":"x","paused":true}),
+    ] {
+        let (s, v) = f.request("PATCH", &path, &f.admin_cookie, Some(body)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    }
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("{path}/tokens"),
+            &f.admin_cookie,
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, v) = f
+        .request(
+            "PATCH",
+            &path,
+            &f.admin_cookie,
+            Some(json!({"paused":true})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["paused"], true);
+    assert_eq!(v["name"], "Reporter");
+    // The owner changes everything, within their own reach.
+    let (s, v) = f
+        .request(
+            "PATCH",
+            &path,
+            &f.grantor_cookie,
+            Some(
+                json!({"name":" Nightly report ","description":"Reads orders","paused":false,
+                "max_level":"write"}),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["name"], "Nightly report");
+    assert_eq!(v["paused"], false);
+    // Asking for the state it already has writes nothing.
+    let before = v["updated_at"].clone();
+    let (s, v) = f
+        .request(
+            "PATCH",
+            &path,
+            &f.grantor_cookie,
+            Some(json!({"paused":false,"max_level":"write"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["updated_at"], before);
+    let (s, v) = f
+        .request(
+            "PATCH",
+            &path,
+            &f.grantor_cookie,
+            Some(json!({"cluster_ids":[Uuid::new_v4()]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    for days in [0, 91, -1] {
+        let (s, v) = f
+            .request(
+                "POST",
+                &format!("{path}/tokens"),
+                &f.grantor_cookie,
+                Some(json!({"expires_in_days":days})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    }
+    // Five active tokens at most.
+    let mut tokens = vec![];
+    for _ in 0..5 {
+        tokens.push(new_token(&f, &f.grantor_cookie, agent).await);
+    }
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("{path}/tokens"),
+            &f.grantor_cookie,
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    // The secret is returned once and is stored nowhere.
+    let (s, v) = f.request("GET", &path, &f.grantor_cookie, None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["tokens"].as_array().unwrap().len(), 5);
+    let (_, secret) = &tokens[0];
+    assert!(secret.starts_with("vda_agent_"));
+    let body = secret.trim_start_matches("vda_agent_");
+    assert!(!v.to_string().contains(body));
+    let stored: String = sqlx::query_scalar(
+        "SELECT (SELECT string_agg(encode(token_hash,'escape')||hint,'') FROM agent_tokens)
+         ||(SELECT string_agg(details::text,'') FROM audit_log)",
+    )
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert!(!stored.contains(body));
+    // Revocation: another member cannot, an administrator can, and it is idempotent.
+    let revoke = format!("{path}/tokens/{}", tokens[0].0);
+    let (s, _) = f.request("DELETE", &revoke, &recipient_cookie, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = bearer(&f, "/agent/whoami", secret).await;
+    assert_eq!(s, StatusCode::OK);
+    for _ in 0..2 {
+        let (s, v) = f.request("DELETE", &revoke, &f.admin_cookie, None).await;
+        assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    }
+    let (s, _) = bearer(&f, "/agent/whoami", secret).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = f
+        .request(
+            "DELETE",
+            &format!("{path}/tokens/{}", Uuid::new_v4()),
+            &f.grantor_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // Every change is in the audit log under the person who made it.
+    let actions: Vec<(String, Uuid)> = sqlx::query_as(
+        "SELECT action,actor_id FROM audit_log WHERE action LIKE 'agent.%' ORDER BY created_at,id",
+    )
+    .fetch_all(&f.db)
+    .await
+    .unwrap();
+    // A raise of level in the same request as a resume is its own event, with
+    // the old and the new value. A no-op request left no row.
+    let details = |action: &'static str| {
+        let db = f.db.clone();
+        async move {
+            sqlx::query_scalar::<_, Value>(
+                "SELECT details FROM audit_log WHERE action=$1 ORDER BY created_at,id",
+            )
+            .bind(action)
+            .fetch_all(&db)
+            .await
+            .unwrap()
+        }
+    };
+    let updates = details("agent.update").await;
+    assert_eq!(updates.len(), 1, "{updates:?}");
+    assert_eq!(updates[0]["max_level"], json!({"from":"read","to":"write"}));
+    assert_eq!(
+        updates[0]["name"],
+        json!({"from":"Reporter","to":"Nightly report"})
+    );
+    let created = &details("agent.create").await[0];
+    assert_eq!(created["owner_id"], json!(f.grantor));
+    assert_eq!(created["cluster_ids"], json!([f.cluster]));
+    let minted = details("agent.token_create").await;
+    assert_eq!(minted.len(), 5);
+    assert!(minted.iter().any(|d| d["token_id"] == json!(tokens[0].0)));
+    assert_eq!(
+        details("agent.token_revoke").await[0]["token_id"],
+        json!(tokens[0].0)
+    );
+    for expected in [
+        ("agent.create", f.grantor),
+        ("agent.update", f.grantor),
+        ("agent.pause", f.admin),
+        ("agent.resume", f.grantor),
+        ("agent.token_create", f.grantor),
+        ("agent.token_revoke", f.admin),
+    ] {
+        assert!(
+            actions.iter().any(|(a, u)| (a.as_str(), *u) == expected),
+            "missing {expected:?} in {actions:?}"
+        );
+    }
+    // Deleting the agent removes its tokens.
+    let (s, _) = bearer(&f, "/agent/whoami", &tokens[1].1).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = f.request("DELETE", &path, &f.admin_cookie, None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    let (s, _) = bearer(&f, "/agent/whoami", &tokens[1].1).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        details("agent.delete").await.last(),
+        Some(&json!({"owner_id":f.grantor,"name":"Nightly report"}))
+    );
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM agent_tokens")
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn an_agent_token_works_only_at_the_agent_door_and_only_while_everything_is_valid() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    // The owner is a cluster administrator; the agent's ceiling is read.
+    let agent = new_agent(&f, &f.grantor_cookie, "Reader", "read").await;
+    let (token_id, token) = new_token(&f, &f.grantor_cookie, agent).await;
+    let (s, v) = bearer(&f, "/agent/whoami", &token).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["agent"]["id"], json!(agent));
+    assert_eq!(v["owner"]["email"], "grantor@harden.example");
+    assert_eq!(v["clusters"][0]["id"], json!(f.cluster));
+    assert_eq!(v["clusters"][0]["level"], "read");
+    assert!(!v.to_string().contains("password"));
+    // The session API never accepts an agent token, in any position.
+    for path in ["/auth/me", "/agents", "/clusters"] {
+        let (s, _) = bearer(&f, path, &token).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{path}");
+        let (s, _) = f
+            .request("GET", path, &format!("vda_session={token}"), None)
+            .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{path}");
+    }
+    // The agent door never accepts a session.
+    let (s, _) = f
+        .request("GET", "/agent/whoami", &f.grantor_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let session = f.grantor_cookie.trim_start_matches("vda_session=");
+    let body = token.trim_start_matches("vda_agent_");
+    for bad in [
+        String::new(),
+        session.to_owned(),
+        body.to_owned(),
+        format!("vda_agent_{session}"),
+        format!("{token}x"),
+        token.to_uppercase(),
+        format!("vda_agent_{}", "A".repeat(43)),
+    ] {
+        let (s, v) = bearer(&f, "/agent/whoami", &bad).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{bad:?}");
+        assert_eq!(v["error"]["code"], "unauthenticated");
+    }
+    // The agent door is outside the browser CSRF check. Without that header a
+    // wrong method is 405 and a missing token is 401, never the CSRF 403. The
+    // session API keeps its check.
+    for (path, cookie, bearer, expected) in [
+        (
+            "/api/v1/agent/whoami",
+            "",
+            Some(format!("Bearer {token}")),
+            StatusCode::METHOD_NOT_ALLOWED,
+        ),
+        ("/api/v1/agent/whoami", "", None, StatusCode::UNAUTHORIZED),
+        (
+            "/api/v1/agents",
+            f.grantor_cookie.as_str(),
+            None,
+            StatusCode::FORBIDDEN,
+        ),
+    ] {
+        let mut req = Request::post(path).header("cookie", cookie);
+        if let Some(bearer) = &bearer {
+            req = req.header("authorization", bearer);
+        }
+        let mut req = req.body(Body::empty()).unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo("127.0.0.1:1234".parse::<SocketAddr>().unwrap()));
+        let response = f.app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), expected, "{path}");
+    }
+    for scheme in ["bearer", "Basic", "Token"] {
+        let (s, _) = call(
+            &f.app,
+            "GET",
+            "/api/v1/agent/whoami",
+            "",
+            None,
+            Some(&format!("{scheme} {token}")),
+            "127.0.0.1:1234",
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{scheme}");
+    }
+    // Each of these stops the token at once; undoing it makes the token work again.
+    for (stop, undo) in [
+        (
+            format!("UPDATE agents SET paused=true WHERE id='{agent}'"),
+            format!("UPDATE agents SET paused=false WHERE id='{agent}'"),
+        ),
+        (
+            format!("UPDATE users SET disabled=true WHERE id='{}'", f.grantor),
+            format!("UPDATE users SET disabled=false WHERE id='{}'", f.grantor),
+        ),
+        (
+            format!("UPDATE agent_tokens SET expires_at=now() WHERE id='{token_id}'"),
+            format!(
+                "UPDATE agent_tokens SET expires_at=now()+interval '1 day' WHERE id='{token_id}'"
+            ),
+        ),
+    ] {
+        sqlx::query(&stop).execute(&f.db).await.unwrap();
+        let (s, v) = bearer(&f, "/agent/whoami", &token).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{stop} {v}");
+        sqlx::query(&undo).execute(&f.db).await.unwrap();
+        let (s, v) = bearer(&f, "/agent/whoami", &token).await;
+        assert_eq!(s, StatusCode::OK, "{undo} {v}");
+    }
+    // The agent loses a cluster the moment its owner does.
+    sqlx::query("UPDATE grants SET expires_at=now()-interval '1 second' WHERE user_id=$1")
+        .bind(f.grantor)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let (s, v) = bearer(&f, "/agent/whoami", &token).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["clusters"], json!([]));
+    let identity = vda_core::agents::authenticate(&f.db, &token).await.unwrap();
+    let error = vda_core::query::analyze(
+        &f.state.core,
+        &identity.actor,
+        f.cluster,
+        "SELECT 1",
+        "127.0.0.1".parse().unwrap(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, "forbidden");
+    // The network allowlist applies to the agent door too.
+    let (s, v) = f
+        .request(
+            "PUT",
+            "/settings/network",
+            &f.admin_cookie,
+            Some(json!({"allowed_cidrs":["127.0.0.1/32"],"trust_proxy_headers":false})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    f.state.invalidate_network().await;
+    let (s, _) = call(
+        &f.app,
+        "GET",
+        "/api/v1/agent/whoami",
+        "",
+        None,
+        Some(&format!("Bearer {token}")),
+        "10.9.8.7:1234",
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let used: bool =
+        sqlx::query_scalar("SELECT last_used_at IS NOT NULL FROM agent_tokens WHERE id=$1")
+            .bind(token_id)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    assert!(used);
+    // A person who changes their own password also ends their agents' tokens.
+    sqlx::query("DELETE FROM settings WHERE key='network'")
+        .execute(&f.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO settings(key,value) VALUES ('network','{\"allowed_cidrs\":[],\"trust_proxy_headers\":false}')")
+        .execute(&f.db)
+        .await
+        .unwrap();
+    f.state.invalidate_network().await;
+    sqlx::query("UPDATE grants SET expires_at=NULL WHERE user_id=$1")
+        .bind(f.grantor)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let (s, _) = bearer(&f, "/agent/whoami", &token).await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = f
+        .request(
+            "POST",
+            "/auth/change-password",
+            &f.grantor_cookie,
+            Some(json!({"current_password":"dummy-password-never-used",
+                "new_password":"a-new-long-password-93"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    let (s, _) = bearer(&f, "/agent/whoami", &token).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn agent_queries_are_capped_recorded_and_never_write_on_their_own() {
+    if std::env::var("VDA_TEST_POSTGRES_URL").is_err() {
+        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+        return;
+    }
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+    let input = |sql: &str| vda_core::query::QueryInput {
+        sql: sql.into(),
+        query_id: None,
+    };
+    // The fixture policy lets a person write without approval. The owner here
+    // is an organization administrator, the most powerful owner there is.
+    let reader = new_agent(&f, &f.admin_cookie, "Reader", "read").await;
+    let writer = new_agent(&f, &f.admin_cookie, "Writer", "write").await;
+    let (_, reader_token) = new_token(&f, &f.admin_cookie, reader).await;
+    let (_, writer_token) = new_token(&f, &f.admin_cookie, writer).await;
+    let reader = vda_core::agents::authenticate(&f.db, &reader_token)
+        .await
+        .unwrap();
+    let writer = vda_core::agents::authenticate(&f.db, &writer_token)
+        .await
+        .unwrap();
+    let core = &f.state.core;
+    let result = vda_core::query::run(
+        core,
+        &reader.actor,
+        f.cluster,
+        input("SELECT 1 AS n"),
+        ip,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.rows, vec![vec![json!(1)]]);
+    let write = "CREATE TABLE vda_agent_must_not_exist(id integer)";
+    // What an agent is told by analysis is what then happens when it runs.
+    let told = vda_core::query::analyze(
+        core,
+        &writer.actor,
+        f.cluster,
+        "DELETE FROM pg_class WHERE false",
+        ip,
+    )
+    .await
+    .unwrap();
+    assert_eq!(json!(told.verdict), "requires_approval");
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/clusters/{}/analyze", f.cluster),
+            &f.admin_cookie,
+            Some(json!({"sql":"DELETE FROM pg_class WHERE false"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["verdict"], "allow", "a person keeps the cluster policy");
+    for (actor, sql, code) in [
+        (
+            &reader.actor,
+            "DELETE FROM pg_class WHERE false",
+            "query_denied",
+        ),
+        (&reader.actor, write, "query_denied"),
+        (
+            &writer.actor,
+            "DELETE FROM pg_class WHERE false",
+            "approval_required",
+        ),
+        (&writer.actor, write, "query_denied"),
+    ] {
+        let error = vda_core::query::run(core, actor, f.cluster, input(sql), ip, false)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, code, "{sql}: {error}");
+    }
+    // A cluster outside the agent's list is unreachable, even for an administrator's agent.
+    let other = Uuid::new_v4();
+    sqlx::query("INSERT INTO clusters SELECT $1,project_id,'Other',engine,provider,region,environment,host,port,database,username,password_enc,tls_mode FROM clusters WHERE id=$2")
+        .bind(other).bind(f.cluster).execute(&f.db).await.unwrap();
+    sqlx::query(
+        "INSERT INTO cluster_policies SELECT $1,policy FROM cluster_policies WHERE cluster_id=$2",
+    )
+    .bind(other)
+    .bind(f.cluster)
+    .execute(&f.db)
+    .await
+    .unwrap();
+    let error = vda_core::query::run(core, &writer.actor, other, input("SELECT 1"), ip, false)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "forbidden");
+    // History and audit name the agent, under its owner.
+    let rows: Vec<(Option<Uuid>, Uuid, String)> =
+        sqlx::query_as("SELECT agent_id,user_id,status FROM query_history ORDER BY created_at,id")
+            .fetch_all(&f.db)
+            .await
+            .unwrap();
+    assert_eq!(rows.len(), 5, "{rows:?}");
+    assert!(rows.iter().all(|r| r.1 == f.admin && r.0.is_some()));
+    assert_eq!(rows[0], (Some(reader.agent_id), f.admin, "ok".into()));
+    assert!(rows[1..].iter().all(|r| r.2 == "blocked"));
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action='query.execute' AND details->>'agent_id'=$1",
+    )
+    .bind(writer.agent_id.to_string())
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(audited, 2);
+    // A person's own query has no agent.
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/clusters/{}/query", f.cluster),
+            &f.admin_cookie,
+            Some(json!({"sql":"SELECT 2"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let human: Option<Uuid> = sqlx::query_scalar(
+        "SELECT agent_id FROM query_history ORDER BY created_at DESC,id DESC LIMIT 1",
+    )
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(human, None);
+    // Cancellation: an agent stops only what it started, even when its owner
+    // is an administrator. A person can stop their own agent's query.
+    let running = |user_id, agent: Option<&vda_core::agents::AgentIdentity>| {
+        let id = Uuid::new_v4();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        core.active.insert(
+            id,
+            vda_core::ActiveQuery {
+                user_id,
+                agent: agent.map(|a| (a.agent_id, a.token_id)),
+                cancel: cancel.clone(),
+            },
+        );
+        (id, cancel)
+    };
+    let (mine, theirs) = (running(f.admin, Some(&reader)), running(f.grantor, None));
+    for (actor, query) in [(&reader.actor, theirs.0), (&writer.actor, mine.0)] {
+        let error = vda_core::query::cancel(core, actor, query).unwrap_err();
+        assert_eq!(error.code, "forbidden");
+    }
+    assert!(!mine.1.is_cancelled() && !theirs.1.is_cancelled());
+    vda_core::query::cancel(core, &reader.actor, mine.0).unwrap();
+    assert!(mine.1.is_cancelled());
+    let cancel_path = |id: Uuid| format!("/queries/{id}/cancel");
+    let (s, _) = f
+        .request("POST", &cancel_path(theirs.0), &f.admin_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert!(theirs.1.is_cancelled());
+    // A member owns an agent: they can stop its query, a stranger cannot.
+    let owned = new_agent(&f, &f.grantor_cookie, "Owned", "read").await;
+    let (_, owned_token) = new_token(&f, &f.grantor_cookie, owned).await;
+    let owned = vda_core::agents::authenticate(&f.db, &owned_token)
+        .await
+        .unwrap();
+    let query = running(f.grantor, Some(&owned));
+    let stranger = Fixture::session(&f.db, f.recipient).await;
+    let (s, _) = f
+        .request("POST", &cancel_path(query.0), &stranger, None)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = f
+        .request("POST", &cancel_path(query.0), &f.grantor_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert!(query.1.is_cancelled());
+    // Pause, revoke, owner-disable and delete each end what the agent is running.
+    let agent_path = format!("/agents/{}", owned.agent_id);
+    let other_agent = running(f.admin, Some(&writer));
+    let query = running(f.grantor, Some(&owned));
+    let (s, _) = f
+        .request(
+            "PATCH",
+            &agent_path,
+            &f.admin_cookie,
+            Some(json!({"paused":true})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(query.1.is_cancelled());
+    let query = running(f.grantor, Some(&owned));
+    let (s, _) = f
+        .request(
+            "DELETE",
+            &format!("{agent_path}/tokens/{}", owned.token_id),
+            &f.grantor_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert!(query.1.is_cancelled());
+    let (query, person) = (running(f.grantor, Some(&owned)), running(f.grantor, None));
+    let user_path = format!("/users/{}", f.grantor);
+    let (s, _) = f.request("DELETE", &user_path, &f.admin_cookie, None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert!(query.1.is_cancelled());
+    let query = running(f.grantor, Some(&owned));
+    let (s, _) = f
+        .request("DELETE", &agent_path, &f.admin_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert!(query.1.is_cancelled());
+    // Nothing else was touched: another agent's query and the person's own.
+    assert!(!other_agent.1.is_cancelled() && !person.1.is_cancelled());
+    // Enabling the account again does not bring its agent tokens back. The
+    // same holds for each way to take a person's credentials away.
+    let enable = json!({"disabled":false});
+    let (s, v) = f
+        .request("PATCH", &user_path, &f.admin_cookie, Some(enable.clone()))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    for (round, (method, body)) in [
+        ("DELETE", None),
+        ("PATCH", Some(json!({"disabled":true}))),
+        ("PATCH", Some(json!({"password":"a-new-long-password-93"}))),
+        ("PATCH", Some(json!({"org_role":"admin"}))),
+        ("PATCH", Some(json!({"org_role":"member"}))),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let cookie = Fixture::session(&f.db, f.grantor).await;
+        let agent = new_agent(&f, &cookie, &format!("Fresh {round}"), "read").await;
+        let (_, token) = new_token(&f, &cookie, agent).await;
+        let identity = vda_core::agents::authenticate(&f.db, &token).await.unwrap();
+        let (query, person) = (
+            running(f.grantor, Some(&identity)),
+            running(f.grantor, None),
+        );
+        let (s, v) = f
+            .request(method, &user_path, &f.admin_cookie, body.clone())
+            .await;
+        assert!(s.is_success(), "{method} {body:?} {v}");
+        assert!(query.1.is_cancelled(), "{method} {body:?}");
+        assert!(!person.1.is_cancelled(), "{method} {body:?}");
+        let (s, v) = f
+            .request("PATCH", &user_path, &f.admin_cookie, Some(enable.clone()))
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert!(
+            vda_core::agents::authenticate(&f.db, &token).await.is_err(),
+            "{method} {body:?} left the token alive"
+        );
+    }
+    // A change that takes nothing away leaves tokens and running queries
+    // alone. The third body is what the console sends when a name is fixed.
+    let cookie = Fixture::session(&f.db, f.grantor).await;
+    let agent = new_agent(&f, &cookie, "Kept", "read").await;
+    let (_, token) = new_token(&f, &cookie, agent).await;
+    let kept = vda_core::agents::authenticate(&f.db, &token).await.unwrap();
+    for body in [
+        json!({"disabled":false}),
+        json!({"org_role":"member"}),
+        json!({"name":"Typo fixed","org_role":"member","disabled":false}),
+        json!({"name":"Renamed"}),
+    ] {
+        let query = running(f.grantor, Some(&kept));
+        let (s, v) = f
+            .request("PATCH", &user_path, &f.admin_cookie, Some(body.clone()))
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert!(!query.1.is_cancelled(), "{body}");
+        assert!(
+            vda_core::agents::authenticate(&f.db, &token).await.is_ok(),
+            "{body} revoked a token"
+        );
+    }
+    let revoked: Vec<Option<Value>> = sqlx::query_scalar(
+        "SELECT details->'agent_tokens_revoked' FROM audit_log
+         WHERE action IN ('user.disable','user.update') AND target_id=$1 ORDER BY created_at,id",
+    )
+    .bind(f.grantor)
+    .fetch_all(&f.db)
+    .await
+    .unwrap();
+    // Five removals revoked one token each; the harmless edits revoked none and say nothing.
+    assert_eq!(
+        revoked.iter().filter(|v| **v == Some(json!(1))).count(),
+        5,
+        "{revoked:?}"
+    );
+    assert_eq!(revoked.last(), Some(&None));
+    // A repeated pause sweeps again, for a request that slipped past the first.
+    let kept_path = format!("/agents/{agent}");
+    for _ in 0..2 {
+        let query = running(f.grantor, Some(&kept));
+        let (s, _) = f
+            .request(
+                "PATCH",
+                &kept_path,
+                &f.admin_cookie,
+                Some(json!({"paused":true})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(query.1.is_cancelled());
+    }
+    core.active.clear();
+    // Deleting an agent keeps its history, without the link.
+    let (s, _) = f
+        .request(
+            "DELETE",
+            &format!("/agents/{}", reader.agent_id),
+            &f.admin_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let kept: (i64, i64) =
+        sqlx::query_as("SELECT count(*),count(agent_id) FROM query_history WHERE user_id=$1")
+            .bind(f.admin)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    // Six rows stay; only the two from the agent that still exists keep a link.
+    assert_eq!(kept, (6, 2));
+    f.close().await;
+}

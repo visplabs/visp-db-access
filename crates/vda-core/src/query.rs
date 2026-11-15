@@ -52,6 +52,23 @@ fn dialect(c: &ClusterRecord) -> vda_guard::Dialect {
         vda_guard::Dialect::Postgres
     }
 }
+/// The policy as it applies to this actor. Analysis and execution both use it,
+/// so what an actor is told always matches what then happens.
+fn for_actor(mut policy: Policy, actor: &Actor, approved: bool) -> Policy {
+    if approved {
+        policy.require_approval_for_writes = false;
+    } else if actor.agent.is_some() {
+        // An agent never writes on its own word. A person approves each write.
+        policy.require_approval_for_writes = true;
+    }
+    policy
+}
+/// Guard verdict plus the masking checks, for one statement text.
+fn judge(sql: &str, cluster: &ClusterRecord, level: AccessLevel, policy: &Policy) -> Analysis {
+    let mut analysis = vda_guard::analyze(sql, dialect(cluster), level, &policy.guard());
+    crate::masking::harden_analysis(&mut analysis, &policy.masked_columns, sql, dialect(cluster));
+    analysis
+}
 /// Analyze without target I/O, under the actor's current access and policy.
 pub async fn analyze(
     core: &Core,
@@ -70,9 +87,7 @@ pub async fn analyze(
     if !crate::network::allowed(ip, &crate::network::parse_cidrs(&policy.allowed_cidrs)?) {
         return Err(ApiError::forbidden());
     }
-    let mut analysis = vda_guard::analyze(sql, dialect(&c), level, &policy.guard());
-    crate::masking::harden_analysis(&mut analysis, &policy.masked_columns, sql, dialect(&c));
-    Ok(analysis)
+    Ok(judge(sql, &c, level, &for_actor(policy, actor, false)))
 }
 struct Registration {
     core: Core,
@@ -132,16 +147,8 @@ async fn run_inner(
         policy.statement_timeout_ms = policy.statement_timeout_ms.min(timeout_ms);
         policy.lock_timeout_ms = policy.lock_timeout_ms.min(policy.statement_timeout_ms);
     }
-    if approved {
-        policy.require_approval_for_writes = false;
-    }
-    let mut analysis = vda_guard::analyze(&body.sql, dialect(&c), level, &policy.guard());
-    crate::masking::harden_analysis(
-        &mut analysis,
-        &policy.masked_columns,
-        &body.sql,
-        dialect(&c),
-    );
+    let policy = for_actor(policy, actor, approved);
+    let analysis = judge(&body.sql, &c, level, &policy);
     let query_id = body.query_id.unwrap_or_else(Uuid::new_v4);
     let token = CancellationToken::new();
     match core.active.entry(query_id) {
@@ -149,7 +156,11 @@ async fn run_inner(
             return Err(ApiError::conflict("Query ID is already active"))
         }
         dashmap::mapref::entry::Entry::Vacant(v) => {
-            v.insert((actor.user_id, token.clone()));
+            v.insert(crate::ActiveQuery {
+                user_id: actor.user_id,
+                agent: actor.agent.as_ref().map(|a| (a.agent_id, a.token_id)),
+                cancel: token.clone(),
+            });
         }
     }
     let registration = Registration {
@@ -171,6 +182,7 @@ async fn run_inner(
         cluster_name: c.name.clone(),
         user_id: actor.user_id,
         user_email: actor.email.clone(),
+        agent_id: actor.agent.as_ref().map(|a| a.agent_id),
         sql: body.sql,
         verdict: verdict.clone(),
         status: if blocked { "blocked" } else { "running" }.into(),
@@ -191,7 +203,7 @@ async fn run_inner(
         target_type: Some("cluster".into()),
         target_id: Some(c.id),
         ip: Some(ip),
-        details: json!({"query_id":query_id,"history_id":history_id,"status":history.status}),
+        details: json!({"query_id":query_id,"history_id":history_id,"status":history.status,"agent_id":history.agent_id}),
         created_at: chrono::Utc::now(),
     };
     crate::audit::begin_query(&core.db, &history, &intent)
@@ -399,14 +411,14 @@ async fn pipeline(
         analysis,
     })
 }
-/// Cancel an active local query; only its owner or an organization administrator may.
+/// Cancel an active local query, when [`Actor::may_cancel`] allows it.
 pub fn cancel(core: &Core, actor: &Actor, query_id: Uuid) -> Result<(), ApiError> {
     let Some(query) = core.active.get(&query_id) else {
         return Err(ApiError::not_found());
     };
-    if query.0 != actor.user_id && !actor.org_admin {
+    if !actor.may_cancel(query.value()) {
         return Err(ApiError::forbidden());
     }
-    query.1.cancel();
+    query.cancel.cancel();
     Ok(())
 }

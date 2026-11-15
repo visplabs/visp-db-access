@@ -14,6 +14,8 @@ pub struct History {
     pub cluster_name: String,
     pub user_id: Uuid,
     pub user_email: String,
+    /// The agent that ran the query for this user, if any.
+    pub agent_id: Option<Uuid>,
     pub sql: String,
     pub verdict: String,
     pub status: String,
@@ -67,23 +69,26 @@ pub async fn begin_query(
     let mut tx = db.begin().await?;
     sqlx::query(
         "INSERT INTO query_history(id,cluster_id,cluster_ref,cluster_name,user_id,user_email,
-         sql,verdict,status,row_count,elapsed_ms,error,created_at,ip) VALUES ($1,$2,(SELECT id FROM clusters
-         WHERE id=$2),$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::text::inet)",
+         sql,verdict,status,row_count,elapsed_ms,error,created_at,ip,agent_id) VALUES ($1,$2,
+         (SELECT id FROM clusters WHERE id=$2),$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::text::inet,
+         (SELECT id FROM agents WHERE id=$14))",
     )
     .bind(history.id)
-.bind(history.cluster_id)
-.bind(&history.cluster_name)
-.bind(history.user_id)
+    .bind(history.cluster_id)
+    .bind(&history.cluster_name)
+    .bind(history.user_id)
     .bind(&history.user_email)
-.bind(&history.sql)
-.bind(&history.verdict)
-.bind(&history.status)
+    .bind(&history.sql)
+    .bind(&history.verdict)
+    .bind(&history.status)
     .bind(history.row_count)
-.bind(history.elapsed_ms)
-.bind(&history.error)
-.bind(event.created_at)
+    .bind(history.elapsed_ms)
+    .bind(&history.error)
+    .bind(event.created_at)
     .bind(event.ip.map(|ip| ip.to_string()))
-.execute(&mut *tx).await?;
+    .bind(history.agent_id)
+    .execute(&mut *tx)
+    .await?;
     persist_on(&mut tx, event).await?;
     tx.commit().await
 }

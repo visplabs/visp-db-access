@@ -39,6 +39,7 @@ impl User {
             user_id: self.id,
             email: self.email.clone(),
             org_admin: self.org_role == "admin",
+            agent: None,
         }
     }
 }
@@ -249,10 +250,22 @@ pub async fn change_password(
         .bind(user.id)
         .execute(&mut *tx)
         .await?;
+    // A password change cuts everything that acts as this person, as an
+    // administrator's reset does: a person who suspects a leak expects that.
+    let tokens = crate::agents::revoke_for_owner(&mut tx, user.id).await?;
+    let details = serde_json::json!({"agent_tokens_revoked":tokens});
     state
-        .audit_change(&mut tx, &user, "auth.change_password", Some(user.id), ip.0)
+        .audit_details(
+            &mut tx,
+            &user,
+            "auth.change_password",
+            Some(user.id),
+            ip.0,
+            details,
+        )
         .await?;
     tx.commit().await?;
+    crate::agents::stop_for_owner(&state, user.id);
     let mut expired = cookie(String::new(), state.config.cookie_secure);
     expired.make_removal();
     Ok((jar.add(expired), StatusCode::NO_CONTENT))

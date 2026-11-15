@@ -126,6 +126,17 @@ pub(crate) async fn update_user(
     };
     let revoke = body.disabled == Some(true) || password.is_some() || body.org_role.is_some();
     let mut tx = state.db.begin().await?;
+    // Agent tokens end only when something is really taken away. The console
+    // sends the role and the disabled flag on every save, also when unchanged.
+    let before: Option<(String, bool)> =
+        sqlx::query_as("SELECT org_role,disabled FROM users WHERE id=$1 FOR NO KEY UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let (old_role, was_disabled) = before.ok_or_else(ApiError::not_found)?;
+    let end_agents = password.is_some()
+        || (body.disabled == Some(true) && !was_disabled)
+        || body.org_role.as_ref().is_some_and(|role| *role != old_role);
     let result=sqlx::query(
 "UPDATE users SET
          name=COALESCE($2,name),org_role=COALESCE($3,org_role),disabled=COALESCE($4,disabled),password_hash=COALESCE($5,password_hash)
@@ -140,16 +151,26 @@ pub(crate) async fn update_user(
     if result.rows_affected() == 0 {
         return Err(ApiError::not_found());
     }
+    // Sessions end as they always did. A real disable, a password reset and a
+    // real role change also end the tokens of this person's agents.
+    let mut details = serde_json::json!({});
     if revoke {
         sqlx::query("DELETE FROM sessions WHERE user_id=$1")
             .bind(id)
             .execute(&mut *tx)
             .await?;
     }
+    if end_agents {
+        let tokens = crate::agents::revoke_for_owner(&mut tx, id).await?;
+        details = serde_json::json!({"agent_tokens_revoked":tokens});
+    }
     state
-        .audit_change(&mut tx, &user, "user.update", Some(id), ip.0)
+        .audit_details(&mut tx, &user, "user.update", Some(id), ip.0, details)
         .await?;
     tx.commit().await?;
+    if end_agents {
+        crate::agents::stop_for_owner(&state, id);
+    }
     Ok(Json(db::user(&state.db, id).await?))
 }
 pub(crate) async fn delete_user(
@@ -175,10 +196,14 @@ pub(crate) async fn delete_user(
         .bind(id)
         .execute(&mut *tx)
         .await?;
+    // Like sessions, agent tokens do not come back if the account is enabled again.
+    let tokens = crate::agents::revoke_for_owner(&mut tx, id).await?;
+    let details = serde_json::json!({"agent_tokens_revoked":tokens});
     state
-        .audit_change(&mut tx, &user, "user.disable", Some(id), ip.0)
+        .audit_details(&mut tx, &user, "user.disable", Some(id), ip.0, details)
         .await?;
     tx.commit().await?;
+    crate::agents::stop_for_owner(&state, id);
     Ok(StatusCode::NO_CONTENT)
 }
 
