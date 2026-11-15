@@ -28,14 +28,29 @@ pub(crate) fn cte_key(ident: &Ident, dialect: Dialect) -> String {
     }
 }
 
+/// Whether a blocked-table `pattern` (`table`, `schema.table`, `schema.*`,
+/// `*.table`, `catalog.schema.table`; case-insensitive globs) covers a
+/// normalized `relation`.
+///
+/// An unqualified relation resolves through PostgreSQL's `search_path` or the
+/// MySQL connection's current database, which the guard cannot see, so it
+/// matches a qualified pattern whenever the table part matches (fail closed).
+/// A qualified relation must match the schema part too. The catalog part of a
+/// three-part pattern is ignored, as relations keep only `schema.table`.
 pub(crate) fn matches(pattern: &str, relation: &str) -> bool {
     let pattern = pattern.to_lowercase();
-    let (schema, table) = relation.rsplit_once('.').unwrap_or(("", relation));
-    match pattern.rsplit_once('.') {
-        Some((schema_pattern, table_pattern)) => {
-            glob(schema_pattern, schema) && glob(table_pattern, table)
-        }
-        None => glob(&pattern, table),
+    let (schema, table) = match relation.rsplit_once('.') {
+        Some((schema, table)) => (Some(schema), table),
+        None => (None, relation),
+    };
+    let mut parts = pattern.rsplit('.');
+    let table_pattern = parts.next().unwrap_or_default();
+    if !glob(table_pattern, table) {
+        return false;
+    }
+    match (parts.next(), schema) {
+        (Some(schema_pattern), Some(schema)) => glob(schema_pattern, schema),
+        (None, _) | (Some(_), None) => true,
     }
 }
 
@@ -193,5 +208,51 @@ fn column_relations(column: &sqlparser::ast::ColumnDef, relations: &mut Vec<Obje
 fn option_relation(option: &sqlparser::ast::ColumnOption, relations: &mut Vec<ObjectName>) {
     if let sqlparser::ast::ColumnOption::ForeignKey(key) = option {
         relations.push(key.foreign_table.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matches;
+
+    #[test]
+    fn blocked_table_patterns() {
+        for (pattern, relation, expected) in [
+            // Unqualified relations can resolve to any schema.
+            ("public.users", "users", true),
+            ("PUBLIC.USERS", "users", true),
+            ("public.*", "users", true),
+            ("*.users", "users", true),
+            ("public.user*", "users_archive", true),
+            ("mydb.public.users", "users", true),
+            ("public.users", "orders", false),
+            ("public.users", "users_archive", false),
+            // Qualified relations must match the schema too.
+            ("public.users", "public.users", true),
+            ("public.users", "other.users", false),
+            ("public.*", "other.users", false),
+            ("public.*", "public.orders", true),
+            ("*.users", "other.users", true),
+            ("mydb.public.users", "public.users", true),
+            ("mydb.public.users", "other.users", false),
+            ("p*.users", "public.users", true),
+            ("p*.users", "other.users", false),
+            // Unqualified patterns match the table in every schema.
+            ("users", "users", true),
+            ("users", "other.users", true),
+            ("USERS", "public.users", true),
+            ("user*", "public.users_archive", true),
+            ("users", "public.orders", false),
+            // MySQL database-qualified names behave like schemas.
+            ("shop.users", "users", true),
+            ("shop.users", "shop.users", true),
+            ("shop.users", "other.users", false),
+        ] {
+            assert_eq!(
+                matches(pattern, relation),
+                expected,
+                "{pattern} vs {relation}"
+            );
+        }
     }
 }

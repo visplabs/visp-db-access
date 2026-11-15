@@ -2,6 +2,7 @@ import type { Health, Cluster } from '../../api/types';
 import { useAction, useResource } from '../../lib/query';
 import { Button, ErrorPanel, HealthBadge, Skeleton } from '../../components/ui';
 import { formatTime } from '../../lib/utils';
+import { tlsFailureHint } from '../../lib/tls';
 type HealthResponse = {
   current: Health;
   history: {
@@ -21,6 +22,7 @@ export function HealthPage({ cluster }: { cluster: Cluster }) {
       <ErrorPanel error={query.error} retry={() => void query.refetch()} />
     );
   const { current, history } = query.data;
+  const tlsHint = tlsFailureHint(current.status, cluster.tls_mode);
   const max = Math.max(10, ...history.map((h) => h.latency_ms ?? 0)) * 1.25;
   const paths: string[] = [];
   let path = '';
@@ -79,7 +81,12 @@ export function HealthPage({ cluster }: { cluster: Cluster }) {
       </div>
       {current.error && (
         <div className="callout danger" role="alert">
-          {current.error}
+          <div>
+            <strong>{current.error}</strong>
+            {tlsHint && (
+              <p>{tlsHint} Change it under Settings, then run Check now.</p>
+            )}
+          </div>
         </div>
       )}
       <div className="chart-card">

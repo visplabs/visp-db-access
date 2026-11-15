@@ -160,17 +160,27 @@ pub(crate) fn is_write(kind: StatementKind) -> bool {
     )
 }
 
+/// Whether EXPLAIN runs the statement. `ANALYSE` is PostgreSQL's synonym for
+/// `ANALYZE`. Any executing option wins; only a literal `false` argument is
+/// read as off, and every other argument (`true`, `on`, `off`, `0`, `1`,
+/// strings) fails closed as executing.
 pub(crate) fn explain_executes(statement: &Statement) -> bool {
     if let Statement::Explain {
         analyze, options, ..
     } = statement
     {
-        *analyze || options.iter().flatten().any(|option| {
-            option.name.value.eq_ignore_ascii_case("analyze") && !matches!(&option.arg, Some(Expr::Value(v)) if matches!(v.value, Value::Boolean(false)))
-        })
+        *analyze
+            || options.iter().flatten().any(|option| {
+                is_analyze(&option.name.value)
+                    && !matches!(&option.arg, Some(Expr::Value(v)) if matches!(v.value, Value::Boolean(false)))
+            })
     } else {
         false
     }
+}
+
+fn is_analyze(word: &str) -> bool {
+    word.eq_ignore_ascii_case("analyze") || word.eq_ignore_ascii_case("analyse")
 }
 
 pub(crate) fn is_plan_only(statement: &Statement) -> bool {

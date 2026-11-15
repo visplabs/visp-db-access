@@ -96,3 +96,15 @@ jobs:
         working-directory: web
       - run: npm run lint
         working-directory: web
+      - run: npm test
+        working-directory: web
+      # Browser tests run against the in-memory mock API (playwright.config.ts
+      # starts `npm run dev:mock`), so they need no server or database.
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: npm run test:e2e
+        working-directory: web
+        timeout-minutes: 15
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with: {name: playwright-results, path: web/test-results, retention-days: 7, if-no-files-found: ignore}

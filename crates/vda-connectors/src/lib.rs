@@ -229,6 +229,11 @@ pub enum ConnectorError {
 }
 
 /// A connection pool to one target endpoint (primary or replica).
+///
+/// Pools built by [`TargetPool::new_lazy`] reset or verify every session before
+/// reuse (PostgreSQL `DISCARD ALL`; MySQL lock release plus a comparison with a
+/// fresh session), so no request's session state reaches the next. Pools wrapped
+/// directly in a variant do not get that reset.
 #[derive(Debug, Clone)]
 pub enum TargetPool {
     /// PostgreSQL driver pool.

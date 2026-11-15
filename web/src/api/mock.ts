@@ -4,6 +4,7 @@ import { analyzeDemo } from './mock-guard';
 import { createMockDiscovery } from './mock-discovery';
 import { endpointChanged } from '../lib/connection';
 import { isCidr } from '../lib/utils';
+import { isLoopbackHost } from '../lib/tls';
 import type {
   Approval,
   Cluster,
@@ -508,6 +509,23 @@ export function createMockTransport({
         }
         if (!body.host || String(body.host).includes('invalid'))
           fail('upstream', 'Could not resolve database host.', 502);
+        // Like the Compose demo databases: no TLS, so strict TLS modes fail.
+        const host = String(body.host);
+        if (
+          (isLoopbackHost(host) || host.startsWith('demo-')) &&
+          (body.tls_mode === 'require' || body.tls_mode === 'verify_full')
+        )
+          return {
+            ...sampleCluster.health,
+            status: 'down',
+            latency_ms: null,
+            server_version: null,
+            is_replica: null,
+            active_connections: null,
+            max_connections: null,
+            error: 'Target database unavailable',
+            checked_at: now(),
+          };
         return {
           ...sampleCluster.health,
           status: 'healthy',

@@ -38,27 +38,38 @@ transaction, masked and audited. Engineers never see database credentials.
 
 ## Quick start
 
-With Docker Compose, choose an initial admin password and a stable master key
-(the server refuses to start without a valid 32-byte key):
+1. Start the gateway with Docker Compose. Choose an initial admin password and
+   a master key (the server refuses to start without a valid 32-byte key). The
+   `demo` profile adds PostgreSQL and MySQL databases with sample shop data:
 
-```sh
-export VDA_MASTER_KEY="$(openssl rand -base64 32)"
-export VDA_BOOTSTRAP_ADMIN_PASSWORD='choose-a-long-random-password'
-docker compose --profile demo up --build
-```
+   ```sh
+   export VDA_MASTER_KEY="$(openssl rand -base64 32)"
+   export VDA_BOOTSTRAP_ADMIN_PASSWORD='choose-a-long-random-password'
+   docker compose --profile demo up --build
+   ```
 
-Open <http://localhost:8080> and sign in as `admin@example.com`. The `demo`
-profile starts PostgreSQL and MySQL databases with sample shop data; register
-them in the console:
+2. Open <http://localhost:8080> and sign in as `admin@example.com` with that
+   password.
+3. Go to **Clusters → Add cluster**. On **Basics**, use **+ Create project** to
+   make a project, name the cluster, and set **Environment** to `development`
+   (production defaults block writes). Set **Provider** to `other`; any region
+   will do.
+4. On **Connection**, enter one of the demo databases below and set
+   **TLS mode** to `disable`: the demo databases have no certificate the
+   gateway can verify, so the default `verify full` cannot connect. Click **Test connection**; it should report
+   `healthy`.
 
-| Engine     | Host            | Port | Database | User   | Password          |
-| ---------- | --------------- | ---- | -------- | ------ | ----------------- |
-| PostgreSQL | `demo-postgres` | 5432 | `shop`   | `demo` | `demo-local-only` |
-| MySQL      | `demo-mysql`    | 3306 | `shop`   | `demo` | `demo-local-only` |
+   | Engine     | Host            | Port | Database | User   | Password          |
+   | ---------- | --------------- | ---- | -------- | ------ | ----------------- |
+   | PostgreSQL | `demo-postgres` | 5432 | `shop`   | `demo` | `demo-local-only` |
+   | MySQL      | `demo-mysql`    | 3306 | `shop`   | `demo` | `demo-local-only` |
 
-Use the `development` environment for the demo; production defaults block writes.
-Keep the master key in a secret manager and back it up with the metadata
-database: stored credentials can't be decrypted with a different key.
+5. Continue to **Review**, click **Create cluster**, open the new cluster and
+   run `SELECT * FROM customers`.
+
+Keep `verify full` for real databases: it checks the server certificate and
+host name. Keep the master key in a secret manager and back it up with the
+metadata database: stored credentials can't be decrypted with a different key.
 
 To try the console without any backend, run the UI in mock mode:
 

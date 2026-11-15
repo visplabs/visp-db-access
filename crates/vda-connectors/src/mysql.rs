@@ -8,13 +8,172 @@ use crate::{
 use futures::TryStreamExt;
 use sqlx::{mysql::MySqlPoolOptions, Executor, MySqlConnection, MySqlPool, Row};
 use std::{
-    sync::atomic::{AtomicU64, Ordering},
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex, PoisonError,
+    },
     time::Instant,
 };
 use tokio_util::sync::CancellationToken;
 
+/// Session variables that change on their own, or that `setup` overwrites
+/// before every statement, so they are excluded from the session comparison.
+const VOLATILE: &str = "'timestamp', 'statement_id', 'pseudo_thread_id', 'rand_seed1', \
+     'rand_seed2', 'warning_count', 'error_count', 'sql_mode', 'time_zone', \
+     'max_execution_time', 'max_statement_time', 'innodb_lock_wait_timeout', 'lock_wait_timeout'";
+
+/// One text-protocol round trip: release every `GET_LOCK` lock, then list the session
+/// identity (database, user, active roles) and every non-volatile session variable,
+/// plus user variables when `user_variables` is set and the server exposes them.
+fn probe(mariadb: bool, user_variables: bool) -> String {
+    let (session, user) = if mariadb {
+        (
+            "information_schema.SESSION_VARIABLES",
+            "SELECT CONCAT('@', VARIABLE_NAME), CONCAT(VARIABLE_TYPE, ':', VARIABLE_VALUE) \
+             FROM information_schema.USER_VARIABLES",
+        )
+    } else {
+        (
+            "performance_schema.session_variables",
+            "SELECT CONCAT('@', VARIABLE_NAME), VARIABLE_VALUE \
+             FROM performance_schema.user_variables_by_thread WHERE THREAD_ID = \
+             (SELECT THREAD_ID FROM performance_schema.threads WHERE PROCESSLIST_ID = CONNECTION_ID())",
+        )
+    };
+    // `/*!80000 ... */` runs on MySQL 8+ and every MariaDB (versions 10+), never on 5.7.
+    let mut sql = format!(
+        "DO RELEASE_ALL_LOCKS(); \
+         SELECT '~database', DATABASE() UNION ALL SELECT '~user', CURRENT_USER() \
+         /*!80000 UNION ALL SELECT '~role', CURRENT_ROLE() */ \
+         UNION ALL SELECT CONCAT('$', LOWER(VARIABLE_NAME)), VARIABLE_VALUE FROM {session} \
+         WHERE LOWER(VARIABLE_NAME) NOT IN ({VOLATILE})"
+    );
+    if user_variables {
+        sql.push_str(" UNION ALL ");
+        sql.push_str(user);
+    }
+    sql
+}
+
+type SessionState = BTreeMap<Vec<u8>, Option<Vec<u8>>>;
+enum Baseline {
+    /// The probe that worked on connect and the state it saw then.
+    Verified { probe: String, state: SessionState },
+    /// The server cannot list its session state: never reuse a connection.
+    Unverifiable,
+}
+
+/// The session state of a freshly configured connection, shared by a pool.
+///
+/// MySQL has `COM_RESET_CONNECTION`, but SQLx 0.8 cannot send it. Instead a
+/// released connection is compared with a fresh one and closed on any difference:
+/// role, database, session or user variables changed by a stored function or SET.
+/// Every connection of a pool logs in as the same account, so one baseline serves
+/// all; each new connection refreshes it.
+#[derive(Default)]
+struct SessionCheck {
+    baseline: Mutex<Option<Arc<Baseline>>>,
+    warned: AtomicBool,
+}
+impl SessionCheck {
+    async fn capture(&self, connection: &mut MySqlConnection) -> Result<(), sqlx::Error> {
+        let row = connection.fetch_one("SELECT VERSION()").await?;
+        let mariadb = row
+            .try_get_unchecked::<Vec<u8>, _>(0)?
+            .windows(7)
+            .any(|window| window == b"MariaDB");
+        let mut baseline = Baseline::Unverifiable;
+        for user_variables in [true, false] {
+            let probe = probe(mariadb, user_variables);
+            match session_state(connection, &probe).await {
+                Ok(state) => {
+                    if !user_variables {
+                        self.warn_once(
+                            "user variables are not visible to this account, so a stored \
+                             function that sets one is not detected; grant SELECT on \
+                             performance_schema.user_variables_by_thread and \
+                             performance_schema.threads to verify them",
+                        );
+                    }
+                    baseline = Baseline::Verified { probe, state };
+                    break;
+                }
+                // Missing tables, functions or privileges: try a narrower probe.
+                Err(sqlx::Error::Database(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        if matches!(baseline, Baseline::Unverifiable) {
+            self.warn_once(
+                "session state cannot be listed (needs RELEASE_ALL_LOCKS and readable \
+                 session variables); connections are closed after every use",
+            );
+        }
+        *self.baseline.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(baseline));
+        Ok(())
+    }
+
+    /// `Ok(true)` only when the released session matches a fresh one.
+    async fn verify(&self, connection: &mut MySqlConnection) -> Result<bool, sqlx::Error> {
+        let baseline = self
+            .baseline
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let Some(Baseline::Verified { probe, state }) = baseline.as_deref() else {
+            return Ok(false);
+        };
+        let current = session_state(connection, probe).await?;
+        if &current == state {
+            return Ok(true);
+        }
+        let changed: Vec<_> = current
+            .keys()
+            .chain(state.keys())
+            .filter(|key| current.get(*key) != state.get(*key))
+            .map(|key| String::from_utf8_lossy(key).into_owned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .take(8)
+            .collect();
+        tracing::warn!(
+            ?changed,
+            "MySQL session state changed during a request; closing the connection"
+        );
+        Ok(false)
+    }
+
+    fn warn_once(&self, message: &str) {
+        if !self.warned.swap(true, Ordering::Relaxed) {
+            tracing::warn!("MySQL session reset: {message}");
+        }
+    }
+}
+async fn session_state(
+    connection: &mut MySqlConnection,
+    probe: &str,
+) -> Result<SessionState, sqlx::Error> {
+    // Text protocol: values arrive as bytes whatever the column types unify to.
+    connection
+        .fetch_all(probe)
+        .await?
+        .iter()
+        .map(|row| Ok((row.try_get_unchecked(0)?, row.try_get_unchecked(1)?)))
+        .collect()
+}
+
+/// State no probe can see on every server: temporary tables (reads cannot create
+/// them inside READ ONLY transactions, writes can) and user variables named in the
+/// SQL. A `@` anywhere, even in a literal, costs at most one reconnect.
+fn reusable_after(sql: &str, write: bool) -> bool {
+    !write && !sql.contains('@')
+}
+
 pub(crate) fn pool(spec: &ConnectionSpec, options: PoolOptions) -> MySqlPool {
     let application = spec.application_name.clone();
+    let check = Arc::new(SessionCheck::default());
+    let released = check.clone();
     MySqlPoolOptions::new()
         .max_connections(options.max_connections)
         .min_connections(0)
@@ -23,6 +182,7 @@ pub(crate) fn pool(spec: &ConnectionSpec, options: PoolOptions) -> MySqlPool {
         .test_before_acquire(true)
         .after_connect(move |connection, _| {
             let application = application.clone();
+            let check = check.clone();
             Box::pin(async move {
                 match sqlx::query("SET SESSION transaction_read_only = ON")
                     .persistent(false)
@@ -47,8 +207,14 @@ pub(crate) fn pool(spec: &ConnectionSpec, options: PoolOptions) -> MySqlPool {
                     .persistent(false)
                     .execute(&mut *connection)
                     .await?;
-                Ok(())
+                check.capture(connection).await
             })
+        })
+        // Every connection the pool would reuse passes through here; a difference
+        // from a fresh session, an error or a timeout closes it instead.
+        .after_release(move |connection, _| {
+            let check = released.clone();
+            Box::pin(async move { cancel::bounded_reset(check.verify(connection)).await })
         })
         .connect_lazy_with(tls::mysql(spec))
 }
@@ -177,12 +343,12 @@ pub(crate) async fn execute(
                     },
                 )
                 .await?;
-                connection.clean();
+                finish(&mut connection, sql, write_cap.is_some());
                 Ok(result)
             }
             Err(error) => {
                 if command(&mut connection, "ROLLBACK").await.is_ok() {
-                    connection.clean();
+                    finish(&mut connection, sql, write_cap.is_some());
                 }
                 Err(error)
             }
@@ -205,6 +371,15 @@ pub(crate) async fn execute(
         result.elapsed_ms = limits::elapsed(start);
         result
     })
+}
+/// After COMMIT/ROLLBACK succeeded: pool the connection, where `after_release`
+/// verifies its session, or close it when it may hold unverifiable state.
+fn finish(connection: &mut GuardedConnection<sqlx::MySql>, sql: &str, write: bool) {
+    if reusable_after(sql, write) {
+        connection.clean();
+    } else {
+        connection.retire();
+    }
 }
 async fn read(
     connection: &mut MySqlConnection,
@@ -353,6 +528,51 @@ pub(crate) async fn health(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn session_probe_covers_locks_identity_and_variables() {
+        for mariadb in [false, true] {
+            let full = probe(mariadb, true);
+            let narrow = probe(mariadb, false);
+            for sql in [&full, &narrow] {
+                assert!(sql.starts_with("DO RELEASE_ALL_LOCKS();"));
+                for item in ["DATABASE()", "CURRENT_USER()", "CURRENT_ROLE()", VOLATILE] {
+                    assert!(sql.contains(item), "{item} missing from {sql}");
+                }
+                // Only one statement after the lock release: a single result set.
+                assert_eq!(sql.matches(';').count(), 1);
+            }
+            assert!(full.contains("USER_VARIABLES") || full.contains("user_variables_by_thread"));
+            assert!(!narrow.contains("user_variables"));
+            assert!(!narrow.contains("USER_VARIABLES"));
+            let source = if mariadb {
+                "information_schema.SESSION_VARIABLES"
+            } else {
+                "performance_schema.session_variables"
+            };
+            assert!(full.contains(source));
+        }
+        // Security-relevant variables are compared, never excluded as volatile.
+        for name in [
+            "transaction_read_only",
+            "sql_select_limit",
+            "character_set_results",
+            "foreign_key_checks",
+            "autocommit",
+        ] {
+            assert!(!VOLATILE.contains(&format!("'{name}'")));
+        }
+    }
+    #[test]
+    fn writes_and_user_variables_are_never_pooled() {
+        assert!(reusable_after("SELECT 1", false));
+        assert!(!reusable_after("SELECT 1", true));
+        assert!(!reusable_after("SELECT @leak := 1", false));
+        assert!(!reusable_after(
+            "SELECT 1 FROM t WHERE email = 'a@b.c'",
+            false
+        ));
+        assert!(!reusable_after("UPDATE t SET a = 1", true));
+    }
     #[test]
     fn parses_real_explain_plan_shape() {
         let plan = serde_json::json!({"query_block":{"select_id":1,"cost_info":{"query_cost":"1.20"},"table":{"table_name":"users","access_type":"ALL","rows_examined_per_scan":2,"cost_info":{"read_cost":"1.00","eval_cost":"0.20"}}}});

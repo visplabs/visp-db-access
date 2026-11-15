@@ -15,6 +15,11 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+/// Session settings applied after connecting and after every reset. `DISCARD ALL`
+/// restores startup-packet values (`application_name`, `TimeZone`) but not these.
+const SESSION_DEFAULTS: &str = "SET idle_in_transaction_session_timeout = '60s'; \
+     SET default_transaction_read_only = on; SET TIME ZONE 'UTC'";
+
 pub(crate) fn pool(spec: &ConnectionSpec, options: PoolOptions) -> PgPool {
     let application = spec.application_name.clone();
     PgPoolOptions::new()
@@ -32,20 +37,31 @@ pub(crate) fn pool(spec: &ConnectionSpec, options: PoolOptions) -> PgPool {
                     .persistent(false)
                     .execute(&mut *connection)
                     .await?;
-                for sql in [
-                    "SET idle_in_transaction_session_timeout = '60s'",
-                    "SET default_transaction_read_only = on",
-                    "SET TIME ZONE 'UTC'",
-                ] {
-                    sqlx::query(sql)
-                        .persistent(false)
-                        .execute(&mut *connection)
-                        .await?;
-                }
+                connection.execute(SESSION_DEFAULTS).await?;
                 Ok(())
             })
         })
+        // Every connection the pool would reuse passes through here; an error or
+        // timeout closes it instead.
+        .after_release(|connection, _| Box::pin(cancel::bounded_reset(reset(connection))))
         .connect_lazy_with(tls::postgres(spec))
+}
+
+/// Returns a released connection to its post-connect state.
+///
+/// `DISCARD ALL` is PostgreSQL's complete session reset: it releases session-level
+/// advisory locks (which survive ROLLBACK), closes cursors, runs `UNLISTEN *`,
+/// drops temporary tables and prepared statements, and resets every setting,
+/// role and session authorization. It refuses to run inside a transaction block,
+/// so a connection released mid-transaction is closed rather than reused.
+async fn reset(connection: &mut PgConnection) -> Result<bool, sqlx::Error> {
+    // Statements SQLx still tracks are about to disappear server-side; forget them
+    // first so the cache can never name a deallocated statement (no round trip
+    // when the cache is empty, as it is with this crate's zero-capacity cache).
+    connection.clear_cached_statements().await?;
+    connection.execute("DISCARD ALL").await?;
+    connection.execute(SESSION_DEFAULTS).await?;
+    Ok(true)
 }
 
 async fn setup(
@@ -137,14 +153,12 @@ pub(crate) async fn execute(
                     },
                 )
                 .await?;
-                clear_statements(&mut connection).await?;
+                // The pool's after_release reset clears session state before reuse.
                 connection.clean();
                 Ok(result)
             }
             Err(error) => {
-                if command(&mut connection, "ROLLBACK").await.is_ok()
-                    && clear_statements(&mut connection).await.is_ok()
-                {
+                if command(&mut connection, "ROLLBACK").await.is_ok() {
                     connection.clean();
                 }
                 Err(error)
@@ -170,20 +184,6 @@ pub(crate) async fn execute(
         result
     })
 }
-async fn clear_statements(connection: &mut PgConnection) -> Result<(), ConnectorError> {
-    connection
-        .clear_cached_statements()
-        .await
-        .map_err(cancel::error)?;
-    // SQLx metadata preparation uses named statements even with a zero-capacity cache.
-    // Remove those untracked server-side statements before reusing the connection.
-    connection
-        .execute("DEALLOCATE ALL")
-        .await
-        .map_err(cancel::error)?;
-    Ok(())
-}
-
 async fn describe(connection: &mut PgConnection, sql: &str) -> Result<Vec<Column>, ConnectorError> {
     Ok(decode::columns(
         connection
