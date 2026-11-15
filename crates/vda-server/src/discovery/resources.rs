@@ -283,7 +283,7 @@ pub(super) async fn sync(
         .audit_change(&mut tx, &user, "discovery.sync", Some(id), ip.0)
         .await?;
     tx.commit().await?;
-    state.pools.invalidate(cluster).await;
+    state.core.pools.invalidate(cluster).await;
     state.schema_cache.invalidate(&cluster).await;
     Ok(Json(
         crate::clusters::view(&state, &user, db::cluster(&state.db, cluster).await?).await?,

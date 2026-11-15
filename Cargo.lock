@@ -4048,6 +4048,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "vda-core"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "axum-core",
+ "base64 0.22.1",
+ "chrono",
+ "dashmap",
+ "http 1.5.0",
+ "ipnet",
+ "metrics",
+ "moka",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sqlparser",
+ "sqlx",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+ "vda-connectors",
+ "vda-guard",
+]
+
+[[package]]
 name = "vda-discovery"
 version = "0.1.0"
 dependencies = [
@@ -4081,7 +4108,6 @@ dependencies = [
 name = "vda-server"
 version = "0.1.0"
 dependencies = [
- "aes-gcm",
  "anyhow",
  "argon2",
  "async-trait",
@@ -4090,7 +4116,6 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
- "dashmap",
  "futures",
  "ipnet",
  "metrics",
@@ -4104,7 +4129,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "sqlparser",
  "sqlx",
  "subtle",
  "thiserror 2.0.21",
@@ -4116,6 +4140,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "vda-connectors",
+ "vda-core",
  "vda-discovery",
  "vda-guard",
 ]

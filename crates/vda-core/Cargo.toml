@@ -1,0 +1,33 @@
+[package]
+name = "vda-core"
+description = "visp-db-access query pipeline: policy, access, masking, audit and guarded execution, with no router or request handlers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+vda-guard.workspace = true
+vda-connectors.workspace = true
+sqlparser.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+sqlx.workspace = true
+axum-core.workspace = true
+http.workspace = true
+aes-gcm.workspace = true
+rand.workspace = true
+base64.workspace = true
+ipnet.workspace = true
+metrics.workspace = true
+dashmap.workspace = true
+moka.workspace = true
+
+[lints]
+workspace = true

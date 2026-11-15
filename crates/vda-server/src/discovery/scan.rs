@@ -22,6 +22,7 @@ pub(super) async fn run_route(
     let worker_state = state.clone();
     // A disconnected HTTP caller must not abandon the durable scan claim.
     let worker = state
+        .core
         .tasks
         .spawn(async move { run(&worker_state, source, Some(user.id), Some(ip.0)).await });
     let result = tokio::time::timeout(Duration::from_secs(60), worker)

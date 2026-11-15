@@ -124,20 +124,20 @@ async fn serve(
     )
     .with_graceful_shutdown(async move {
         shutdown_signal().await;
-        for query in shutdown_state.active.iter() {
+        for query in shutdown_state.core.active.iter() {
             query.1.cancel();
         }
     })
     .await;
-    state.tasks.close();
-    state.tasks.wait().await;
+    state.core.tasks.close();
+    state.core.tasks.wait().await;
     state.stop.cancel();
     scheduler.await?;
     discovery_scheduler.await?;
     // All HTTP handlers have drained; close the sender side through receiver.close.
     // Let bounded queued events finish before closing metadata storage.
     writer.await?;
-    state.pools.close().await;
+    state.core.pools.close().await;
     state.db.close().await;
     result?;
     Ok(())

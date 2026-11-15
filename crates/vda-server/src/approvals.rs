@@ -333,7 +333,7 @@ pub async fn execute(
         .audit_change(&mut tx, &user, "approval.execute", Some(id), ip.0)
         .await?;
     tx.commit().await?;
-    let tracker = state.tasks.clone();
+    let tracker = state.core.tasks.clone();
     let task = tracker.spawn(
         finish_execution(state, original, cluster, sql, id, ip.0, timeout_ms)
             .instrument(tracing::Span::current()),
@@ -350,9 +350,9 @@ async fn finish_execution(
     ip: std::net::IpAddr,
     timeout_ms: u64,
 ) -> Result<Json<Value>, ApiError> {
-    let result = crate::query::run_approved(
-        &state,
-        &requester,
+    let result = vda_core::query::run_approved(
+        &state.core,
+        &requester.actor(),
         cluster,
         QueryInput {
             sql,

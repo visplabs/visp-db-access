@@ -190,6 +190,7 @@ pub(crate) async fn insert(
 ) -> Result<Uuid, ApiError> {
     let id = Uuid::new_v4();
     let encrypted = state
+        .core
         .crypto
         .encrypt(id, &body.password)
         .map_err(|_| ApiError::internal())?;
@@ -235,7 +236,7 @@ pub(crate) async fn update(
     let mut tx = state.db.begin().await?;
     apply_patch(&state, &mut tx, &user, ip.0, current, patch).await?;
     tx.commit().await?;
-    state.pools.invalidate(id).await;
+    state.core.pools.invalidate(id).await;
     state.schema_cache.invalidate(&id).await;
     Ok(Json(
         view(&state, &user, db::cluster(&state.db, id).await?).await?,
@@ -286,6 +287,7 @@ pub(crate) async fn apply_patch(
     let password = match object.get("password") {
         Some(Value::String(password)) => json!(password),
         _ => json!(state
+            .core
             .crypto
             .decrypt(id, &current.password_enc)
             .map_err(|_| ApiError::credentials_unreadable(id))?),
@@ -305,6 +307,7 @@ pub(crate) async fn apply_patch(
     }
     body.validate(state).await?;
     let encrypted = state
+        .core
         .crypto
         .encrypt(id, &body.password)
         .map_err(|_| ApiError::internal())?;
@@ -370,7 +373,7 @@ pub(crate) async fn remove(
         .audit_change(&mut tx, &user, "cluster.delete", Some(id), ip.0)
         .await?;
     tx.commit().await?;
-    state.pools.invalidate(id).await;
+    state.core.pools.invalidate(id).await;
     state.schema_cache.invalidate(&id).await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -411,7 +414,7 @@ pub(crate) async fn put_policy(
         .audit_change(&mut tx, &user, "policy.update", Some(id), ip.0)
         .await?;
     tx.commit().await?;
-    state.pools.invalidate(id).await;
+    state.core.pools.invalidate(id).await;
     Ok(Json(body))
 }
 #[derive(Deserialize)]
@@ -436,7 +439,7 @@ pub(crate) async fn schema(
         }
     }
     let policy = db::policy(&state.db, c.id).await?;
-    let pools = state.pools.get(&state, &c, &policy).await?;
+    let pools = state.core.pools.get(&state.core, &c, &policy).await?;
     let _permit =
         tokio::time::timeout(std::time::Duration::from_secs(2), pools.semaphore.acquire())
             .await
@@ -487,6 +490,7 @@ pub(crate) async fn test_connection(
                 ));
             }
             state
+                .core
                 .crypto
                 .decrypt(id, &c.password_enc)
                 .map_err(|_| ApiError::credentials_unreadable(id))?
