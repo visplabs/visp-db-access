@@ -181,6 +181,19 @@ impl AppState {
         id: Option<Uuid>,
         ip: IpAddr,
     ) -> Result<(), ApiError> {
+        self.audit_details(tx, user, action, id, ip, serde_json::json!({}))
+            .await
+    }
+    /// Like [`Self::audit_change`], with what changed. Never put a secret in `details`.
+    pub async fn audit_details(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        user: &User,
+        action: &str,
+        id: Option<Uuid>,
+        ip: IpAddr,
+        details: serde_json::Value,
+    ) -> Result<(), ApiError> {
         crate::audit::persist_on(
             tx,
             &Event {
@@ -190,7 +203,7 @@ impl AppState {
                 target_type: action.split('.').next().map(str::to_owned),
                 target_id: id,
                 ip: Some(ip),
-                details: serde_json::json!({}),
+                details,
                 created_at: chrono::Utc::now(),
             },
         )
@@ -262,6 +275,21 @@ pub fn router(state: AppState) -> Router {
         .route("/approvals/{id}/approve", post(crate::approvals::approve))
         .route("/approvals/{id}/reject", post(crate::approvals::reject))
         .route("/approvals/{id}/execute", post(crate::approvals::execute))
+        .route(
+            "/agents",
+            get(crate::agents::list).post(crate::agents::create),
+        )
+        .route(
+            "/agents/{id}",
+            get(crate::agents::get)
+                .patch(crate::agents::update)
+                .delete(crate::agents::remove),
+        )
+        .route("/agents/{id}/tokens", post(crate::agents::create_token))
+        .route(
+            "/agents/{id}/tokens/{token_id}",
+            delete(crate::agents::revoke_token),
+        )
         .route("/audit", get(crate::admin::audit))
         .route(
             "/settings/network",
@@ -275,10 +303,20 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             crate::auth::authenticate,
         ));
+    // The agent door: a bearer token, never a session cookie.
+    let agent = Router::new()
+        .route("/agent/whoami", get(crate::agents::whoami))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::agents::authenticate,
+        ));
+    // The CSRF header protects cookie sessions in a browser. A bearer token is
+    // not sent by a browser on its own, so the agent door does not need it.
     let api = protected
         .route("/auth/login", post(crate::auth::login))
         .fallback(|| async { ApiError::not_found() })
-        .layer(middleware::from_fn(crate::auth::csrf));
+        .layer(middleware::from_fn(crate::auth::csrf))
+        .merge(agent);
     Router::new()
         .nest("/api/v1", api)
         .route("/healthz", get(|| async { "ok" }))
@@ -353,6 +391,7 @@ async fn audit_mutation(State(state): State<AppState>, req: Request, next: Next)
             "/projects",
             "/clusters",
             "/grants",
+            "/agents",
             "/approvals",
             "/settings",
             "/discovery",

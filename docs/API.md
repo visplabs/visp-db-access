@@ -382,6 +382,72 @@ database, username, password, tls_mode, replica_host?, replica_port?, tags?}` �
 - `POST /approvals/:id/reject` `{note}` → `Approval`
 - `POST /approvals/:id/execute` → `Approval` with `result` (requester or approver; once; approval valid 24h)
 
+### Agents
+
+An agent is a non-human caller that acts for one person, its owner. Its access
+is the owner's access at request time, narrowed to `cluster_ids` and capped at
+`max_level`. It is never wider. When the owner loses a grant, the agent loses it
+on its next request.
+
+Pausing or deleting an agent, revoking a token, and disabling the owner all take
+effect at once: new requests get 401, and the queries that the agent is running
+on the node that handled the change are cancelled. On other nodes a running query
+ends at its statement timeout. Three events also revoke every token of the owner's agents: a disable, a password
+change (by an org admin or by the owner at `POST /auth/change-password`), and a
+change of organization role. Only a real change counts; sending the same role
+again, or a rename, revokes nothing. Enabling the account again does not bring
+the tokens back. The audit event carries `agent_tokens_revoked`.
+
+A pause is not a lock: the owner can resume an agent that an org admin paused.
+For a stop that the owner cannot undo, delete the agent or disable the owner.
+
+`Agent` is `{id, name, description, max_level: "read"|"write", paused, owner: {id, email, name},
+cluster_ids: uuid[], tokens: AgentToken[], created_at, updated_at}`.
+`AgentToken` is `{id, hint, created_at, expires_at, revoked_at, last_used_at}`; `hint` is the
+last four characters of the token. A token digest is never returned.
+
+- `GET /agents?limit=50&cursor=` → `{items: Agent[], next_cursor}`. The caller's own agents;
+  an org admin sees every agent.
+- `POST /agents` `{name, description?, max_level? = "read", cluster_ids}` → `Agent`. The caller
+  becomes the owner. `name` is trimmed, then must be 1–100 characters with no invisible, blank or
+  direction-changing characters (a plain space is fine; joiners and the emoji selector are
+  allowed only after a non-ASCII character), and unique per owner without regard to case (409 `conflict`).
+  `cluster_ids` holds 1–100 clusters, each one the caller can access now (400 `validation`
+  otherwise). At most 50 agents per owner (409).
+- `GET /agents/:id` → `Agent` (owner or org admin; 404 for everyone else).
+- `PATCH /agents/:id` `{name?, description?, max_level?, cluster_ids?, paused?}` → `Agent`.
+  The owner can change every field. An org admin who is not the owner can change only
+  `paused` (403 `forbidden` if any other field is present). A body with no field is 400.
+  A body that asks for the state the agent already has returns the agent and writes nothing.
+- `DELETE /agents/:id` → `204` (owner or org admin). Deletes its tokens. Query history
+  stays, without the link to the agent.
+- `POST /agents/:id/tokens` `{expires_in_days? = 30}` → `{id, token, hint, expires_at}` (owner
+  only). A JSON body is required; send `{}` for the default. `token` is `vda_agent_` followed
+  by 43 characters. It is returned once and cannot be read again. Lifetime is 1–90 days. At
+  most 5 active tokens per agent (409).
+- `DELETE /agents/:id/tokens/:token_id` → `204` (owner or org admin). Repeating it is harmless.
+
+Agent rules in the query pipeline:
+
+- A write by an agent always needs approval, even when the cluster policy lets people
+  write without one. Analysis says so too: its verdict is `requires_approval`.
+- An agent has no organization powers, even when its owner is an org admin.
+- An agent can cancel only the queries that it started. Its owner can cancel them too.
+- Query history has `agent_id` (null for a person's own query); `user_id` and `user_email`
+  hold the owner. `query.execute` audit details also carry `agent_id`.
+
+### Agent door (bearer token, no session)
+
+These endpoints take `Authorization: Bearer <agent token>` and never a session cookie.
+The scheme name is `Bearer`, with that exact case. The session API above never accepts
+an agent token. The network allowlist applies. The `X-Requested-With` header is not
+needed on the endpoints listed here. Every authentication failure is the same `401 unauthenticated`: unknown,
+malformed, expired or revoked token, paused agent, disabled owner.
+
+- `GET /agent/whoami` → `{agent: {id, name, max_level}, owner: {email},
+clusters: [{id, name, engine, provider, region, environment, level}]}`. `clusters` lists
+  only what the agent can reach now, with its effective `level`.
+
 ### Audit
 
 - `GET /audit?action=&actor_id=&limit=&cursor=` → `{items: AuditEvent[], next_cursor}` (org admin).
@@ -390,7 +456,12 @@ database, username, password, tls_mode, replica_host?, replica_port?, tags?}` �
   details contain `{query_id, history_id, status}` with initial `running`/`blocked`
   status. Final outcome is in history. Approval actions include `approval.create`,
   `approval.approve`, `approval.reject`, `approval.execute` (claim), `approval.executed`,
-  and `approval.failed`. Administrative actions use `*.create`, `*.update`, `*.delete`.
+  and `approval.failed`. Administrative actions use `*.create`, `*.update`, `*.delete`. Agent actions are
+  `agent.create` (`{owner_id, name, max_level, cluster_ids}`), `agent.update` (each changed
+  field as `{from, to}`, except `description`, which is only marked `"changed"`; a change of name, level or clusters is always its own event, also
+  when the same request pauses or resumes), `agent.pause`, `agent.resume`, `agent.delete`
+  (`{owner_id, name}`), `agent.token_create` (`{token_id, hint, expires_at}`) and
+  `agent.token_revoke` (`{token_id}`). A token is never written to the audit log.
 
 ### Settings
 
