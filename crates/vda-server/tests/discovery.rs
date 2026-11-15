@@ -232,11 +232,11 @@ impl Fixture {
             "database":"shop","username":"shop_reader","password":"target-password","tls_mode":"disable"})
     }
     async fn close(self) {
-        self.state.tasks.close();
-        self.state.tasks.wait().await;
+        self.state.core.tasks.close();
+        self.state.core.tasks.wait().await;
         self.state.stop.cancel();
         self.writer.await.unwrap();
-        self.state.pools.close().await;
+        self.state.core.pools.close().await;
         self.db.close().await;
         sqlx::query(&format!("DROP SCHEMA {} CASCADE", self.schema))
             .execute(&self.root)
@@ -335,10 +335,15 @@ async fn source_crud_validates_inputs_and_external_id_is_encrypted_and_write_onl
             .unwrap();
     assert_ne!(ciphertext, "tenant-secret-unique");
     assert_eq!(
-        f.state.crypto.decrypt(id, &ciphertext).unwrap(),
+        f.state.core.crypto.decrypt(id, &ciphertext).unwrap(),
         "tenant-secret-unique"
     );
-    assert!(f.state.crypto.decrypt(Uuid::new_v4(), &ciphertext).is_err());
+    assert!(f
+        .state
+        .core
+        .crypto
+        .decrypt(Uuid::new_v4(), &ciphertext)
+        .is_err());
     let (_, listed) = f.request("GET", "/discovery/sources", None).await;
     assert_write_only(&listed, "tenant-secret-unique");
     let path = format!("/discovery/sources/{id}");
@@ -643,7 +648,7 @@ async fn import_creates_encrypted_cluster_and_drift_sync_requires_password() {
         .await
         .unwrap();
     assert_eq!(
-        f.state.crypto.decrypt(id, &ciphertext).unwrap(),
+        f.state.core.crypto.decrypt(id, &ciphertext).unwrap(),
         "target-password"
     );
     let policy = vda_server::db::policy(&f.db, id).await.unwrap();
@@ -696,7 +701,11 @@ async fn import_creates_encrypted_cluster_and_drift_sync_requires_password() {
     assert_eq!(synced["replica_host"], "127.0.0.3");
     let stored = vda_server::db::cluster(&f.db, id).await.unwrap();
     assert_eq!(
-        f.state.crypto.decrypt(id, &stored.password_enc).unwrap(),
+        f.state
+            .core
+            .crypto
+            .decrypt(id, &stored.password_enc)
+            .unwrap(),
         "new-target-password"
     );
     let page = f.resources(&source).await;

@@ -17,7 +17,7 @@ fake-discovery = ["vda-discovery/fake"]
 vda-discovery.workspace = true
 regex.workspace = true
 vda-guard.workspace = true
-sqlparser.workspace = true
+vda-core.workspace = true
 vda-connectors.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -39,7 +39,6 @@ tower-http.workspace = true
 rust-embed.workspace = true
 mime_guess.workspace = true
 argon2.workspace = true
-aes-gcm.workspace = true
 rand.workspace = true
 base64.workspace = true
 sha2.workspace = true
@@ -48,7 +47,6 @@ ipnet.workspace = true
 clap.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
-dashmap.workspace = true
 moka.workspace = true
 
 [dev-dependencies]

@@ -1,5 +1,5 @@
 //! Idle-evicting target pool cache and per-cluster concurrency limits.
-use crate::{app::AppState, db::ClusterRecord, error::ApiError, policy::Policy};
+use crate::{error::ApiError, policy::Policy, records::ClusterRecord, Core};
 use moka::future::Cache;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
@@ -35,7 +35,7 @@ impl Pools {
     /// Load a versioned pool bundle, coalescing concurrent creation.
     pub async fn get(
         &self,
-        state: &AppState,
+        core: &Core,
         cluster: &ClusterRecord,
         policy: &Policy,
     ) -> Result<Arc<ClusterPools>, ApiError> {
@@ -44,12 +44,12 @@ impl Pools {
             .cache
             .try_get_with(key, async {
                 let primary = TargetPool::new_lazy(
-                    &connection_spec(state, cluster, false).await?,
+                    &connection_spec(core, cluster, false).await?,
                     PoolOptions::default(),
                 )?;
                 let replica = if cluster.replica_host.is_some() {
                     Some(TargetPool::new_lazy(
-                        &connection_spec(state, cluster, true).await?,
+                        &connection_spec(core, cluster, true).await?,
                         PoolOptions::default(),
                     )?)
                 } else {
@@ -95,7 +95,7 @@ impl Pools {
 }
 /// Decrypt and validate credentials immediately before opening a pool.
 pub async fn connection_spec(
-    state: &AppState,
+    core: &Core,
     cluster: &ClusterRecord,
     replica: bool,
 ) -> Result<ConnectionSpec, ApiError> {
@@ -113,7 +113,7 @@ pub async fn connection_spec(
         cluster.port
     })
     .map_err(|_| ApiError::internal())?;
-    crate::network::validate_host(&host, port, state.config.allow_private_targets).await?;
+    crate::network::validate_host(&host, port, core.allow_private_targets).await?;
     let engine = match cluster.engine.as_str() {
         "postgres" => Engine::Postgres,
         "mysql" => Engine::Mysql,
@@ -132,7 +132,7 @@ pub async fn connection_spec(
         port,
         database: cluster.database.clone(),
         username: cluster.username.clone(),
-        password: state
+        password: core
             .crypto
             .decrypt(cluster.id, &cluster.password_enc)
             .map_err(|_| ApiError::credentials_unreadable(cluster.id))?
@@ -153,13 +153,13 @@ fn pool_metrics(cluster: Uuid, endpoint: &'static str, pool: &TargetPool) {
 }
 
 /// Revalidate primary and replica DNS, including when pools are already cached.
-pub async fn validate_endpoints(state: &AppState, cluster: &ClusterRecord) -> Result<(), ApiError> {
+pub async fn validate_endpoints(core: &Core, cluster: &ClusterRecord) -> Result<(), ApiError> {
     let port = u16::try_from(cluster.port).map_err(|_| ApiError::internal())?;
-    crate::network::validate_host(&cluster.host, port, state.config.allow_private_targets).await?;
+    crate::network::validate_host(&cluster.host, port, core.allow_private_targets).await?;
     if let Some(host) = &cluster.replica_host {
         let port = u16::try_from(cluster.replica_port.unwrap_or(cluster.port))
             .map_err(|_| ApiError::internal())?;
-        crate::network::validate_host(host, port, state.config.allow_private_targets).await?;
+        crate::network::validate_host(host, port, core.allow_private_targets).await?;
     }
     Ok(())
 }

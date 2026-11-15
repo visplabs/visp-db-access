@@ -32,6 +32,16 @@ pub struct User {
     pub created_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
 }
+impl User {
+    /// The identity the query pipeline runs this user's requests as.
+    pub fn actor(&self) -> vda_core::access::Actor {
+        vda_core::access::Actor {
+            user_id: self.id,
+            email: self.email.clone(),
+            org_admin: self.org_role == "admin",
+        }
+    }
+}
 /// A login body; debug deliberately excludes credentials.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

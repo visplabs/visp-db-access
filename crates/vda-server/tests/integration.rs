@@ -391,12 +391,12 @@ async fn authenticated_crud_policy_authorization_and_four_eyes() {
             .await
         });
         for _ in 0..100 {
-            if state.active.contains_key(&query_id) {
+            if state.core.active.contains_key(&query_id) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert!(state.active.contains_key(&query_id));
+        assert!(state.core.active.contains_key(&query_id));
         let (status, busy, _) = request(
             &app,
             "POST",
@@ -564,8 +564,8 @@ async fn authenticated_crud_policy_authorization_and_four_eyes() {
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, _, _) = request(&app, "GET", "/auth/me", Some(&cookie), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    state.tasks.close();
-    state.tasks.wait().await;
+    state.core.tasks.close();
+    state.core.tasks.wait().await;
     state.stop.cancel();
     writer.await.unwrap();
     let audit_count: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_log")

@@ -34,18 +34,15 @@ pub struct AppState {
     /// Short-lived, actor-scoped draft test summaries transferred on saving.
     pub discovery_tests: Cache<(Uuid, [u8; 32]), serde_json::Value>,
     pub config: Arc<Config>,
-    pub crypto: Crypto,
-    pub pools: crate::pools::Pools,
-    pub active: Arc<dashmap::DashMap<Uuid, (Uuid, CancellationToken)>>,
+    /// Query pipeline state; `db` above is a handle to the same pool.
+    pub core: vda_core::Core,
     pub schema_cache: Cache<Uuid, (chrono::DateTime<chrono::Utc>, vda_connectors::SchemaTree)>,
     pub audit_sender: mpsc::Sender<Event>,
     pub stop: CancellationToken,
-    pub tasks: tokio_util::task::TaskTracker,
     pub password_workers: Arc<Semaphore>,
     pub dummy_password_hash: String,
     network_cache: Cache<(), NetworkSettings>,
     account_failures: Cache<String, Arc<AtomicU32>>,
-    pub replica_health: Cache<Uuid, bool>,
     login_rates: Cache<(IpAddr, String), Arc<AtomicU32>>,
     pub prometheus: Option<metrics_exporter_prometheus::PrometheusHandle>,
 }
@@ -85,32 +82,25 @@ impl AppState {
         let writer = tokio::spawn(crate::audit::writer(db.clone(), receiver, stop.clone()));
         Ok((
             Self {
-                db,
                 discovery,
                 discovery_tests: Cache::builder()
                     .max_capacity(512)
                     .time_to_live(Duration::from_secs(600))
                     .build(),
+                core: vda_core::Core::new(db.clone(), crypto, config.allow_private_targets),
+                db,
                 config: Arc::new(config),
-                crypto,
-                pools: crate::pools::Pools::new(),
-                active: Arc::new(dashmap::DashMap::new()),
                 schema_cache: Cache::builder()
                     .max_capacity(512)
                     .time_to_live(Duration::from_secs(300))
                     .build(),
                 audit_sender,
                 stop,
-                tasks: tokio_util::task::TaskTracker::new(),
                 password_workers: Arc::new(Semaphore::new(8)),
                 dummy_password_hash,
                 network_cache: Cache::builder()
                     .max_capacity(1)
                     .time_to_live(Duration::from_secs(30))
-                    .build(),
-                replica_health: Cache::builder()
-                    .max_capacity(512)
-                    .time_to_live(Duration::from_secs(5))
                     .build(),
                 account_failures: Cache::builder()
                     .max_capacity(20000)

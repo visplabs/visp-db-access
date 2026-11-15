@@ -129,6 +129,7 @@ async fn config_snapshot(
     let external_id = encrypted
         .map(|v| {
             state
+                .core
                 .crypto
                 .decrypt(id, &v)
                 .map(SecretString::from)
@@ -170,6 +171,7 @@ pub(super) async fn create(
         .as_ref()
         .map(|v| {
             state
+                .core
                 .crypto
                 .encrypt(id, v)
                 .map_err(|_| ApiError::internal())
@@ -210,6 +212,7 @@ pub(super) async fn update(
         .as_ref()
         .map(|v| {
             state
+                .core
                 .crypto
                 .decrypt(id, v)
                 .map_err(|_| ApiError::internal())
@@ -230,6 +233,7 @@ pub(super) async fn update(
             .as_ref()
             .map(|v| {
                 state
+                    .core
                     .crypto
                     .encrypt(id, v)
                     .map_err(|_| ApiError::internal())
@@ -243,6 +247,7 @@ pub(super) async fn update(
         .as_ref()
         .map(|v| {
             state
+                .core
                 .crypto
                 .decrypt(id, v)
                 .map(SecretString::from)

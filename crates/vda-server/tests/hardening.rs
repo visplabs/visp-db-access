@@ -199,11 +199,11 @@ impl Fixture {
         id
     }
     async fn close(self) {
-        self.state.tasks.close();
-        self.state.tasks.wait().await;
+        self.state.core.tasks.close();
+        self.state.core.tasks.wait().await;
         self.state.stop.cancel();
         self.writer.await.unwrap();
-        self.state.pools.close().await;
+        self.state.core.pools.close().await;
         self.db.close().await;
         sqlx::query(&format!("DROP SCHEMA {} CASCADE", self.schema))
             .execute(&self.root)
@@ -296,6 +296,7 @@ async fn endpoint_changes_and_delegation_cannot_reuse_or_extend_authority() {
     let fresh = vda_server::db::cluster(&f.db, f.cluster).await.unwrap();
     assert_eq!(
         f.state
+            .core
             .crypto
             .decrypt(f.cluster, &fresh.password_enc)
             .unwrap(),
@@ -681,7 +682,7 @@ async fn query_intent_is_durable_unique_fail_closed_and_masks_diagnostics() {
         .await
         .unwrap();
     assert_eq!(email, "secret-address");
-    assert!(f.state.active.is_empty());
+    assert!(f.state.core.active.is_empty());
     sqlx::query("DROP TRIGGER fail_history ON query_history")
         .execute(&f.db)
         .await
@@ -1006,7 +1007,7 @@ async fn account_lock_applies_across_source_ips_and_dns_is_checked_on_cached_hea
     if std::env::var_os("VDA_TEST_POSTGRES_URL").is_some() {
         let c = vda_server::db::cluster(&f.db, f.cluster).await.unwrap();
         let p = vda_server::db::policy(&f.db, f.cluster).await.unwrap();
-        f.state.pools.get(&f.state, &c, &p).await.unwrap();
+        f.state.core.pools.get(&f.state.core, &c, &p).await.unwrap();
         // Keep the pool's version key to simulate an endpoint whose DNS changed
         // after a pool was cached. Health must validate even on a cache hit.
         sqlx::query("UPDATE clusters SET host='169.254.169.254' WHERE id=$1")

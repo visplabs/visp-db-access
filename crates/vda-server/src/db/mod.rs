@@ -1,33 +1,10 @@
 //! Metadata models and runtime-checked PostgreSQL repositories.
 pub mod cursor;
-use crate::{error::ApiError, policy::Policy};
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use crate::error::ApiError;
+use serde::Deserialize;
 use uuid::Uuid;
+pub use vda_core::records::{cluster, policy, ClusterRecord};
 
-/// Stored cluster configuration; credential ciphertext is never serialized.
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct ClusterRecord {
-    pub id: Uuid,
-    pub project_id: Uuid,
-    pub name: String,
-    pub engine: String,
-    pub provider: String,
-    pub region: String,
-    pub environment: String,
-    pub host: String,
-    pub port: i32,
-    pub database: String,
-    pub username: String,
-    #[serde(skip_serializing)]
-    pub password_enc: String,
-    pub tls_mode: String,
-    pub replica_host: Option<String>,
-    pub replica_port: Option<i32>,
-    pub tags: serde_json::Value,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
 /// Open the metadata pool with UTC JSON timestamps and bounded acquisition.
 pub async fn connect(url: &str, max_connections: u32) -> Result<sqlx::PgPool, sqlx::Error> {
     sqlx::postgres::PgPoolOptions::new()
@@ -47,22 +24,6 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<sqlx::PgPool, sq
 /// Apply embedded, versioned schema migrations.
 pub async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::migrate::MigrateError> {
     sqlx::migrate!("./migrations").run(pool).await
-}
-/// Retrieve a cluster by primary key.
-pub async fn cluster(pool: &sqlx::PgPool, id: Uuid) -> Result<ClusterRecord, ApiError> {
-    Ok(sqlx::query_as("SELECT * FROM clusters WHERE id=$1")
-        .bind(id)
-        .fetch_one(pool)
-        .await?)
-}
-/// Load the full cluster policy.
-pub async fn policy(pool: &sqlx::PgPool, id: Uuid) -> Result<Policy, ApiError> {
-    let value: serde_json::Value =
-        sqlx::query_scalar("SELECT policy FROM cluster_policies WHERE cluster_id=$1")
-            .bind(id)
-            .fetch_one(pool)
-            .await?;
-    serde_json::from_value(value).map_err(|_| ApiError::internal())
 }
 /// Retrieve a public user representation.
 pub async fn user(pool: &sqlx::PgPool, id: Uuid) -> Result<crate::auth::User, ApiError> {

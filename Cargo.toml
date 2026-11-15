@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vda-guard", "crates/vda-connectors", "crates/vda-server", "crates/vda-discovery"]
+members = ["crates/vda-guard", "crates/vda-connectors", "crates/vda-core", "crates/vda-server", "crates/vda-discovery"]
 
 [workspace.package]
 version = "0.1.0"
@@ -27,6 +27,7 @@ await_holding_lock = "deny"
 [workspace.dependencies]
 vda-guard = { path = "crates/vda-guard" }
 vda-connectors = { path = "crates/vda-connectors" }
+vda-core = { path = "crates/vda-core" }
 
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -44,6 +45,8 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 rust_decimal = "1"
 secrecy = { version = "0.10", features = ["serde"] }
 axum = { version = "0.8", features = ["macros"] }
+axum-core = "0.5"
+http = "1"
 axum-extra = { version = "0.10", features = ["cookie", "typed-header"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "compression-full", "cors", "request-id", "set-header", "timeout", "limit", "catch-panic", "util"] }

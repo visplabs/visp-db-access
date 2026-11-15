@@ -96,10 +96,10 @@ async fn store(
 pub async fn probe(state: &AppState, c: &db::ClusterRecord) -> Result<Health, ApiError> {
     let policy = db::policy(&state.db, c.id).await?;
     // Cached pools may establish new TCP connections: re-check DNS on every probe.
-    let validated = crate::pools::validate_endpoints(state, c).await;
+    let validated = crate::pools::validate_endpoints(&state.core, c).await;
     let pools = match async {
         validated?;
-        state.pools.get(state, c, &policy).await
+        state.core.pools.get(&state.core, c, &policy).await
     }
     .await
     {

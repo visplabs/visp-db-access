@@ -33,7 +33,7 @@ For the threat model and limits, see [Security model](SECURITY-MODEL.md).
 ┌──────────────────────────────────────────▼───────────────────────────────────┐
 │ vda-server (axum)                                                            │
 │  network gate (CIDR allowlist) → auth (session) → RBAC (grants)              │
-│  → query pipeline:                                                           │
+│  → query pipeline (vda-core, shared by every door into the gateway):         │
 │      vda-guard::analyze  → cost gate (EXPLAIN) → concurrency permit          │
 │      → vda-connectors::execute_* (guarded txn) → masking → audit/history     │
 │  approvals · policies · clusters/projects · users · health scheduler         │
@@ -70,6 +70,16 @@ schema introspection, connection test.
 
 A `Provider` trait (`test`, `scan`) returning normalized database records. The
 AWS implementation is described [below](#cloud-discovery-aws-rds--aurora).
+
+### crates/vda-core (the query pipeline)
+
+Everything that decides and runs a query, with no router and no request
+handlers: effective access from grants, the cluster policy, the guard call,
+masking, the cost gate, target pools and the concurrency permit, cancellation,
+and the durable audit intent. A caller builds an `Actor` (who is asking) and
+calls `query::analyze` or `query::run`. The web console is the first caller;
+any other door into the gateway uses the same functions, so the rules cannot
+differ between them.
 
 ### crates/vda-server (binary `visp-db-access`)
 

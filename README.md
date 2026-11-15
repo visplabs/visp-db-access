@@ -95,7 +95,8 @@ cd web && npm ci && npm run dev:mock
 crates/vda-guard        SQL safety engine (pure, no I/O)
 crates/vda-connectors   Guarded execution against PostgreSQL and MySQL
 crates/vda-discovery    Cloud discovery providers (AWS RDS/Aurora)
-crates/vda-server       HTTP API, auth, policies, approvals, audit (binary)
+crates/vda-core         Query pipeline: access, policy, masking, audit (no HTTP routes)
+crates/vda-server       HTTP API, auth, approvals, administration (binary)
 web/                    React + TypeScript console, embedded in the binary
 deploy/                 Helm chart, IAM policies, demo seed data
 scripts/                Local development and smoke-test scripts
