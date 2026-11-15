@@ -17,11 +17,14 @@ use uuid::Uuid;
 use vda_guard::{AccessLevel, Analysis, Verdict};
 
 /// SQL input; the optional client-generated query ID enables early cancellation.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueryInput {
     pub sql: String,
     pub query_id: Option<Uuid>,
+    /// What this query is for, in the caller's words. Kept in history.
+    #[serde(default)]
+    pub task: Option<String>,
 }
 /// Complete guarded query result wire shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +47,20 @@ fn validate_sql(sql: &str) -> Result<(), ApiError> {
     } else {
         Ok(())
     }
+}
+/// A task note is short plain text.
+pub fn validate_task(task: &str) -> Result<(), ApiError> {
+    crate::sanitation::text(task)?;
+    if task.trim().is_empty() || task.chars().count() > 500 {
+        return Err(ApiError::validation("Task must contain 1..=500 characters"));
+    }
+    // One line of visible text: it is shown to people in history and audit.
+    if task.contains(['\n', '\r', '\t']) || !crate::sanitation::shows_all(task.trim()) {
+        return Err(ApiError::validation(
+            "Task must be one line with no invisible or direction-changing characters",
+        ));
+    }
+    Ok(())
 }
 fn dialect(c: &ClusterRecord) -> vda_guard::Dialect {
     if c.engine == "mysql" {
@@ -134,6 +151,9 @@ async fn run_inner(
 ) -> Result<QueryResult, ApiError> {
     let (approved, timeout_ms) = approval;
     validate_sql(&body.sql)?;
+    if let Some(task) = &body.task {
+        validate_task(task)?;
+    }
     let (access, policy) = tokio::join!(
         crate::access::require_level_effective(&core.db, actor, cluster_id, AccessLevel::Read),
         crate::records::policy(&core.db, cluster_id)
@@ -168,6 +188,14 @@ async fn run_inner(
         id: query_id,
         token: token.clone(),
     };
+    // The agent may have been paused or its token revoked after this request
+    // was authenticated. Now that the query is registered a later stop will
+    // cancel it; this check closes the gap before that.
+    if let Some(scope) = &actor.agent {
+        if !crate::agents::still_valid(&core.db, scope.token_id).await? {
+            return Err(ApiError::unauthenticated());
+        }
+    }
     // A client UUID is only a cancellation handle; every attempt has a fresh audit identity.
     let history_id = Uuid::new_v4();
     let verdict = serde_json::to_value(analysis.verdict)
@@ -183,6 +211,7 @@ async fn run_inner(
         user_id: actor.user_id,
         user_email: actor.email.clone(),
         agent_id: actor.agent.as_ref().map(|a| a.agent_id),
+        task: body.task.as_deref().map(|task| task.trim().to_owned()),
         sql: body.sql,
         verdict: verdict.clone(),
         status: if blocked { "blocked" } else { "running" }.into(),
@@ -206,16 +235,23 @@ async fn run_inner(
         details: json!({"query_id":query_id,"history_id":history_id,"status":history.status,"agent_id":history.agent_id}),
         created_at: chrono::Utc::now(),
     };
-    crate::audit::begin_query(&core.db, &history, &intent)
+    let unavailable = |error: sqlx::Error| {
+        tracing::error!(%error, "query intent persistence failed; refusing target I/O");
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "internal",
+            "Audit unavailable",
+        )
+    };
+    let mut tx = core.db.begin().await.map_err(unavailable)?;
+    if let Some(agent_id) = history.agent_id {
+        // The budget is taken and the attempt recorded in one transaction.
+        crate::agents::reserve_budget(&mut tx, agent_id).await?;
+    }
+    crate::audit::record_query(&mut tx, &history, &intent)
         .await
-        .map_err(|error| {
-            tracing::error!(%error, "query intent persistence failed; refusing target I/O");
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "internal",
-                "Audit unavailable",
-            )
-        })?;
+        .map_err(unavailable)?;
+    tx.commit().await.map_err(unavailable)?;
     let cancel_on_drop = token.clone().drop_guard();
     let core = core.clone();
     let tracker = core.tasks.clone();

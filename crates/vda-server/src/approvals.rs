@@ -357,6 +357,7 @@ async fn finish_execution(
         QueryInput {
             sql,
             query_id: None,
+            task: None,
         },
         ip,
         timeout_ms,

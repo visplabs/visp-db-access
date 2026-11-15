@@ -11,6 +11,7 @@ pub mod db;
 pub mod discovery;
 pub mod error;
 pub mod health;
+mod mcp;
 pub mod metrics;
 pub mod network;
 pub mod query;

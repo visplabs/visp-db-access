@@ -43,6 +43,10 @@ pub struct AppState {
     pub dummy_password_hash: String,
     network_cache: Cache<(), NetworkSettings>,
     account_failures: Cache<String, Arc<AtomicU32>>,
+    /// Refused queries in a row, per agent, for the loop breaker in `mcp`.
+    pub(crate) agent_denials: Cache<Uuid, Arc<tokio::sync::Mutex<u32>>>,
+    /// Tool calls in the current minute, per agent.
+    pub(crate) agent_calls: Cache<Uuid, Arc<AtomicU32>>,
     login_rates: Cache<(IpAddr, String), Arc<AtomicU32>>,
     pub prometheus: Option<metrics_exporter_prometheus::PrometheusHandle>,
 }
@@ -101,6 +105,14 @@ impl AppState {
                 network_cache: Cache::builder()
                     .max_capacity(1)
                     .time_to_live(Duration::from_secs(30))
+                    .build(),
+                agent_calls: Cache::builder()
+                    .max_capacity(20000)
+                    .time_to_live(Duration::from_secs(60))
+                    .build(),
+                agent_denials: Cache::builder()
+                    .max_capacity(20000)
+                    .time_to_live(Duration::from_secs(crate::mcp::DENIAL_WINDOW_SECONDS))
                     .build(),
                 account_failures: Cache::builder()
                     .max_capacity(20000)
@@ -306,6 +318,7 @@ pub fn router(state: AppState) -> Router {
     // The agent door: a bearer token, never a session cookie.
     let agent = Router::new()
         .route("/agent/whoami", get(crate::agents::whoami))
+        .route("/mcp", post(crate::mcp::handle))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             crate::agents::authenticate,
@@ -452,11 +465,13 @@ async fn request_middleware(State(state): State<AppState>, req: Request, next: N
         .unwrap_or_else(|| "unmatched".into());
     let path = req.uri().path().to_owned();
     let method = req.method().clone();
-    let timeout = if path.ends_with("/query") || path.ends_with("/execute") {
-        Duration::from_secs(610)
-    } else {
-        Duration::from_secs(30)
-    };
+    // A query can run up to the statement timeout; the agent door runs queries too.
+    let timeout =
+        if path.ends_with("/query") || path.ends_with("/execute") || path.ends_with("/mcp") {
+            Duration::from_secs(610)
+        } else {
+            Duration::from_secs(30)
+        };
     let span = tracing::info_span!("http",request_id=%request_id,route=%route,method=%method);
     let start = Instant::now();
     let response = async {

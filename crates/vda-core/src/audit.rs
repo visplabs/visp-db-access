@@ -16,6 +16,8 @@ pub struct History {
     pub user_email: String,
     /// The agent that ran the query for this user, if any.
     pub agent_id: Option<Uuid>,
+    /// What the caller said this query is for.
+    pub task: Option<String>,
     pub sql: String,
     pub verdict: String,
     pub status: String,
@@ -60,18 +62,17 @@ pub async fn persist_on(
 pub async fn persist(db: &sqlx::PgPool, event: &Event) -> Result<(), sqlx::Error> {
     persist_on(&mut *db.acquire().await?, event).await
 }
-/// Commit query history and its audit intent before any target operation.
-pub async fn begin_query(
-    db: &sqlx::PgPool,
+/// Write query history and its audit intent on a caller's transaction.
+pub async fn record_query(
+    connection: &mut sqlx::PgConnection,
     history: &History,
     event: &Event,
 ) -> Result<(), sqlx::Error> {
-    let mut tx = db.begin().await?;
     sqlx::query(
         "INSERT INTO query_history(id,cluster_id,cluster_ref,cluster_name,user_id,user_email,
-         sql,verdict,status,row_count,elapsed_ms,error,created_at,ip,agent_id) VALUES ($1,$2,
+         sql,verdict,status,row_count,elapsed_ms,error,created_at,ip,agent_id,task) VALUES ($1,$2,
          (SELECT id FROM clusters WHERE id=$2),$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::text::inet,
-         (SELECT id FROM agents WHERE id=$14))",
+         (SELECT id FROM agents WHERE id=$14),$15)",
     )
     .bind(history.id)
     .bind(history.cluster_id)
@@ -87,9 +88,19 @@ pub async fn begin_query(
     .bind(event.created_at)
     .bind(event.ip.map(|ip| ip.to_string()))
     .bind(history.agent_id)
-    .execute(&mut *tx)
+    .bind(&history.task)
+    .execute(&mut *connection)
     .await?;
-    persist_on(&mut tx, event).await?;
+    persist_on(connection, event).await
+}
+/// Commit query history and its audit intent before any target operation.
+pub async fn begin_query(
+    db: &sqlx::PgPool,
+    history: &History,
+    event: &Event,
+) -> Result<(), sqlx::Error> {
+    let mut tx = db.begin().await?;
+    record_query(&mut tx, history, event).await?;
     tx.commit().await
 }
 /// Retry transport failures and transaction serialization/deadlock failures only.

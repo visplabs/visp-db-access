@@ -15,6 +15,7 @@ pub mod pools;
 pub mod query;
 pub mod records;
 pub mod sanitation;
+pub mod teach;
 
 use moka::future::Cache;
 use std::{sync::Arc, time::Duration};

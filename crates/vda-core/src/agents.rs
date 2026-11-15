@@ -122,6 +122,58 @@ pub async fn authenticate(pool: &sqlx::PgPool, token: &str) -> Result<AgentIdent
     })
 }
 
+/// Whether a token would still authenticate right now.
+pub async fn still_valid(pool: &sqlx::PgPool, token_id: Uuid) -> Result<bool, ApiError> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM agent_tokens t JOIN agents a ON a.id=t.agent_id
+         JOIN users u ON u.id=a.owner_id WHERE t.id=$1 AND t.revoked_at IS NULL
+         AND t.expires_at>now() AND NOT a.paused AND NOT u.disabled)",
+    )
+    .bind(token_id)
+    .fetch_one(pool)
+    .await?)
+}
+/// Take one query out of the agent's hourly budget, or refuse. The caller
+/// records the query in the same transaction, so parallel requests cannot all
+/// pass a count that none of them has added to yet: the row lock makes them
+/// take turns. Every recorded attempt counts, blocked ones too, so a loop of
+/// refusals also runs out. A refusal records nothing.
+pub async fn reserve_budget(tx: &mut sqlx::PgConnection, agent_id: Uuid) -> Result<(), ApiError> {
+    let budget: Option<i32> =
+        sqlx::query_scalar("SELECT hourly_query_budget FROM agents WHERE id=$1 FOR NO KEY UPDATE")
+            .bind(agent_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    // The agent was deleted after this request was authenticated.
+    let budget = budget.ok_or_else(ApiError::unauthenticated)?;
+    // Counting stops at the budget, so a long history costs no more than a short one.
+    let used: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM (SELECT 1 FROM query_history WHERE agent_id=$1
+         AND created_at>now()-interval '1 hour' LIMIT $2) recent",
+    )
+    .bind(agent_id)
+    .bind(i64::from(budget))
+    .fetch_one(&mut *tx)
+    .await?;
+    if used < i64::from(budget) {
+        return Ok(());
+    }
+    let wait: Option<f64> = sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM (min(created_at)+interval '1 hour'-now()))::float8
+         FROM query_history WHERE agent_id=$1 AND created_at>now()-interval '1 hour'",
+    )
+    .bind(agent_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let wait = wait.unwrap_or(3600.0).clamp(1.0, 3600.0).ceil() as u64;
+    Err(ApiError::new(
+        http::StatusCode::TOO_MANY_REQUESTS,
+        "budget_exceeded",
+        "The agent has used its hourly query budget",
+    )
+    .details(serde_json::json!({"budget":budget,"retry_after_seconds":wait})))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
