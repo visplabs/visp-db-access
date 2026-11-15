@@ -86,6 +86,12 @@ to the agent's clusters and capped at its level (`access::narrow`). `agents`
 resolves a bearer token to such an actor; only the token's SHA-256 digest is
 stored.
 
+`teach` turns any refusal into one `fix` object: a stable action word and a
+plain hint. The agent door (`vda-server/src/mcp.rs`) is a Model Context
+Protocol endpoint over plain HTTP POST with five read tools. It keeps no
+session, so it works behind any load balancer. Each tool calls the same
+`vda-core` functions as the console, with the agent's `Actor`.
+
 ### crates/vda-server (binary `visp-db-access`)
 
 axum HTTP API + embedded SPA. Metadata in Postgres (sqlx migrations). Owns

@@ -431,15 +431,25 @@ pub(crate) async fn schema(
 ) -> Result<Json<vda_connectors::SchemaTree>, ApiError> {
     let c = rbac::require_level(&state.db, &user, db::id(&id)?, AccessLevel::Read).await?;
     crate::network::require_cluster(&state, c.id, ip.0).await?;
-    if !query.refresh {
+    let policy = db::policy(&state.db, c.id).await?;
+    Ok(Json(load_schema(&state, &c, &policy, query.refresh).await?))
+}
+/// The cluster's catalog, from the cache when it matches the cluster version.
+/// The caller has already checked access and the network policy.
+pub(crate) async fn load_schema(
+    state: &AppState,
+    c: &db::ClusterRecord,
+    policy: &crate::policy::Policy,
+    refresh: bool,
+) -> Result<vda_connectors::SchemaTree, ApiError> {
+    if !refresh {
         if let Some((version, schema)) = state.schema_cache.get(&c.id).await {
             if version == c.updated_at {
-                return Ok(Json(schema));
+                return Ok(schema);
             }
         }
     }
-    let policy = db::policy(&state.db, c.id).await?;
-    let pools = state.core.pools.get(&state.core, &c, &policy).await?;
+    let pools = state.core.pools.get(&state.core, c, policy).await?;
     let _permit =
         tokio::time::timeout(std::time::Duration::from_secs(2), pools.semaphore.acquire())
             .await
@@ -450,7 +460,7 @@ pub(crate) async fn schema(
         .schema_cache
         .insert(c.id, (c.updated_at, schema.clone()))
         .await;
-    Ok(Json(schema))
+    Ok(schema)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -29,6 +29,7 @@ const MAX_TOKEN_DAYS: i32 = 90;
 // Token digests are never selected; a person sees only the four-character hint.
 const AGENT_SQL: &str = "SELECT jsonb_build_object('id',a.id,'name',a.name,
     'description',a.description,'max_level',a.max_level,'paused',a.paused,
+    'hourly_query_budget',a.hourly_query_budget,
     'owner',jsonb_build_object('id',u.id,'email',u.email,'name',u.name),
     'cluster_ids',COALESCE((SELECT jsonb_agg(cluster_id ORDER BY cluster_id)
         FROM agent_clusters WHERE agent_id=a.id),'[]'::jsonb),
@@ -45,20 +46,6 @@ async fn agent(db: &sqlx::PgPool, id: Uuid) -> Result<Value, ApiError> {
         .fetch_one(db)
         .await?)
 }
-/// Characters that are invisible, blank, or reorder text. In a name they
-/// would let two different agents look the same to a person. The list covers
-/// format and filler characters, variation selectors, tags, and every
-/// whitespace character other than the plain space.
-fn deceptive(c: char) -> bool {
-    (c.is_whitespace() && c != ' ')
-        || matches!(c,
-            '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}' | '\u{1160}' | '\u{17B4}'
-            | '\u{17B5}' | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{2800}' | '\u{3164}'
-            | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFA0}' | '\u{FFF0}'..='\u{FFFB}'
-            | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D173}'..='\u{1D17A}'
-            | '\u{E0000}'..='\u{E0FFF}')
-}
 /// Validate a name and return it as it is stored.
 fn name(value: &str) -> Result<&str, ApiError> {
     crate::sanitation::text(value)?;
@@ -66,17 +53,7 @@ fn name(value: &str) -> Result<&str, ApiError> {
     if value.is_empty() || value.chars().count() > 100 {
         return Err(ApiError::validation("Name must contain 1..=100 characters"));
     }
-    // Joiners and the emoji selector are part of real words and emoji, but
-    // only after a non-ASCII character. After plain text they hide a difference.
-    let mut previous = ' ';
-    let hidden = value.chars().any(|c| {
-        let joins = matches!(c, '\u{200C}' | '\u{200D}' | '\u{FE0F}')
-            && !previous.is_ascii()
-            && !deceptive(previous);
-        previous = c;
-        deceptive(c) && !joins
-    });
-    if hidden {
+    if !crate::sanitation::shows_all(value) {
         return Err(ApiError::validation(
             "Name must not contain invisible or direction-changing characters",
         ));
@@ -202,6 +179,16 @@ pub(crate) struct CreateAgent {
     #[serde(default = "read_level")]
     max_level: String,
     cluster_ids: Vec<Uuid>,
+    hourly_query_budget: Option<i32>,
+}
+fn budget(value: i32) -> Result<(), ApiError> {
+    if (1..=100_000).contains(&value) {
+        Ok(())
+    } else {
+        Err(ApiError::validation(
+            "Hourly query budget must be 1..=100000",
+        ))
+    }
 }
 fn read_level() -> String {
     "read".into()
@@ -216,6 +203,8 @@ pub(crate) async fn create(
     let name = name(&body.name)?.to_owned();
     description(&body.description)?;
     max_level(&body.max_level)?;
+    let hourly = body.hourly_query_budget.unwrap_or(300);
+    budget(hourly)?;
     let id = Uuid::new_v4();
     let mut tx = state.db.begin().await?;
     // Serialize creation per owner so the count below cannot be raced past.
@@ -233,18 +222,20 @@ pub(crate) async fn create(
         return Err(ApiError::conflict("You have the maximum number of agents"));
     }
     sqlx::query(
-        "INSERT INTO agents(id,owner_id,name,description,max_level) VALUES ($1,$2,$3,$4,$5)",
+        "INSERT INTO agents(id,owner_id,name,description,max_level,hourly_query_budget)
+         VALUES ($1,$2,$3,$4,$5,$6)",
     )
     .bind(id)
     .bind(user.id)
     .bind(&name)
     .bind(&body.description)
     .bind(&body.max_level)
+    .bind(hourly)
     .execute(&mut *tx)
     .await?;
     set_clusters(&mut tx, id, &body.cluster_ids).await?;
     let details = json!({"owner_id":user.id,"name":name,"max_level":body.max_level,
-        "cluster_ids":body.cluster_ids});
+        "cluster_ids":body.cluster_ids,"hourly_query_budget":hourly});
     state
         .audit_details(&mut tx, &user, "agent.create", Some(id), ip.0, details)
         .await?;
@@ -258,6 +249,7 @@ pub(crate) struct UpdateAgent {
     description: Option<String>,
     max_level: Option<String>,
     cluster_ids: Option<Vec<Uuid>>,
+    hourly_query_budget: Option<i32>,
     paused: Option<bool>,
 }
 /// Change an agent. Its owner can change everything. An administrator who is
@@ -278,7 +270,11 @@ pub(crate) async fn update(
     if let Some(value) = &body.max_level {
         max_level(value)?;
     }
+    if let Some(value) = body.hourly_query_budget {
+        budget(value)?;
+    }
     let shape = new_name.is_some()
+        || body.hourly_query_budget.is_some()
         || body.description.is_some()
         || body.max_level.is_some()
         || body.cluster_ids.is_some();
@@ -292,14 +288,15 @@ pub(crate) async fn update(
     if let Some(clusters) = &mut body.cluster_ids {
         reachable(&mut tx, user.id, clusters).await?;
     }
-    let (old_name, old_description, old_level, old_paused, old_clusters): (
+    let (old_name, old_description, old_level, old_paused, old_budget, old_clusters): (
         String,
         String,
         String,
         bool,
+        i32,
         Vec<Uuid>,
     ) = sqlx::query_as(
-        "SELECT name,description,max_level,paused,COALESCE((SELECT array_agg(cluster_id
+        "SELECT name,description,max_level,paused,hourly_query_budget,COALESCE((SELECT array_agg(cluster_id
          ORDER BY cluster_id) FROM agent_clusters WHERE agent_id=a.id),ARRAY[]::uuid[])
          FROM agents a WHERE id=$1",
     )
@@ -321,6 +318,9 @@ pub(crate) async fn update(
     }
     if let Some(value) = &body.cluster_ids {
         note("cluster_ids", json!(old_clusters), json!(value));
+    }
+    if let Some(value) = body.hourly_query_budget {
+        note("hourly_query_budget", json!(old_budget), json!(value));
     }
     if body
         .description
@@ -346,13 +346,15 @@ pub(crate) async fn update(
     }
     sqlx::query(
         "UPDATE agents SET name=COALESCE($2,name),description=COALESCE($3,description),
-         max_level=COALESCE($4,max_level),paused=COALESCE($5,paused),updated_at=now() WHERE id=$1",
+         max_level=COALESCE($4,max_level),paused=COALESCE($5,paused),
+         hourly_query_budget=COALESCE($6,hourly_query_budget),updated_at=now() WHERE id=$1",
     )
     .bind(id)
     .bind(new_name)
     .bind(&body.description)
     .bind(&body.max_level)
     .bind(paused)
+    .bind(body.hourly_query_budget)
     .execute(&mut *tx)
     .await?;
     // A change of shape is always its own event, so a wider reach or a higher
@@ -453,6 +455,7 @@ pub(crate) async fn create_token(
     State(state): State<AppState>,
     Extension(user): Extension<User>,
     Extension(ip): Extension<ClientIp>,
+    jar: axum_extra::extract::cookie::CookieJar,
     Path(id): Path<String>,
     Input(body): Input<CreateToken>,
 ) -> Result<Json<Value>, ApiError> {
@@ -462,6 +465,31 @@ pub(crate) async fn create_token(
         return Err(ApiError::validation("Token lifetime must be 1..=90 days"));
     }
     let mut tx = state.db.begin().await?;
+    // A disable, a password change or a role change of this person updates
+    // their row and then ends their sessions and tokens. A share lock on that
+    // row waits for such a change to finish. The session is then checked again,
+    // so a token is never minted in the same instant and left alive.
+    let session = jar
+        .get("vda_session")
+        .map(|cookie| crate::auth::token_hash(cookie.value()))
+        .ok_or_else(ApiError::unauthenticated)?;
+    sqlx::query("SELECT 1 FROM users WHERE id=$1 FOR SHARE")
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    // A new statement, so it sees what was committed while the lock waited.
+    let current: bool = sqlx::query_scalar(
+        "SELECT NOT u.disabled AND EXISTS(SELECT 1 FROM sessions s WHERE s.token_hash=$2
+         AND s.user_id=u.id AND s.expires_at>now() AND s.absolute_expires_at>now())
+         FROM users u WHERE u.id=$1",
+    )
+    .bind(user.id)
+    .bind(session)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !current {
+        return Err(ApiError::unauthenticated());
+    }
     if !lock(&mut tx, &user, id).await? {
         return Err(ApiError::forbidden());
     }
@@ -565,16 +593,14 @@ pub async fn authenticate(State(state): State<AppState>, mut req: Request, next:
         Err(error) => error.into_response(),
     }
 }
-/// Tell an agent who it is and which clusters it can reach right now.
-pub(crate) async fn whoami(
-    State(state): State<AppState>,
-    Extension(identity): Extension<AgentIdentity>,
-) -> Result<Json<Value>, ApiError> {
-    let scope = identity
-        .actor
-        .agent
-        .as_ref()
-        .ok_or_else(ApiError::internal)?;
+/// The clusters an actor can reach right now, with the effective level on
+/// each. The same function that guards a query decides what is listed.
+pub(crate) async fn reachable_now(
+    state: &AppState,
+    actor: &vda_core::access::Actor,
+    ip: std::net::IpAddr,
+) -> Result<Vec<Value>, ApiError> {
+    let scope = actor.agent.as_ref().ok_or_else(ApiError::internal)?;
     let records: Vec<db::ClusterRecord> =
         sqlx::query_as("SELECT * FROM clusters WHERE id=ANY($1) ORDER BY lower(name),id")
             .bind(&scope.clusters)
@@ -582,10 +608,13 @@ pub(crate) async fn whoami(
             .await?;
     let mut clusters = Vec::with_capacity(records.len());
     for record in records {
-        // The same function that guards a query decides what is listed here.
-        if let Some(level) =
-            vda_core::access::effective(&state.db, &identity.actor, &record).await?
-        {
+        // A cluster whose own network policy excludes this address is not
+        // listed: every call to it would be refused.
+        let policy = db::policy(&state.db, record.id).await?;
+        if !crate::network::allowed(ip, &crate::network::parse_cidrs(&policy.allowed_cidrs)?) {
+            continue;
+        }
+        if let Some(level) = vda_core::access::effective(&state.db, actor, &record).await? {
             clusters.push(json!({
                 "id": record.id,
                 "name": record.name,
@@ -597,9 +626,22 @@ pub(crate) async fn whoami(
             }));
         }
     }
+    Ok(clusters)
+}
+/// Tell an agent who it is and which clusters it can reach right now.
+pub(crate) async fn whoami(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AgentIdentity>,
+    Extension(ip): Extension<ClientIp>,
+) -> Result<Json<Value>, ApiError> {
+    let scope = identity
+        .actor
+        .agent
+        .as_ref()
+        .ok_or_else(ApiError::internal)?;
     Ok(Json(json!({
         "agent": {"id": identity.agent_id, "name": identity.agent_name, "max_level": scope.max_level},
         "owner": {"email": identity.actor.email},
-        "clusters": clusters,
+        "clusters": reachable_now(&state, &identity.actor, ip.0).await?,
     })))
 }

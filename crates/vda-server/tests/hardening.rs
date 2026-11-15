@@ -1880,6 +1880,7 @@ async fn agent_queries_are_capped_recorded_and_never_write_on_their_own() {
     let input = |sql: &str| vda_core::query::QueryInput {
         sql: sql.into(),
         query_id: None,
+        task: None,
     };
     // The fixture policy lets a person write without approval. The owner here
     // is an organization administrator, the most powerful owner there is.
@@ -2193,5 +2194,789 @@ async fn agent_queries_are_capped_recorded_and_never_write_on_their_own() {
             .unwrap();
     // Six rows stay; only the two from the agent that still exists keep a link.
     assert_eq!(kept, (6, 2));
+    f.close().await;
+}
+
+/// One JSON-RPC message to the agent door, with optional extra headers.
+async fn mcp_raw(
+    f: &Fixture,
+    token: Option<&str>,
+    body: String,
+    extra: &[(&str, &str)],
+) -> (StatusCode, Value) {
+    let mut req = Request::post("/api/v1/mcp").header("content-type", "application/json");
+    if let Some(token) = token {
+        req = req.header("authorization", format!("Bearer {token}"));
+    }
+    for (name, value) in extra {
+        req = req.header(*name, *value);
+    }
+    let mut req = req.body(Body::from(body)).unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo("127.0.0.1:1234".parse::<SocketAddr>().unwrap()));
+    let response = f.app.clone().oneshot(req).await.unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), 40 * 1024 * 1024)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+async fn mcp(f: &Fixture, token: &str, method: &str, params: Value) -> Value {
+    let body = json!({"jsonrpc":"2.0","id":7,"method":method,"params":params});
+    let (s, v) = mcp_raw(f, Some(token), body.to_string(), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["id"], 7);
+    v
+}
+/// Call a tool and return (is_error, structured content).
+async fn tool(f: &Fixture, token: &str, name: &str, arguments: Value) -> (bool, Value) {
+    let v = mcp(
+        f,
+        token,
+        "tools/call",
+        json!({"name":name,"arguments":arguments}),
+    )
+    .await;
+    let result = &v["result"];
+    // The text block is the same JSON as the structured block.
+    let text: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, result["structuredContent"], "{v}");
+    (
+        result["isError"].as_bool().unwrap(),
+        result["structuredContent"].clone(),
+    )
+}
+
+#[tokio::test]
+async fn agent_door_speaks_the_protocol_and_refuses_everything_else() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let agent = new_agent(&f, &f.grantor_cookie, "Door", "read").await;
+    let (_, token) = new_token(&f, &f.grantor_cookie, agent).await;
+    // Version negotiation: a known version is echoed, anything else gets the newest.
+    for (asked, answered) in [
+        (json!("2025-03-26"), "2025-03-26"),
+        (json!("2024-11-05"), "2024-11-05"),
+        (json!("1999-01-01"), "2025-06-18"),
+        (Value::Null, "2025-06-18"),
+    ] {
+        let v = mcp(&f, &token, "initialize", json!({"protocolVersion":asked})).await;
+        assert_eq!(v["result"]["protocolVersion"], answered, "{v}");
+        assert!(v["result"]["capabilities"]["tools"].is_object());
+        assert!(v["result"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("task"));
+    }
+    assert_eq!(
+        mcp(&f, &token, "ping", Value::Null).await["result"],
+        json!({})
+    );
+    let listed = mcp(&f, &token, "tools/list", Value::Null).await;
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        [
+            "list_databases",
+            "search_schema",
+            "describe_table",
+            "check_sql",
+            "run_query"
+        ]
+    );
+    for t in tools {
+        let schema = &t["inputSchema"];
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("task")));
+    }
+    // A notification gets 202 and no body.
+    let (s, v) = mcp_raw(
+        &f,
+        Some(&token),
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}).to_string(),
+        &[],
+    )
+    .await;
+    assert_eq!((s, v), (StatusCode::ACCEPTED, Value::Null));
+    // Protocol errors.
+    for (body, status, code) in [
+        ("not json".to_owned(), StatusCode::BAD_REQUEST, -32700),
+        ("[]".to_owned(), StatusCode::BAD_REQUEST, -32600),
+        (
+            json!([{"jsonrpc":"2.0","id":1,"method":"ping"}]).to_string(),
+            StatusCode::BAD_REQUEST,
+            -32600,
+        ),
+        (json!({"id":1,"method":"ping"}).to_string(), StatusCode::BAD_REQUEST, -32600),
+        (
+            json!({"jsonrpc":"2.0","id":null,"method":"ping"}).to_string(),
+            StatusCode::BAD_REQUEST,
+            -32600,
+        ),
+        (
+            json!({"jsonrpc":"2.0","id":{"a":1},"method":"ping"}).to_string(),
+            StatusCode::BAD_REQUEST,
+            -32600,
+        ),
+        (json!({"jsonrpc":"2.0","id":1}).to_string(), StatusCode::BAD_REQUEST, -32600),
+        (
+            r#"{"jsonrpc":"2.0","id":1.5,"method":"ping"}"#.to_owned(),
+            StatusCode::BAD_REQUEST,
+            -32600,
+        ),
+        (
+            r#"{"jsonrpc":"2.0","id":123456789012345678901234567890,"method":"ping"}"#.to_owned(),
+            StatusCode::BAD_REQUEST,
+            -32600,
+        ),
+        (
+            json!({"jsonrpc":"2.0","id":1,"method":"ping\u{0}"}).to_string(),
+            StatusCode::BAD_REQUEST,
+            -32600,
+        ),
+        (
+            json!({"jsonrpc":"2.0","id":1,"method":"resources/list"}).to_string(),
+            StatusCode::OK,
+            -32601,
+        ),
+        (
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"drop_everything"}})
+                .to_string(),
+            StatusCode::OK,
+            -32602,
+        ),
+    ] {
+        let (s, v) = mcp_raw(&f, Some(&token), body.clone(), &[]).await;
+        assert_eq!(s, status, "{body}");
+        assert_eq!(v["error"]["code"], code, "{body} {v}");
+    }
+    for id in [
+        json!(0),
+        json!(-7),
+        json!(u64::MAX),
+        json!("abc"),
+        json!(""),
+    ] {
+        let body = json!({"jsonrpc":"2.0","id":id,"method":"ping"}).to_string();
+        let (s, v) = mcp_raw(&f, Some(&token), body, &[]).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["id"], id);
+    }
+    // A tool call sent as a notification is acknowledged and not run.
+    let (s, _) = mcp_raw(
+        &f,
+        Some(&token),
+        json!({"jsonrpc":"2.0","method":"tools/call","params":{"name":"list_databases",
+            "arguments":{"task":"Must not run"}}})
+        .to_string(),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED);
+    // The door itself: only a valid agent token, only POST, never a browser.
+    let ping = json!({"jsonrpc":"2.0","id":1,"method":"ping"}).to_string();
+    let (s, _) = mcp_raw(&f, None, ping.clone(), &[]).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = mcp_raw(
+        &f,
+        None,
+        ping.clone(),
+        &[("cookie", f.grantor_cookie.as_str())],
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = mcp_raw(
+        &f,
+        Some(&token),
+        ping.clone(),
+        &[("origin", "https://evil.example")],
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v) = mcp_raw(
+        &f,
+        Some(&token),
+        ping.clone(),
+        &[("mcp-protocol-version", "1999-01-01")],
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, _) = mcp_raw(
+        &f,
+        Some(&token),
+        ping.clone(),
+        &[("mcp-protocol-version", "2025-06-18")],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = bearer(&f, "/mcp", &token).await;
+    assert_eq!(s, StatusCode::METHOD_NOT_ALLOWED);
+    // Every tool call must say what it is for, and takes no unknown argument.
+    for arguments in [
+        json!({}),
+        json!({"task":"  "}),
+        json!({"task":"x".repeat(501)}),
+        json!({"task":"List","verbose":true}),
+        json!({"task":"List","database":"not-a-uuid"}),
+        json!({"task":"List","database":f.cluster,"sql":"SELECT 1"}),
+        json!({"task":"Hidden\u{202e}text"}),
+        json!({"task":"Two\nlines"}),
+    ] {
+        let (failed, v) = tool(&f, &token, "list_databases", arguments).await;
+        assert!(failed, "{v}");
+        assert_eq!(v["error"]["code"], "validation", "{v}");
+        assert_eq!(v["error"]["fix"]["action"], "fix_arguments", "{v}");
+    }
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "list_databases",
+        json!({"task":"See what I can reach"}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    assert_eq!(v["databases"][0]["id"], json!(f.cluster));
+    assert_eq!(v["databases"][0]["level"], "read");
+    assert!(!v.to_string().contains("password") && !v.to_string().contains("host"));
+    // A tool that needs a database says so, and an unreachable one teaches.
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "check_sql",
+        json!({"task":"Check","sql":"SELECT 1"}),
+    )
+    .await;
+    assert!(failed);
+    assert_eq!(v["error"]["fix"]["action"], "fix_arguments", "{v}");
+    for (name, key, value) in [
+        ("search_schema", "query", "a"),
+        ("describe_table", "table", "a"),
+        ("check_sql", "sql", "SELECT 1"),
+        ("run_query", "sql", "SELECT 1"),
+    ] {
+        let (failed, v) = tool(
+            &f,
+            &token,
+            name,
+            json!({"task":"Probe","database":Uuid::new_v4(),key:value}),
+        )
+        .await;
+        assert!(failed, "{name} {v}");
+        assert_eq!(v["error"]["fix"]["action"], "choose_database", "{name} {v}");
+    }
+    // Each call is on the agent's trail with its task, under its owner.
+    let mut trail: Vec<Value> = vec![];
+    // The audit writer is asynchronous; give it time, also on a loaded machine.
+    for _ in 0..600 {
+        trail = sqlx::query_scalar(
+            "SELECT details FROM audit_log WHERE action='agent.tool' AND target_id=$1 AND actor_id=$2
+             ORDER BY created_at,id",
+        )
+        .bind(agent)
+        .bind(f.grantor)
+        .fetch_all(&f.db)
+        .await
+        .unwrap();
+        if trail.len() >= 6 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    // Calls with arguments that do not parse have no usable task and are not recorded.
+    assert_eq!(trail.len(), 6, "{trail:?}");
+    assert!(trail.iter().any(|d| *d
+        == json!({"tool":"list_databases","task":"See what I can reach","database":null,"outcome":"ok"})));
+    assert!(trail
+        .iter()
+        .any(|d| d["tool"] == "run_query" && d["outcome"] != "ok"));
+    assert!(!trail.iter().any(|d| d["task"] == "Must not run"));
+    // A cluster whose own network policy excludes the agent is not listed,
+    // and a call to it says why instead of sending the agent in a circle.
+    let mut policy = Policy::for_environment("development");
+    policy.allowed_cidrs = vec!["10.0.0.0/8".into()];
+    sqlx::query("UPDATE cluster_policies SET policy=$1 WHERE cluster_id=$2")
+        .bind(json!(policy))
+        .bind(f.cluster)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let (failed, v) = tool(&f, &token, "list_databases", json!({"task":"Recheck"})).await;
+    assert!(!failed);
+    assert_eq!(v["databases"], json!([]));
+    for (name, key, value) in [
+        ("search_schema", "query", "a"),
+        ("describe_table", "table", "a"),
+        ("check_sql", "sql", "SELECT 1"),
+        ("run_query", "sql", "SELECT 1"),
+    ] {
+        let (failed, v) = tool(
+            &f,
+            &token,
+            name,
+            json!({"task":"Probe","database":f.cluster,key:value}),
+        )
+        .await;
+        assert!(failed, "{name} {v}");
+        assert_eq!(v["error"]["code"], "network_denied", "{name} {v}");
+        assert_eq!(v["error"]["fix"]["action"], "stop", "{name} {v}");
+    }
+    // One agent can make 120 tool calls in a minute, all tools together.
+    let busy = new_agent(&f, &f.grantor_cookie, "Busy", "read").await;
+    let (_, busy_token) = new_token(&f, &f.grantor_cookie, busy).await;
+    let calls = (0..125).map(|_| tool(&f, &busy_token, "list_databases", json!({"task":"Flood"})));
+    let results = futures::future::join_all(calls).await;
+    let limited: Vec<&Value> = results
+        .iter()
+        .filter(|(failed, _)| *failed)
+        .map(|(_, v)| v)
+        .collect();
+    assert_eq!(limited.len(), 5, "{limited:?}");
+    assert!(limited.iter().all(|v| v["error"]["code"] == "rate_limited"
+        && v["error"]["fix"]["action"] == "retry_later"
+        && v["error"]["fix"]["retry_after_seconds"] == 60));
+    // The first agent is not affected by the second one's flood.
+    let (failed, _) = tool(&f, &token, "list_databases", json!({"task":"Still fine"})).await;
+    assert!(!failed);
+    // A paused agent is locked out of the door at once.
+    let (s, _) = f
+        .request(
+            "PATCH",
+            &format!("/agents/{agent}"),
+            &f.grantor_cookie,
+            Some(json!({"paused":true})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = mcp_raw(&f, Some(&token), ping, &[]).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn agent_tools_read_guarded_data_teach_on_refusal_and_stop_loops() {
+    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let target = sqlx::PgPool::connect(&target_url).await.unwrap();
+    let suffix = Uuid::new_v4().simple().to_string();
+    let (table, secret) = (format!("vda_door_{suffix}"), format!("vda_vault_{suffix}"));
+    for sql in [
+        format!("CREATE TABLE {table}(id integer PRIMARY KEY,email text,note text NOT NULL)"),
+        format!("INSERT INTO {table} VALUES (1,'ada@secret.example','first'),(2,'bob@secret.example','second'),(3,'cy@secret.example','third')"),
+        format!("CREATE TABLE {secret}(id integer,api_key text)"),
+    ] {
+        sqlx::query(&sql).execute(&target).await.unwrap();
+    }
+    let mut policy = Policy::for_environment("development");
+    policy.masked_columns = vec!["email".into()];
+    policy.blocked_tables = vec![secret.clone()];
+    f.policy(&policy).await;
+    let agent = new_agent(&f, &f.grantor_cookie, "Analyst", "read").await;
+    let (_, token) = new_token(&f, &f.grantor_cookie, agent).await;
+    let db = json!(f.cluster);
+    // Find the table; the blocked one is not listed under any spelling.
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "search_schema",
+        json!({"task":"Find the door tables","database":db,"query":suffix}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    assert_eq!(v["tables"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["tables"][0]["table"], format!("public.{table}"));
+    let (_, v) = tool(
+        &f,
+        &token,
+        "search_schema",
+        json!({"task":"Find key columns","database":db,"query":"API_KEY"}),
+    )
+    .await;
+    assert!(!v.to_string().contains(&secret), "{v}");
+    // Describe it; the protected column is marked, the blocked table is "not found".
+    for name in [
+        table.clone(),
+        format!("public.{table}"),
+        table.to_uppercase(),
+    ] {
+        let (failed, v) = tool(
+            &f,
+            &token,
+            "describe_table",
+            json!({"task":"Learn the columns","database":db,"table":name}),
+        )
+        .await;
+        assert!(!failed, "{v}");
+        let columns = v["columns"].as_array().unwrap();
+        assert_eq!(columns.len(), 3);
+        assert_eq!(
+            columns[1],
+            json!({"name":"email","type":"text","nullable":true,"primary_key":false,"protected":true})
+        );
+        assert_eq!(columns[0]["primary_key"], true);
+        assert_eq!(columns[2]["protected"], false);
+    }
+    for name in [
+        secret.clone(),
+        format!("public.{secret}"),
+        "no_such_table".into(),
+    ] {
+        let (failed, v) = tool(
+            &f,
+            &token,
+            "describe_table",
+            json!({"task":"Look","database":db,"table":name}),
+        )
+        .await;
+        assert!(failed, "{v}");
+        assert_eq!(v["error"]["code"], "table_not_found", "{v}");
+        assert_eq!(v["error"]["fix"]["action"], "fix_arguments", "{v}");
+        assert!(v["error"]["fix"]["hint"]
+            .as_str()
+            .unwrap()
+            .contains("search_schema"));
+    }
+    // check_sql: an accepted statement shows what will run; a refused one teaches.
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "check_sql",
+        json!({"task":"Check before I run","database":db,"sql":format!("SELECT id,note FROM {table}")}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    assert_eq!(v["verdict"], "allow");
+    assert!(v["will_run_as"].as_str().unwrap().contains("LIMIT"), "{v}");
+    assert_eq!(v["fix"], Value::Null);
+    for (sql, action) in [
+        (format!("SELECT * FROM {secret}"), "stop"),
+        ("SELECT 1; SELECT 2".to_owned(), "rewrite_sql"),
+        (format!("SELEC id FROM {table}"), "rewrite_sql"),
+        (format!("DELETE FROM {table} WHERE id=1"), "ask_owner"),
+        (format!("UPDATE {table} SET note=note"), "ask_owner"),
+    ] {
+        let (failed, v) = tool(
+            &f,
+            &token,
+            "check_sql",
+            json!({"task":"Check","database":db,"sql":sql}),
+        )
+        .await;
+        assert!(!failed, "{v}");
+        assert_eq!(v["verdict"], "deny", "{sql} {v}");
+        assert_eq!(v["fix"]["action"], action, "{sql} {v}");
+        assert!(!v["fix"]["hint"].as_str().unwrap().is_empty());
+    }
+    // run_query: rows come back, the protected column is masked, the row cap holds.
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "run_query",
+        json!({"task":"Read the notes for the weekly report","database":db,
+            "sql":format!("SELECT id,email,note FROM {table} ORDER BY id"),"max_rows":2}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    assert_eq!(v["row_count"], 2);
+    assert_eq!(v["truncated"], true);
+    assert_eq!(v["rows"][0][2], "first");
+    assert!(!v.to_string().contains("secret.example"), "{v}");
+    assert!(v["ran_as"].as_str().unwrap().contains("LIMIT"));
+    let (task, linked): (Option<String>, Option<Uuid>) = sqlx::query_as(
+        "SELECT task,agent_id FROM query_history ORDER BY created_at DESC,id DESC LIMIT 1",
+    )
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        task.as_deref(),
+        Some("Read the notes for the weekly report")
+    );
+    assert_eq!(linked, Some(agent));
+    // A result is cut at about one megabyte of rows, whatever max_rows says.
+    sqlx::query(&format!("UPDATE {table} SET note=repeat('x',400000)"))
+        .execute(&target)
+        .await
+        .unwrap();
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "run_query",
+        json!({"task":"Read large notes","database":db,
+            "sql":format!("SELECT id,note FROM {table} ORDER BY id"),"max_rows":1000}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    assert_eq!(
+        (v["row_count"].clone(), v["truncated"].clone()),
+        (json!(2), json!(true))
+    );
+    // One row that cannot fit is an error with a fix, not an empty answer.
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "run_query",
+        json!({"task":"Read one huge value","database":db,
+            "sql":format!("SELECT note||note||note||note FROM {table} WHERE id=1")}),
+    )
+    .await;
+    assert!(failed, "{v}");
+    assert_eq!(v["error"]["code"], "result_too_large", "{v}");
+    assert_eq!(v["error"]["fix"]["action"], "rewrite_sql");
+    // A database error teaches too, and does not count as a refusal.
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "run_query",
+        json!({"task":"Typo","database":db,"sql":format!("SELECT nope FROM {table}")}),
+    )
+    .await;
+    assert!(failed);
+    assert_eq!(v["error"]["code"], "upstream", "{v}");
+    assert_eq!(v["error"]["fix"]["action"], "rewrite_sql");
+    // Five refusals in a row: the sixth call is stopped, even for a good query.
+    for attempt in 0..5 {
+        let (failed, v) = tool(
+            &f,
+            &token,
+            "run_query",
+            json!({"task":"Try the vault","database":db,"sql":format!("SELECT * FROM {secret} -- {attempt}")}),
+        )
+        .await;
+        assert!(failed);
+        assert_eq!(v["error"]["code"], "query_denied", "{v}");
+        assert_eq!(v["error"]["fix"]["action"], "stop", "{v}");
+    }
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM query_history")
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    let good = json!({"task":"A good query","database":db,"sql":"SELECT 1"});
+    let (failed, v) = tool(&f, &token, "run_query", good.clone()).await;
+    assert!(failed);
+    assert_eq!(v["error"]["code"], "too_many_denials", "{v}");
+    assert_eq!(v["error"]["fix"]["action"], "stop");
+    assert_eq!(v["error"]["fix"]["retry_after_seconds"], 600);
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM query_history")
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(before, after, "a stopped call must not reach the database");
+    // The other tools still work, so the agent can explain itself to its owner.
+    let (failed, _) = tool(&f, &token, "list_databases", json!({"task":"Recheck"})).await;
+    assert!(!failed);
+    // A success resets the streak: four refusals, one success, four more are fine.
+    let other = new_agent(&f, &f.grantor_cookie, "Careful", "read").await;
+    let (_, other_token) = new_token(&f, &f.grantor_cookie, other).await;
+    for round in 0..2 {
+        for attempt in 0..4 {
+            let (failed, v) = tool(
+                &f,
+                &other_token,
+                "run_query",
+                json!({"task":"Try","database":db,"sql":format!("SELECT * FROM {secret} -- {round} {attempt}")}),
+            )
+            .await;
+            assert!(failed);
+            assert_eq!(v["error"]["code"], "query_denied", "{v}");
+        }
+        let (failed, v) = tool(&f, &other_token, "run_query", good.clone()).await;
+        assert!(!failed, "{v}");
+    }
+    // Parallel refused calls cannot all slip past the breaker: five get the
+    // guard's answer, the rest are stopped.
+    let looper = new_agent(&f, &f.grantor_cookie, "Looper", "read").await;
+    let (_, looper_token) = new_token(&f, &f.grantor_cookie, looper).await;
+    let calls = (0..20).map(|i| {
+        tool(
+            &f,
+            &looper_token,
+            "run_query",
+            json!({"task":"Race","database":db,"sql":format!("SELECT * FROM {secret} -- {i}")}),
+        )
+    });
+    let results = futures::future::join_all(calls).await;
+    let count = |code: &str| {
+        results
+            .iter()
+            .filter(|(_, v)| v["error"]["code"] == code)
+            .count()
+    };
+    assert_eq!((count("query_denied"), count("too_many_denials")), (5, 15));
+    // A database outside the agent's reach counts toward the breaker too.
+    let lost = new_agent(&f, &f.grantor_cookie, "Lost", "read").await;
+    let (_, lost_token) = new_token(&f, &f.grantor_cookie, lost).await;
+    let nowhere = json!({"task":"Guess","database":Uuid::new_v4(),"sql":"SELECT 1"});
+    for attempt in 0..6 {
+        let (failed, v) = tool(&f, &lost_token, "run_query", nowhere.clone()).await;
+        assert!(failed);
+        let expected = if attempt < 5 {
+            "not_found"
+        } else {
+            "too_many_denials"
+        };
+        assert_eq!(v["error"]["code"], expected, "{v}");
+    }
+    // The hourly budget counts every recorded attempt and says how long to wait.
+    let (s, v) = f
+        .request(
+            "POST",
+            "/agents",
+            &f.grantor_cookie,
+            Some(json!({"name":"Small budget","cluster_ids":[f.cluster],"hourly_query_budget":2})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["hourly_query_budget"], 2);
+    let small: Uuid = v["id"].as_str().unwrap().parse().unwrap();
+    let (_, small_token) = new_token(&f, &f.grantor_cookie, small).await;
+    for _ in 0..2 {
+        let (failed, v) = tool(&f, &small_token, "run_query", good.clone()).await;
+        assert!(!failed, "{v}");
+    }
+    let (failed, v) = tool(&f, &small_token, "run_query", good.clone()).await;
+    assert!(failed);
+    assert_eq!(v["error"]["code"], "budget_exceeded", "{v}");
+    assert_eq!(v["error"]["fix"]["action"], "retry_later");
+    let wait = v["error"]["fix"]["retry_after_seconds"].as_u64().unwrap();
+    assert!((3500..=3600).contains(&wait), "{wait}");
+    // Parallel calls cannot overshoot the budget either: exactly five run.
+    let (s, v) = f
+        .request(
+            "POST",
+            "/agents",
+            &f.grantor_cookie,
+            Some(json!({"name":"Racer","cluster_ids":[f.cluster],"hourly_query_budget":5})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let racer: Uuid = v["id"].as_str().unwrap().parse().unwrap();
+    let (_, racer_token) = new_token(&f, &f.grantor_cookie, racer).await;
+    let calls = (0..20).map(|_| tool(&f, &racer_token, "run_query", good.clone()));
+    let results = futures::future::join_all(calls).await;
+    let ran = results.iter().filter(|(failed, _)| !failed).count();
+    let over = results
+        .iter()
+        .filter(|(_, v)| v["error"]["code"] == "budget_exceeded")
+        .count();
+    assert_eq!(
+        (ran, over),
+        (5, 15),
+        "{:?}",
+        results
+            .iter()
+            .map(|(_, v)| v["error"].clone())
+            .collect::<Vec<_>>()
+    );
+    let recorded: i64 = sqlx::query_scalar("SELECT count(*) FROM query_history WHERE agent_id=$1")
+        .bind(racer)
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(recorded, 5, "a refusal for the budget records nothing");
+    // Raising the budget lets it go on; the change is audited with both values.
+    for bad in [0, 100_001, -5] {
+        let (s, _) = f
+            .request(
+                "PATCH",
+                &format!("/agents/{small}"),
+                &f.grantor_cookie,
+                Some(json!({"hourly_query_budget":bad})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+    }
+    let (s, _) = f
+        .request(
+            "PATCH",
+            &format!("/agents/{small}"),
+            &f.admin_cookie,
+            Some(json!({"hourly_query_budget":50})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "only the owner sets the budget");
+    let (s, v) = f
+        .request(
+            "PATCH",
+            &format!("/agents/{small}"),
+            &f.grantor_cookie,
+            Some(json!({"hourly_query_budget":50})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (failed, v) = tool(&f, &small_token, "run_query", good).await;
+    assert!(!failed, "{v}");
+    let change: Value = sqlx::query_scalar(
+        "SELECT details FROM audit_log WHERE action='agent.update' AND target_id=$1",
+    )
+    .bind(small)
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(change, json!({"hourly_query_budget":{"from":2,"to":50}}));
+    for name in [&table, &secret] {
+        sqlx::query(&format!("DROP TABLE {name}"))
+            .execute(&target)
+            .await
+            .unwrap();
+    }
+    target.close().await;
+    f.close().await;
+}
+
+#[tokio::test]
+async fn a_token_cannot_be_minted_while_its_owner_is_losing_access() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let agent = new_agent(&f, &f.grantor_cookie, "Racer", "read").await;
+    let path = format!("/agents/{agent}/tokens");
+    // What an administrator's password reset does, held open before commit.
+    let mut reset = f.db.begin().await.unwrap();
+    for sql in [
+        "SELECT org_role,disabled FROM users WHERE id=$1 FOR NO KEY UPDATE",
+        "UPDATE users SET password_hash=password_hash WHERE id=$1",
+        "DELETE FROM sessions WHERE user_id=$1",
+        "UPDATE agent_tokens SET revoked_at=now() WHERE revoked_at IS NULL
+         AND agent_id IN (SELECT id FROM agents WHERE owner_id=$1)",
+    ] {
+        sqlx::query(sql)
+            .bind(f.grantor)
+            .execute(&mut *reset)
+            .await
+            .unwrap();
+    }
+    // The mint waits for the reset instead of finishing beside it. After
+    // the reset the old session is gone, so the mint is refused.
+    let (s, v) = {
+        let mint = f.request("POST", &path, &f.grantor_cookie, Some(json!({})));
+        tokio::pin!(mint);
+        let early = tokio::time::timeout(std::time::Duration::from_millis(500), &mut mint).await;
+        assert!(early.is_err(), "the mint did not wait: {early:?}");
+        reset.commit().await.unwrap();
+        mint.await
+    };
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    let live: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM agent_tokens WHERE agent_id=$1 AND revoked_at IS NULL",
+    )
+    .bind(agent)
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(live, 0);
+    // A fresh session mints normally.
+    let cookie = Fixture::session(&f.db, f.grantor).await;
+    let (s, v) = f.request("POST", &path, &cookie, Some(json!({}))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
     f.close().await;
 }

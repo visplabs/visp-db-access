@@ -182,6 +182,9 @@ interface HistoryEntry {
   elapsed_ms: number | null;
   error: string | null;
   created_at: string;
+  ip: string | null;
+  agent_id: string | null; // the agent that ran it for user_id; null for a person's own query
+  task: string | null; // what the caller said the query is for
 }
 
 interface Approval {
@@ -354,7 +357,7 @@ database, username, password, tls_mode, replica_host?, replica_port?, tags?}` �
   are rejected. Rewritten outer SELECT/FETCH limits use `max_rows + 1` when imposing/capping a
   policy limit to detect truncation. Smaller explicit limits are preserved. Display
   `rewritten_sql` verbatim; only `max_rows` rows are returned.
-- `POST /clusters/:id/query` `{sql, query_id?}` → `QueryResult`.
+- `POST /clusters/:id/query` `{sql, query_id?, task?}` → `QueryResult`.
   `query_id` (client-generated UUID) lets the client cancel before the response arrives.
   Errors: `query_denied` 422 (`details: Analysis`), `approval_required` 409 (`details: Analysis`),
   `cost_exceeded` 422 (`details: {cost, max_cost}`), `busy` 429, `upstream` 502 (`message` = DB error).
@@ -401,21 +404,23 @@ the tokens back. The audit event carries `agent_tokens_revoked`.
 A pause is not a lock: the owner can resume an agent that an org admin paused.
 For a stop that the owner cannot undo, delete the agent or disable the owner.
 
-`Agent` is `{id, name, description, max_level: "read"|"write", paused, owner: {id, email, name},
-cluster_ids: uuid[], tokens: AgentToken[], created_at, updated_at}`.
+`Agent` is `{id, name, description, max_level: "read"|"write", paused, hourly_query_budget,
+owner: {id, email, name}, cluster_ids: uuid[], tokens: AgentToken[], created_at, updated_at}`.
+`hourly_query_budget` (1–100000, default 300) is how many queries the agent can start in one
+hour. Refused attempts count too. Only the owner can change it.
 `AgentToken` is `{id, hint, created_at, expires_at, revoked_at, last_used_at}`; `hint` is the
 last four characters of the token. A token digest is never returned.
 
 - `GET /agents?limit=50&cursor=` → `{items: Agent[], next_cursor}`. The caller's own agents;
   an org admin sees every agent.
-- `POST /agents` `{name, description?, max_level? = "read", cluster_ids}` → `Agent`. The caller
+- `POST /agents` `{name, description?, max_level? = "read", cluster_ids, hourly_query_budget? = 300}` → `Agent`. The caller
   becomes the owner. `name` is trimmed, then must be 1–100 characters with no invisible, blank or
   direction-changing characters (a plain space is fine; joiners and the emoji selector are
   allowed only after a non-ASCII character), and unique per owner without regard to case (409 `conflict`).
   `cluster_ids` holds 1–100 clusters, each one the caller can access now (400 `validation`
   otherwise). At most 50 agents per owner (409).
 - `GET /agents/:id` → `Agent` (owner or org admin; 404 for everyone else).
-- `PATCH /agents/:id` `{name?, description?, max_level?, cluster_ids?, paused?}` → `Agent`.
+- `PATCH /agents/:id` `{name?, description?, max_level?, cluster_ids?, hourly_query_budget?, paused?}` → `Agent`.
   The owner can change every field. An org admin who is not the owner can change only
   `paused` (403 `forbidden` if any other field is present). A body with no field is 400.
   A body that asks for the state the agent already has returns the agent and writes nothing.
@@ -448,6 +453,76 @@ malformed, expired or revoked token, paused agent, disabled owner.
 clusters: [{id, name, engine, provider, region, environment, level}]}`. `clusters` lists
   only what the agent can reach now, with its effective `level`.
 
+- `POST /mcp` — the Model Context Protocol endpoint (Streamable HTTP, without sessions and
+  without server-sent events). The body is one JSON-RPC 2.0 message; the answer is one JSON
+  object. Protocol versions `2025-06-18`, `2025-03-26` and `2024-11-05` are accepted; an
+  unknown `MCP-Protocol-Version` header is 400. A request with an `Origin` header is 403,
+  because a browser must not drive this endpoint. `GET` is 405.
+
+  | Method                           | Answer                                                               |
+  | -------------------------------- | -------------------------------------------------------------------- |
+  | `initialize`                     | `{protocolVersion, capabilities: {tools}, serverInfo, instructions}` |
+  | `ping`                           | `{}`                                                                 |
+  | `tools/list`                     | `{tools: [{name, description, inputSchema}]}`                        |
+  | `tools/call` `{name, arguments}` | `{content: [{type: "text", text}], structuredContent, isError}`      |
+  | a message with no `id`           | `202`, no body                                                       |
+
+  Protocol errors use JSON-RPC codes: `-32700` (not JSON, 400), `-32600` (not one valid
+  message, or a batch, 400), `-32601` (unknown method), `-32602` (unknown tool). `id` must
+  be a string or an integer.
+
+  Tools. Every tool takes `task`: one line of 1–500 visible characters that says what the
+  agent is doing and why. A tool accepts only the arguments in its own row below.
+
+  | Tool             | Arguments                              | Result                                                                                   |
+  | ---------------- | -------------------------------------- | ---------------------------------------------------------------------------------------- |
+  | `list_databases` | `task`                                 | `{databases: [{id, name, engine, provider, region, environment, level}]}`                |
+  | `search_schema`  | `task, database, query, limit? = 20`   | `{tables: [{table, kind, row_estimate, matching_columns}], more}`                        |
+  | `describe_table` | `task, database, table`                | `{table, kind, row_estimate, columns: [{name, type, nullable, primary_key, protected}]}` |
+  | `check_sql`      | `task, database, sql`                  | `{verdict, risk, issues, will_run_as, suggestions, fix}`; nothing runs                   |
+  | `run_query`      | `task, database, sql, max_rows? = 100` | `{query_id, columns, rows, row_count, truncated, ran_as, elapsed_ms}`                    |
+
+  `database` is an `id` from `list_databases`. Tables that the cluster policy blocks are
+  left out of `search_schema`, and `describe_table` answers `table_not_found` for them, the
+  same as for a table that does not exist. This is a filter on names in the gateway; it is not
+  yet enforced by the target database. `check_sql` still answers `blocked_table` for a
+  blocked name, so the block list is not a secret from the agent. `run_query` goes through the same pipeline as a
+  person's query (guard, policy, masking, cost gate, audit) and stores `task` in query
+  history. It returns at most `max_rows` rows (1000 at most) and at most about one megabyte
+  of row data; `truncated` says when rows were left out. The request can run as long as a
+  person's query (610 s ceiling); the statement timeout of the cluster policy applies.
+
+  A refused tool call is a normal result with `isError: true` and
+  `structuredContent: {error: {code, message, fix}}`. `fix` is
+  `{action, hint, retry_after_seconds?}`. `action` is one of `rewrite_sql`, `fix_arguments`,
+  `choose_database`, `ask_owner`, `retry_later`, `stop`. When a statement has several
+  blocking issues, the hardest stop decides the fix. A failure inside the gateway (5xx
+  other than `upstream`) has a generic message. Error codes are those of the query API,
+  plus:
+  - `table_not_found` (404): `describe_table` found no such table.
+  - `result_too_large` (422): one row alone is larger than about one megabyte.
+  - `network_denied` (403): the cluster's own network policy excludes the agent's address.
+    Such a cluster is also left out of `list_databases`.
+  - `rate_limited` (429): more than 120 tool calls by one agent in one minute, all tools
+    together, counted on one node.
+  - `budget_exceeded` (429): the hourly query budget is used; `fix.retry_after_seconds` says
+    how long to wait. The budget is exact also under parallel calls, and a refusal for the
+    budget records nothing.
+  - `too_many_denials` (429): five `run_query` calls in a row were refused (`query_denied`,
+    `approval_required`, `forbidden`, `not_found`, `cost_exceeded`). The agent is stopped for up to ten
+    minutes from the first refusal, on the node that counted them; the other tools still
+    work. A successful `run_query` resets the count. Parallel calls that the guard or the
+    access check refuses cannot pass the limit. Statements that the guard accepts run in
+    parallel, so several of them can reach the cost gate at once and each be refused there;
+    the budget still bounds them.
+
+  Each tool call whose arguments parse is recorded as an `agent.tool` audit event:
+  `{tool, task, database, outcome}`, under the owner, with the agent as the target. These
+  events go through the same bounded queue as other audit events; if the queue stays full
+  for 250 ms the event is dropped, logged, and counted in the metric
+  `vda_agent_tool_events_dropped_total`. Queries are not affected: their history row and
+  `query.execute` event are written in a transaction before the query runs.
+
 ### Audit
 
 - `GET /audit?action=&actor_id=&limit=&cursor=` → `{items: AuditEvent[], next_cursor}` (org admin).
@@ -457,7 +532,7 @@ clusters: [{id, name, engine, provider, region, environment, level}]}`. `cluster
   status. Final outcome is in history. Approval actions include `approval.create`,
   `approval.approve`, `approval.reject`, `approval.execute` (claim), `approval.executed`,
   and `approval.failed`. Administrative actions use `*.create`, `*.update`, `*.delete`. Agent actions are
-  `agent.create` (`{owner_id, name, max_level, cluster_ids}`), `agent.update` (each changed
+  `agent.create` (`{owner_id, name, max_level, cluster_ids, hourly_query_budget}`), `agent.update` (each changed
   field as `{from, to}`, except `description`, which is only marked `"changed"`; a change of name, level or clusters is always its own event, also
   when the same request pauses or resumes), `agent.pause`, `agent.resume`, `agent.delete`
   (`{owner_id, name}`), `agent.token_create` (`{token_id, hint, expires_at}`) and

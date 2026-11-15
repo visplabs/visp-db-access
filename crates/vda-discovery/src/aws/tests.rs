@@ -377,7 +377,10 @@ async fn total_deadline_retains_success_and_bounds_region_concurrency() {
     );
     let mut clients = vec![("us-east-1".into(), good)];
     clients.extend((0..6).map(|index| (format!("slow-{index}"), slow.clone())));
-    let outcome = scan_clients_before(clients, Duration::from_millis(100)).await;
+    // The slow regions never answer, so the scan always lasts the whole
+    // budget. Two seconds leaves the good region time to finish on a busy
+    // machine; 100 ms did not, and the test failed now and then.
+    let outcome = scan_clients_before(clients, Duration::from_secs(2)).await;
     assert_eq!(outcome.resources.len(), 1);
     assert_eq!(outcome.errors.len(), 6);
     assert_eq!(
