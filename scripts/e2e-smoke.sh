@@ -18,7 +18,7 @@ work_dir=$(mktemp -d)
 cleanup() {
   if [[ -n ${mysql_request_pid:-} ]] && kill -0 "$mysql_request_pid" 2>/dev/null; then
     curl --silent --show-error --max-time 5 --request POST --header 'X-Requested-With: vda' \
-      --cookie "$admin_jar" "$base_url/api/v1/queries/$mysql_cancel_id/cancel" >/dev/null 2>&1 || true
+      --cookie "$admin_jar" "$base_url/api/v1/queries/${mysql_cancel_id:-}/cancel" >/dev/null 2>&1 || true
     kill "$mysql_request_pid" 2>/dev/null || true
     wait "$mysql_request_pid" 2>/dev/null || true
   fi
@@ -172,12 +172,14 @@ call GET "/audit?actor_id=$reviewer_id&limit=200" 200 "$admin_jar"
 check '[.items[].action] | index("approval.approve") != null'
 pass 'history and durable audit'
 if [[ -n ${VDA_SMOKE_MYSQL_HOST:-} ]]; then
+  # shellcheck source=/dev/null
   source "$(dirname -- "${BASH_SOURCE[0]}")/mysql-smoke.sh"
 else
   printf 'SKIP MySQL: VDA_SMOKE_MYSQL_HOST is unset.\n'
 fi
 if [[ -n ${VDA_DISCOVERY_FAKE_FIXTURE:-} ]]; then
   # The running fake provider must use this same writable temporary fixture.
+  # shellcheck source=/dev/null
   source "$(dirname -- "${BASH_SOURCE[0]}")/discovery-smoke.sh"
 else
   printf 'SKIP discovery: VDA_DISCOVERY_FAKE_FIXTURE is unset.\n'

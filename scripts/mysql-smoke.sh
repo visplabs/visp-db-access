@@ -2,6 +2,8 @@
 # Optional section sourced by e2e-smoke.sh; uses its auth, project and helper functions.
 # Enable with VDA_SMOKE_MYSQL_HOST (defaults: port 33306, database shop,
 # shop_reader/shop_reader_pw, shop_writer/shop_writer_pw). No mysql CLI required.
+# The variables it reads are assigned in e2e-smoke.sh.
+# shellcheck disable=SC2154
 mysql_body=$(jq -n --arg project "$project_id" --arg host "$VDA_SMOKE_MYSQL_HOST" \
   --argjson port "${VDA_SMOKE_MYSQL_PORT:-33306}" --arg database "${VDA_SMOKE_MYSQL_DATABASE:-shop}" \
   --arg username "${VDA_SMOKE_MYSQL_READER:-shop_reader}" --arg password "${VDA_SMOKE_MYSQL_READER_PASSWORD:-shop_reader_pw}" \
