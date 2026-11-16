@@ -277,7 +277,8 @@ pub(crate) async fn apply_patch(
         return Err(ApiError::validation("Unknown cluster field"));
     }
     let mut merged = json!(current);
-    if endpoint_changed(&merged, &patch) && object.get("password").is_none_or(|p| !p.is_string()) {
+    let moved = endpoint_changed(&merged, &patch);
+    if moved && object.get("password").is_none_or(|p| !p.is_string()) {
         return Err(ApiError::validation(
             "Changing the connection endpoint requires re-entering the password",
         ));
@@ -343,8 +344,27 @@ pub(crate) async fn apply_patch(
             "Cluster changed concurrently; reload and retry",
         ));
     }
+    // A stored credential is only ever sent to the endpoint it was entered
+    // for. The cluster's own password had to be given again above. The agent
+    // login keeps its row but loses its password: agents are then refused
+    // until an administrator enters it again, or removes the login on purpose.
+    // Deleting the row here would quietly put agents on the cluster's login.
+    let cleared = if moved {
+        sqlx::query(
+            "UPDATE cluster_agent_logins SET password_enc='',status='unchecked',findings='[]',
+             checked_at=NULL,checked_version=NULL,updated_at=now() WHERE cluster_id=$1",
+        )
+        .bind(id)
+        .execute(&mut *connection)
+        .await?
+        .rows_affected()
+            > 0
+    } else {
+        false
+    };
+    let details = json!({"agent_login_password_cleared": cleared});
     state
-        .audit_change(connection, user, "cluster.update", Some(id), ip)
+        .audit_details(connection, user, "cluster.update", Some(id), ip, details)
         .await?;
     Ok(())
 }

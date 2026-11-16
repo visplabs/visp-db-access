@@ -10,7 +10,15 @@ use vda_connectors::{ConnectionSpec, Engine, PoolOptions, TargetPool, TlsMode};
 pub struct ClusterPools {
     pub primary: TargetPool,
     pub replica: Option<TargetPool>,
+    /// Pools that connect as the cluster's agent login, when one is set.
+    pub agent: Option<AgentPools>,
     pub semaphore: Arc<Semaphore>,
+}
+/// Primary and optional replica pools for the least-privilege agent login.
+#[derive(Debug)]
+pub struct AgentPools {
+    pub primary: TargetPool,
+    pub replica: Option<TargetPool>,
 }
 /// Per-node pool cache. Version keys prevent stale configuration across nodes.
 #[derive(Debug, Clone)]
@@ -55,9 +63,19 @@ impl Pools {
                 } else {
                     None
                 };
+                // A broken agent login must not take people's queries down
+                // with it. Without these pools, agents are refused.
+                let agent = match agent_pools(core, cluster).await {
+                    Ok(pools) => pools,
+                    Err(error) => {
+                        tracing::error!(cluster_id = %cluster.id, code = error.code, "agent login pools could not be built");
+                        None
+                    }
+                };
                 Ok::<_, ApiError>(Arc::new(ClusterPools {
                     primary,
                     replica,
+                    agent,
                     semaphore: Arc::new(Semaphore::new(policy.max_concurrent_queries as usize)),
                 }))
             })
@@ -88,10 +106,45 @@ impl Pools {
             if let Some(replica) = &pools.replica {
                 replica.close().await;
             }
+            if let Some(agent) = &pools.agent {
+                agent.primary.close().await;
+                if let Some(replica) = &agent.replica {
+                    replica.close().await;
+                }
+            }
         }
         self.cache.invalidate_all();
         self.cache.run_pending_tasks().await;
     }
+}
+/// Pools that connect as the cluster's agent login, when one is set.
+async fn agent_pools(core: &Core, cluster: &ClusterRecord) -> Result<Option<AgentPools>, ApiError> {
+    let Some(login) = crate::judge::login(&core.db, cluster.id).await? else {
+        return Ok(None);
+    };
+    // The password was cleared when the endpoint changed; nothing to connect with.
+    if login.password_enc.is_empty() {
+        return Ok(None);
+    }
+    let password = core
+        .crypto
+        .decrypt(cluster.id, &login.password_enc)
+        .map_err(|_| ApiError::internal())?;
+    let mut primary = connection_spec(core, cluster, false).await?;
+    primary.username = login.username.clone();
+    primary.password = password.clone().into();
+    let replica = if cluster.replica_host.is_some() {
+        let mut spec = connection_spec(core, cluster, true).await?;
+        spec.username = login.username.clone();
+        spec.password = password.into();
+        Some(TargetPool::new_lazy(&spec, PoolOptions::default())?)
+    } else {
+        None
+    };
+    Ok(Some(AgentPools {
+        primary: TargetPool::new_lazy(&primary, PoolOptions::default())?,
+        replica,
+    }))
 }
 /// Decrypt and validate credentials immediately before opening a pool.
 pub async fn connection_spec(

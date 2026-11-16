@@ -171,6 +171,14 @@ pub fn for_error(error: &ApiError) -> Fix {
                 "stop",
                 "The query was cancelled by a person, or your access ended while it ran. Do not run it again. Tell your owner.",
             ),
+            (crate::error::ErrorKind::Database, message)
+                if message.contains("permission denied") || message.contains("masked data") =>
+            {
+                Fix::new(
+                    "rewrite_sql",
+                    "The database does not let you read a table or column in this query. Call describe_table, name the columns you need instead of `*`, and leave out the ones marked protected.",
+                )
+            }
             (crate::error::ErrorKind::Database, _) => Fix::new(
                 "rewrite_sql",
                 "The database reported an error. Check names and types with describe_table, then correct the SQL.",
@@ -187,6 +195,17 @@ pub fn for_error(error: &ApiError) -> Fix {
                 retry_after_seconds: Some(30),
                 ..Fix::new("retry_later", "The database could not be reached. Try once more later.")
             },
+        },
+        ("database_setup_drift", _) => Fix::new(
+            "ask_owner",
+            "This database is closed to agents until a person repairs its setup. Tell your owner.",
+        ),
+        ("database_check_failed", _) => Fix {
+            retry_after_seconds: Some(30),
+            ..Fix::new(
+                "retry_later",
+                "The gateway could not check this database's setup. Try once more later; if it stays, tell your owner.",
+            )
         },
         ("credentials_unreadable", _) => Fix::new(
             "ask_owner",
@@ -263,6 +282,8 @@ mod tests {
             ("network_denied", "stop"),
             ("rate_limited", "retry_later"),
             ("credentials_unreadable", "ask_owner"),
+            ("database_setup_drift", "ask_owner"),
+            ("database_check_failed", "retry_later"),
             ("validation", "fix_arguments"),
             ("busy", "retry_later"),
             ("unauthenticated", "stop"),
