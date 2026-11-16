@@ -176,9 +176,16 @@ export interface Approval {
     | 'executing'
     | 'executed'
     | 'failed'
-    | 'expired';
+    | 'expired'
+    | 'withdrawn';
   error: string | null;
   sql_truncated: boolean;
+  /** The agent that asked, for its owner (the requester). */
+  agent?: { id: string | null; name: string } | null;
+  /** What the dry run showed; null in lists and for old requests. */
+  preview?: Record<string, unknown> | null;
+  /** The signed record of a write that ran. */
+  receipt?: Record<string, unknown> | null;
   reviewer: { id: string; email: string; name: string } | null;
   review_note: string | null;
   result: QueryResult | null;

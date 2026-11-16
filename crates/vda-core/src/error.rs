@@ -116,6 +116,13 @@ impl From<vda_connectors::ConnectorError> for ApiError {
         // Connection failures stay generic. Database statement diagnostics are
         // part of the v1 query error contract and are visible to the query owner.
         tracing::warn!(error = %error, "target operation failed");
+        if let vda_connectors::ConnectorError::EffectChanged(reason) = &error {
+            return Self::new(
+                StatusCode::CONFLICT,
+                "effect_changed",
+                format!("The data changed after the approval, so the write was not run: {reason}"),
+            );
+        }
         let kind = match &error {
             vda_connectors::ConnectorError::Cancelled => ErrorKind::Cancelled,
             vda_connectors::ConnectorError::Database(_) => ErrorKind::Database,

@@ -39,6 +39,19 @@ pub struct QueryResult {
     pub executed_sql: String,
     pub routed_to: String,
     pub analysis: Analysis,
+    /// Set for a dry run: what the write would do. Nothing was changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<crate::preview::Preview>,
+}
+/// How the pipeline treats a statement once it passes the checks.
+#[derive(Debug, Clone)]
+enum Mode {
+    /// Run it.
+    Run,
+    /// Run a write and roll it back, to preview it.
+    DryRun,
+    /// Run an approved write only if it still has the approved effect.
+    Bound(vda_connectors::Expected),
 }
 fn validate_sql(sql: &str) -> Result<(), ApiError> {
     crate::sanitation::text(sql)?;
@@ -126,7 +139,70 @@ pub async fn run(
     ip: std::net::IpAddr,
     approved: bool,
 ) -> Result<QueryResult, ApiError> {
-    run_inner(core, actor, cluster_id, body, ip, (approved, None)).await
+    run_inner(
+        core,
+        actor,
+        cluster_id,
+        body,
+        ip,
+        (approved, None),
+        Mode::Run,
+    )
+    .await
+}
+
+/// Preview a write: run it in a transaction that is always rolled back.
+/// The actor needs the access the write itself needs; a write that the guard
+/// would refuse is refused here too. MySQL writes are not previewed.
+pub async fn dry_run(
+    core: &Core,
+    actor: &Actor,
+    cluster_id: Uuid,
+    body: QueryInput,
+    ip: std::net::IpAddr,
+) -> Result<crate::preview::Preview, ApiError> {
+    let cluster = crate::records::cluster(&core.db, cluster_id).await?;
+    if cluster.engine != "postgres" {
+        // Checked again with the access level in the pipeline; here only the
+        // engine decides that there is nothing to run.
+        crate::access::require_level_effective(&core.db, actor, cluster_id, AccessLevel::Write)
+            .await?;
+        return Ok(crate::preview::Preview::unsupported(
+            "Writes on MySQL are not previewed. The approval is bound to nothing.",
+        ));
+    }
+    let result = run_inner(
+        core,
+        actor,
+        cluster_id,
+        body,
+        ip,
+        (false, None),
+        Mode::DryRun,
+    )
+    .await?;
+    result.preview.ok_or_else(ApiError::internal)
+}
+
+/// Functions defined in the database (not built in) that `select` would
+/// call, as the cluster's PostgreSQL resolves them; none on MySQL. Nothing
+/// in `select` runs.
+pub async fn database_functions(
+    core: &Core,
+    cluster_id: Uuid,
+    select: &str,
+    target: Option<(&str, Option<&[String]>)>,
+) -> Result<Vec<String>, ApiError> {
+    let cluster = crate::records::cluster(&core.db, cluster_id).await?;
+    if cluster.engine != "postgres" {
+        return Ok(vec![]);
+    }
+    let policy = crate::records::policy(&core.db, cluster_id).await?;
+    let pools = core.pools.get(core, &cluster, &policy).await?;
+    Ok(pools
+        .primary
+        .database_functions(select, target, &policy.limits(), CancellationToken::new())
+        .await?)
 }
 
 /// Use the claim's timeout ceiling even if policy changes while approval work starts.
@@ -138,7 +214,31 @@ pub async fn run_approved(
     ip: std::net::IpAddr,
     timeout_ms: u64,
 ) -> Result<QueryResult, ApiError> {
-    run_inner(core, actor, cluster_id, body, ip, (true, Some(timeout_ms))).await
+    run_approved_bound(core, actor, cluster_id, body, ip, timeout_ms, None).await
+}
+
+/// Run an approved write, and with `expected` only if it still has the effect
+/// that was approved: the same rows and the same count.
+pub async fn run_approved_bound(
+    core: &Core,
+    actor: &Actor,
+    cluster_id: Uuid,
+    body: QueryInput,
+    ip: std::net::IpAddr,
+    timeout_ms: u64,
+    expected: Option<vda_connectors::Expected>,
+) -> Result<QueryResult, ApiError> {
+    let mode = expected.map_or(Mode::Run, Mode::Bound);
+    run_inner(
+        core,
+        actor,
+        cluster_id,
+        body,
+        ip,
+        (true, Some(timeout_ms)),
+        mode,
+    )
+    .await
 }
 
 async fn run_inner(
@@ -148,8 +248,11 @@ async fn run_inner(
     body: QueryInput,
     ip: std::net::IpAddr,
     approval: (bool, Option<u64>),
+    mode: Mode,
 ) -> Result<QueryResult, ApiError> {
     let (approved, timeout_ms) = approval;
+    // A dry run changes nothing, so it may preview a write that needs approval.
+    let passes = approved || matches!(mode, Mode::DryRun);
     validate_sql(&body.sql)?;
     if let Some(task) = &body.task {
         validate_task(task)?;
@@ -203,7 +306,7 @@ async fn run_inner(
         .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_else(|| "deny".into());
     let blocked = analysis.verdict == Verdict::Deny
-        || (analysis.verdict == Verdict::RequiresApproval && !approved);
+        || (analysis.verdict == Verdict::RequiresApproval && !passes);
     let history = History {
         id: history_id,
         cluster_id: c.id,
@@ -211,7 +314,11 @@ async fn run_inner(
         user_id: actor.user_id,
         user_email: actor.email.clone(),
         agent_id: actor.agent.as_ref().map(|a| a.agent_id),
-        task: body.task.as_deref().map(|task| task.trim().to_owned()),
+        task: match (&mode, body.task.as_deref()) {
+            (Mode::DryRun, Some(task)) => Some(format!("Dry run, rolled back: {}", task.trim())),
+            (Mode::DryRun, None) => Some("Dry run, rolled back".into()),
+            (_, task) => task.map(|task| task.trim().to_owned()),
+        },
         sql: body.sql,
         verdict: verdict.clone(),
         status: if blocked { "blocked" } else { "running" }.into(),
@@ -273,7 +380,8 @@ async fn run_inner(
                     analysis.clone(),
                     query_id,
                     token,
-                    (approved, agent),
+                    (passes, agent),
+                    mode,
                 ),
             )
             .await
@@ -338,6 +446,7 @@ async fn run_inner(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn pipeline(
     core: &Core,
     c: &ClusterRecord,
@@ -346,6 +455,7 @@ async fn pipeline(
     query_id: Uuid,
     token: CancellationToken,
     (approved, agent): (bool, bool),
+    mode: Mode,
 ) -> Result<QueryResult, ApiError> {
     match analysis.verdict {
         Verdict::Deny => {
@@ -371,6 +481,9 @@ async fn pipeline(
         .clone()
         .ok_or_else(ApiError::internal)?;
     let pools = core.pools.get(core, c, policy).await?;
+    if !matches!(mode, Mode::Run) {
+        return write_with_effect(c, policy, analysis, query_id, token, &pools, mode).await;
+    }
     // An agent's query runs as the cluster's agent login when one is set, and
     // only while the database itself is verified to allow no more than the
     // policy. The guard above is then the first check and the database the last.
@@ -455,7 +568,116 @@ async fn pipeline(
         executed_sql: sql,
         routed_to: if replica { "replica" } else { "primary" }.into(),
         analysis,
+        preview: None,
     })
+}
+
+/// A dry run or a bound write. Both change data in a transaction on the
+/// cluster's own login on the primary: the agent login is read-only, and a
+/// replica cannot write.
+async fn write_with_effect(
+    c: &ClusterRecord,
+    policy: &Policy,
+    analysis: Analysis,
+    query_id: Uuid,
+    token: CancellationToken,
+    pools: &crate::pools::ClusterPools,
+    mode: Mode,
+) -> Result<QueryResult, ApiError> {
+    if analysis.is_read_only() {
+        return Err(ApiError::validation(
+            "Only a statement that changes data can be previewed",
+        ));
+    }
+    let sql = analysis
+        .rewritten_sql
+        .clone()
+        .ok_or_else(ApiError::internal)?;
+    let plan = vda_guard::write_plan(&sql, dialect(c));
+    let limits = policy.limits();
+    let permit = tokio::select! {
+        _=token.cancelled()=>return Err(vda_connectors::ConnectorError::Cancelled.into()),
+        value = tokio::time::timeout(Duration::from_secs(2), pools.semaphore.clone().acquire_owned()) => {
+            value.map_err(|_| ApiError::new(StatusCode::TOO_MANY_REQUESTS, "busy", "Cluster is busy"))?
+                .map_err(|_| ApiError::internal())?
+        }
+    };
+    let tables = analysis
+        .statements
+        .iter()
+        .flat_map(|s| s.tables.iter().cloned())
+        .collect::<Vec<_>>();
+    let (mut result, preview) = match mode {
+        Mode::DryRun => {
+            let write = plan
+                .as_ref()
+                .and_then(|plan| plan.returning_all.as_deref())
+                .unwrap_or(&sql);
+            let run = pools
+                .primary
+                .dry_run_write(
+                    write_sql(write, plan.as_ref()),
+                    &limits,
+                    policy.max_affected_rows,
+                    token,
+                )
+                .await?;
+            let affected = run.written.affected_rows;
+            let elapsed = run.written.elapsed_ms;
+            let preview =
+                crate::preview::build(run, plan.as_ref(), &policy.masked_columns, &tables);
+            let empty = vda_connectors::QueryResult {
+                columns: vec![],
+                rows: vec![],
+                row_count: 0,
+                truncated: false,
+                affected_rows: affected,
+                elapsed_ms: elapsed,
+            };
+            (empty, Some(preview))
+        }
+        Mode::Bound(expected) => {
+            let result = pools
+                .primary
+                .execute_bound_write(
+                    write_sql(&sql, plan.as_ref()),
+                    &expected,
+                    &limits,
+                    policy.max_affected_rows,
+                    token,
+                )
+                .await?;
+            (result, None)
+        }
+        Mode::Run => return Err(ApiError::internal()),
+    };
+    drop(permit);
+    let columns = crate::masking::apply(&mut result, &policy.masked_columns, &tables);
+    Ok(QueryResult {
+        query_id,
+        columns,
+        rows: result.rows,
+        row_count: result.row_count,
+        truncated: result.truncated,
+        affected_rows: result.affected_rows,
+        elapsed_ms: result.elapsed_ms,
+        executed_sql: sql,
+        routed_to: "primary".into(),
+        analysis,
+        preview,
+    })
+}
+fn write_sql<'a>(
+    write: &'a str,
+    plan: Option<&'a vda_guard::WritePlan>,
+) -> vda_connectors::WriteSql<'a> {
+    vda_connectors::WriteSql {
+        write,
+        target_rows: plan.and_then(|plan| plan.target_rows.as_deref()),
+        target_keys: plan.and_then(|plan| plan.target_keys.as_deref()),
+        bound_write: plan.and_then(|plan| plan.bound_write.as_deref()),
+        table: plan.map(|plan| plan.target.as_str()),
+    }
 }
 /// Cancel an active local query, when [`Actor::may_cancel`] allows it.
 pub fn cancel(core: &Core, actor: &Actor, query_id: Uuid) -> Result<(), ApiError> {

@@ -2283,7 +2283,10 @@ async fn agent_door_speaks_the_protocol_and_refuses_everything_else() {
             "search_schema",
             "describe_table",
             "check_sql",
-            "run_query"
+            "run_query",
+            "propose_write",
+            "get_approval",
+            "withdraw"
         ]
     );
     for t in tools {
@@ -3657,4 +3660,1046 @@ async fn the_database_is_the_judge_for_agents() {
         sqlx::query(&sql).execute(&server).await.unwrap();
     }
     server.close().await;
+}
+
+/// A target table for the safe-write tests, with a protected `email` column.
+async fn safe_table(f: &Fixture, target: &sqlx::PgPool) -> String {
+    let table = format!("vda_safe_{}", Uuid::new_v4().simple());
+    for sql in [
+        format!("CREATE TABLE {table}(id integer PRIMARY KEY,email text,note text,n integer NOT NULL DEFAULT 0)"),
+        format!("INSERT INTO {table}(id,email,note) VALUES (1,'ada@secret.example','first'),(2,'bob@secret.example','second'),(3,'cy@secret.example','third'),(4,'di@secret.example','fourth'),(5,'ed@secret.example','fifth')"),
+    ] {
+        sqlx::query(&sql).execute(target).await.unwrap();
+    }
+    let mut policy = Policy::for_environment("development");
+    policy.masked_columns = vec!["email".into()];
+    f.policy(&policy).await;
+    table
+}
+async fn request_write(f: &Fixture, sql: &str) -> (StatusCode, Value) {
+    f.request(
+        "POST",
+        "/approvals",
+        &f.grantor_cookie,
+        Some(json!({"cluster_id":f.cluster,"sql":sql,"reason":"Fix the notes"})),
+    )
+    .await
+}
+async fn note_and_n(target: &sqlx::PgPool, table: &str, id: i32) -> (String, i32) {
+    sqlx::query_as(&format!("SELECT note,n FROM {table} WHERE id=$1"))
+        .bind(id)
+        .fetch_one(target)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_write_is_previewed_bound_to_its_effect_and_leaves_a_signed_receipt() {
+    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let target = sqlx::PgPool::connect(&target_url).await.unwrap();
+    let table = safe_table(&f, &target).await;
+    // The preview shows the rows before and after, masks the protected
+    // column, and changes nothing.
+    let (s, v) = request_write(
+        &f,
+        &format!("UPDATE {table} SET note='fixed' WHERE id IN (1,2)"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let id = v["id"].as_str().unwrap().to_owned();
+    let preview = &v["preview"];
+    assert_eq!(preview["supported"], true, "{v}");
+    assert_eq!(preview["affected_rows"], 2);
+    assert_eq!(preview["bound_to"], "rows");
+    assert_eq!(preview["before"]["total"], 2);
+    assert!(preview["before"]["hidden"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("email")));
+    let note = preview["after"]["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|c| c == "note")
+        .unwrap();
+    assert_eq!(preview["after"]["rows"][0][note], "fixed", "{v}");
+    let text = v.to_string();
+    assert!(!text.contains("secret.example"), "{text}");
+    assert!(
+        !text.contains("fingerprint") && !text.contains("binding"),
+        "{text}"
+    );
+    assert_eq!(note_and_n(&target, &table, 1).await.0, "first");
+    // A new value made from a protected column is hidden too.
+    let (s, v) = request_write(&f, &format!("UPDATE {table} SET note=email WHERE id=3")).await;
+    if s == StatusCode::OK {
+        assert!(
+            v["preview"]["after"]["hidden"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("note")),
+            "{v}"
+        );
+        assert!(!v.to_string().contains("secret.example"), "{v}");
+    } else {
+        assert_eq!(v["error"]["code"], "query_denied", "{v}");
+    }
+    // A read needs no approval, and a write that fails in the dry run is not stored.
+    let (s, _) = request_write(&f, &format!("SELECT id FROM {table}")).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM approvals")
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    let (s, v) = request_write(
+        &f,
+        &format!("UPDATE {table} SET no_such_column=1 WHERE id=1"),
+    )
+    .await;
+    assert!(s.is_client_error() || s.is_server_error(), "{v}");
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM approvals")
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(before, after);
+    // The requester cannot approve; a rejection cannot run.
+    let (s, _) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/approve"),
+            &f.grantor_cookie,
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/reject"),
+            &f.admin_cookie,
+            Some(json!({"note":"no","run":true})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    // Approve and run in one step; the receipt is signed and checks out.
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/approve"),
+            &f.admin_cookie,
+            Some(json!({"note":"ok","run":true})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], "executed", "{v}");
+    assert_eq!(v["result"]["affected_rows"], 2);
+    assert_eq!(note_and_n(&target, &table, 2).await.0, "fixed");
+    let receipt = &v["receipt"];
+    assert_eq!(receipt["approved_by"]["email"], "admin@harden.example");
+    assert_eq!(receipt["executed_by"]["email"], "admin@harden.example");
+    assert_eq!(receipt["requested_by"]["email"], "grantor@harden.example");
+    assert_eq!(receipt["affected_rows"], 2);
+    assert_eq!(receipt["previewed_rows"], 2);
+    assert_eq!(receipt["bound_to"], "rows");
+    let (s, v) = f
+        .request(
+            "GET",
+            &format!("/approvals/{id}/receipt"),
+            &f.grantor_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["valid"], true, "{v}");
+    let (s, _) = f
+        .request(
+            "GET",
+            &format!("/approvals/{id}/receipt"),
+            &Fixture::session(&f.db, f.recipient).await,
+            None,
+        )
+        .await;
+    assert_ne!(s, StatusCode::OK);
+    sqlx::query("UPDATE approvals SET receipt=jsonb_set(receipt,'{sql}','\"DELETE FROM x\"') WHERE id=$1::uuid")
+        .bind(&id)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let (_, v) = f
+        .request(
+            "GET",
+            &format!("/approvals/{id}/receipt"),
+            &f.grantor_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(v["valid"], false, "{v}");
+    // Bound to the rows: a change to a target row after approval stops the write.
+    let (s, v) = request_write(&f, &format!("UPDATE {table} SET n=n+1 WHERE id=3")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let bound = v["id"].as_str().unwrap().to_owned();
+    let (s, _) = f
+        .request(
+            "POST",
+            &format!("/approvals/{bound}/approve"),
+            &f.admin_cookie,
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    sqlx::query(&format!(
+        "UPDATE {table} SET note='changed meanwhile' WHERE id=3"
+    ))
+    .execute(&target)
+    .await
+    .unwrap();
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{bound}/execute"),
+            &f.admin_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["error"]["code"], "effect_changed", "{v}");
+    assert_eq!(note_and_n(&target, &table, 3).await.1, 0);
+    let (_, v) = f
+        .request("GET", &format!("/approvals/{bound}"), &f.admin_cookie, None)
+        .await;
+    assert_eq!(v["status"], "failed");
+    assert_eq!(v["receipt"], Value::Null);
+    // Bound to the count only: other columns may change, the count may not.
+    let (s, v) = request_write(
+        &f,
+        &format!("UPDATE ONLY {table} SET n=7 WHERE id IN (4,5)"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["preview"]["bound_to"], "count", "{v}");
+    let counted = v["id"].as_str().unwrap().to_owned();
+    let (s, v) = request_write(
+        &f,
+        &format!("UPDATE ONLY {table} SET n=8 WHERE id IN (4,5)"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let shrunk = v["id"].as_str().unwrap().to_owned();
+    for id in [&counted, &shrunk] {
+        let (s, _) = f
+            .request(
+                "POST",
+                &format!("/approvals/{id}/approve"),
+                &f.admin_cookie,
+                Some(json!({})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    sqlx::query(&format!("UPDATE {table} SET note='other' WHERE id=4"))
+        .execute(&target)
+        .await
+        .unwrap();
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{counted}/execute"),
+            &f.grantor_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["receipt"]["bound_to"], "count");
+    sqlx::query(&format!("DELETE FROM {table} WHERE id=5"))
+        .execute(&target)
+        .await
+        .unwrap();
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{shrunk}/execute"),
+            &f.grantor_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(note_and_n(&target, &table, 4).await.1, 7);
+    // Withdraw: only the requester, only before it runs.
+    let (s, v) = request_write(&f, &format!("DELETE FROM {table} WHERE id=1")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["preview"]["before"]["total"], 1, "{v}");
+    let gone = v["id"].as_str().unwrap().to_owned();
+    let (s, _) = f
+        .request(
+            "POST",
+            &format!("/approvals/{gone}/withdraw"),
+            &f.admin_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{gone}/withdraw"),
+            &f.grantor_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], "withdrawn");
+    let (s, _) = f
+        .request(
+            "POST",
+            &format!("/approvals/{gone}/approve"),
+            &f.admin_cookie,
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = f
+        .request(
+            "POST",
+            &format!("/approvals/{gone}/withdraw"),
+            &f.grantor_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (_, v) = f
+        .request("GET", "/approvals?status=withdrawn", &f.admin_cookie, None)
+        .await;
+    assert_eq!(v["items"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["items"][0]["preview"], Value::Null);
+    assert!(sqlx::query_scalar::<_, bool>(&format!(
+        "SELECT EXISTS(SELECT 1 FROM {table} WHERE id=1)"
+    ))
+    .fetch_one(&target)
+    .await
+    .unwrap());
+    sqlx::query(&format!("DROP TABLE {table}"))
+        .execute(&target)
+        .await
+        .unwrap();
+    target.close().await;
+    f.close().await;
+}
+
+#[tokio::test]
+async fn an_agent_proposes_a_write_sees_no_rows_and_a_person_decides() {
+    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let target = sqlx::PgPool::connect(&target_url).await.unwrap();
+    let table = safe_table(&f, &target).await;
+    let agent = new_agent(&f, &f.grantor_cookie, "Fixer", "write").await;
+    let (_, token) = new_token(&f, &f.grantor_cookie, agent).await;
+    let other = new_agent(&f, &f.grantor_cookie, "Other", "write").await;
+    let (_, other_token) = new_token(&f, &f.grantor_cookie, other).await;
+    let reader = new_agent(&f, &f.grantor_cookie, "Reader", "read").await;
+    let (_, reader_token) = new_token(&f, &f.grantor_cookie, reader).await;
+    let db = json!(f.cluster);
+    let sql = format!("UPDATE {table} SET note='agent fix' WHERE id=2");
+    // run_query refuses a write and points at propose_write.
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "run_query",
+        json!({"task":"Fix note 2","database":db,"sql":sql}),
+    )
+    .await;
+    assert!(failed, "{v}");
+    assert_eq!(v["error"]["code"], "approval_required", "{v}");
+    assert_eq!(v["error"]["fix"]["action"], "propose_write", "{v}");
+    // The proposal: nothing runs, no counts, no rows, no protected values.
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "propose_write",
+        json!({"task":"Fix note 2 for ticket 7","database":db,"sql":sql}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    assert_eq!(v["status"], "pending");
+    assert_eq!(v["previewed"], false);
+    let text = v.to_string();
+    for word in [
+        "secret.example",
+        "before",
+        "after",
+        "\"rows\":[",
+        "affected_rows",
+    ] {
+        assert!(!text.contains(word), "{word}: {text}");
+    }
+    assert_eq!(note_and_n(&target, &table, 2).await.0, "second");
+    let id = v["approval_id"].as_str().unwrap().to_owned();
+    // People see who asked; the owner is the requester.
+    let (_, v) = f
+        .request("GET", &format!("/approvals/{id}"), &f.admin_cookie, None)
+        .await;
+    assert_eq!(v["agent"]["name"], "Fixer", "{v}");
+    assert_eq!(v["requester"]["email"], "grantor@harden.example");
+    assert_eq!(v["reason"], "Fix note 2 for ticket 7");
+    // Only this agent can read or withdraw its request.
+    for (token, id) in [
+        (&other_token, id.clone()),
+        (&token, Uuid::new_v4().to_string()),
+    ] {
+        let (failed, v) = tool(
+            &f,
+            token,
+            "get_approval",
+            json!({"task":"Check","approval_id":id}),
+        )
+        .await;
+        assert!(failed, "{v}");
+        assert_eq!(v["error"]["code"], "approval_not_found", "{v}");
+        assert_eq!(v["error"]["fix"]["action"], "fix_arguments", "{v}");
+        let (failed, v) = tool(
+            &f,
+            token,
+            "withdraw",
+            json!({"task":"Stop","approval_id":id}),
+        )
+        .await;
+        assert!(failed, "{v}");
+        assert_eq!(v["error"]["code"], "approval_not_found", "{v}");
+    }
+    // A read-only agent cannot propose a write.
+    let (failed, v) = tool(
+        &f,
+        &reader_token,
+        "propose_write",
+        json!({"task":"Try","database":db,"sql":sql}),
+    )
+    .await;
+    assert!(failed, "{v}");
+    // The owner cannot approve the agent's request; another admin can, after
+    // a person has previewed it. The preview runs once.
+    let (s, _) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/approve"),
+            &f.grantor_cookie,
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/approve"),
+            &f.admin_cookie,
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let other_cookie = Fixture::session(&f.db, f.recipient).await;
+    let (s, _) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/preview"),
+            &other_cookie,
+            None,
+        )
+        .await;
+    assert_ne!(s, StatusCode::OK);
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/preview"),
+            &f.admin_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["preview"]["affected_rows"], 1, "{v}");
+    assert_eq!(v["preview"]["bound_to"], "rows", "{v}");
+    assert!(!v.to_string().contains("secret.example"), "{v}");
+    assert_eq!(note_and_n(&target, &table, 2).await.0, "second");
+    let (s, _) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/preview"),
+            &f.grantor_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "get_approval",
+        json!({"task":"Check","approval_id":id}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    assert_eq!(v["previewed"], true);
+    assert!(v.get("affected_rows").is_none(), "{v}");
+    let (s, _) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/approve"),
+            &f.admin_cookie,
+            Some(json!({"note":"fine"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "get_approval",
+        json!({"task":"Check","approval_id":id}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    assert_eq!(v["status"], "approved");
+    assert_eq!(v["review_note"], "fine");
+    // A paused agent's request does not run.
+    let (s, _) = f
+        .request(
+            "PATCH",
+            &format!("/agents/{agent}"),
+            &f.grantor_cookie,
+            Some(json!({"paused":true})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/execute"),
+            &f.admin_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(note_and_n(&target, &table, 2).await.0, "second");
+    let (s, _) = f
+        .request(
+            "PATCH",
+            &format!("/agents/{agent}"),
+            &f.grantor_cookie,
+            Some(json!({"paused":false})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/execute"),
+            &f.admin_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["receipt"]["agent"]["name"], "Fixer");
+    assert_eq!(note_and_n(&target, &table, 2).await.0, "agent fix");
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "get_approval",
+        json!({"task":"Check","approval_id":id}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    assert_eq!(v["status"], "executed");
+    assert_eq!(v["executed_rows"], 1);
+    // The agent withdraws a request it no longer needs; twice is a conflict.
+    let (_, v) = tool(&f, &token, "propose_write", json!({"task":"Clear note 3","database":db,"sql":format!("UPDATE {table} SET note=NULL WHERE id=3")})).await;
+    let second = v["approval_id"].as_str().unwrap().to_owned();
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "withdraw",
+        json!({"task":"Not needed","approval_id":second}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    assert_eq!(v["status"], "withdrawn");
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "withdraw",
+        json!({"task":"Not needed","approval_id":second}),
+    )
+    .await;
+    assert!(failed, "{v}");
+    assert_eq!(v["error"]["fix"]["action"], "stop", "{v}");
+    // An agent may have only a few requests waiting.
+    for _ in 0..10 {
+        sqlx::query("INSERT INTO approvals(id,cluster_id,requester_id,sql,reason,analysis,status,agent_id,agent_name)
+            VALUES ($1,$2,$3,'UPDATE x SET y=1 WHERE id=1','Test','{}','pending',$4,'Fixer')")
+            .bind(Uuid::new_v4()).bind(f.cluster).bind(f.grantor).bind(agent)
+            .execute(&f.db).await.unwrap();
+    }
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "propose_write",
+        json!({"task":"One more","database":db,"sql":sql}),
+    )
+    .await;
+    assert!(failed, "{v}");
+    assert_eq!(v["error"]["code"], "too_many_open_requests", "{v}");
+    // Deleting the agent keeps its name on the request.
+    let (s, _) = f
+        .request(
+            "DELETE",
+            &format!("/agents/{agent}"),
+            &f.grantor_cookie,
+            None,
+        )
+        .await;
+    assert!(s.is_success());
+    let (_, v) = f
+        .request("GET", &format!("/approvals/{id}"), &f.admin_cookie, None)
+        .await;
+    assert_eq!(v["agent"]["name"], "Fixer", "{v}");
+    sqlx::query(&format!("DROP TABLE {table}"))
+        .execute(&target)
+        .await
+        .unwrap();
+    target.close().await;
+    f.close().await;
+}
+
+#[tokio::test]
+async fn a_mysql_write_request_says_it_has_no_preview() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    sqlx::query("UPDATE clusters SET engine='mysql' WHERE id=$1")
+        .bind(f.cluster)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let (s, v) = request_write(&f, "UPDATE t SET a=1 WHERE id=1").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["preview"]["supported"], false, "{v}");
+    assert!(v["preview"]["reason"].as_str().unwrap().contains("MySQL"));
+    let binding: Option<Value> =
+        sqlx::query_scalar("SELECT binding FROM approvals WHERE id=$1::uuid")
+            .bind(v["id"].as_str().unwrap())
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    assert_eq!(binding, None);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn the_attacks_found_on_safe_writes_stay_closed() {
+    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let target = sqlx::PgPool::connect(&target_url).await.unwrap();
+    let table = safe_table(&f, &target).await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let (link, seq, func) = (
+        format!("vda_link_{suffix}"),
+        format!("vda_seq_{suffix}"),
+        format!("vda_fn_{suffix}"),
+    );
+    for sql in [
+        format!("CREATE TABLE {link}(tid integer)"),
+        format!("INSERT INTO {link} VALUES (1)"),
+        format!("CREATE SEQUENCE {seq}"),
+        format!("CREATE FUNCTION {func}() RETURNS integer LANGUAGE sql AS 'SELECT setval(''{seq}'', 5000)::integer'"),
+    ] {
+        sqlx::query(&sql).execute(&target).await.unwrap();
+    }
+    // A whole-row reference does not show the protected value in the preview.
+    for value in [
+        format!("{table}::text"),
+        format!("concat({table}.*)"),
+        format!("({table}.*)::text"),
+        format!("json_build_array({table}.*)::text"),
+    ] {
+        let (s, v) =
+            request_write(&f, &format!("UPDATE {table} SET note = {value} WHERE id=1")).await;
+        if s == StatusCode::OK {
+            assert!(!v.to_string().contains("secret.example"), "{value}: {v}");
+        }
+    }
+    // A write through a view is previewed by its count, and runs.
+    let view = format!("vda_view_{suffix}");
+    sqlx::query(&format!(
+        "CREATE VIEW {view} AS SELECT id,note FROM {table}"
+    ))
+    .execute(&target)
+    .await
+    .unwrap();
+    let (s, v) = request_write(&f, &format!("UPDATE {view} SET note='via view' WHERE id=5")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["preview"]["bound_to"], "count", "{v}");
+    let id = v["id"].as_str().unwrap().to_owned();
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/approve"),
+            &f.admin_cookie,
+            Some(json!({"run":true})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(note_and_n(&target, &table, 5).await.0, "via view");
+    sqlx::query(&format!("DROP VIEW {view}"))
+        .execute(&target)
+        .await
+        .unwrap();
+    // A write hidden in WITH is refused.
+    let (s, v) = request_write(
+        &f,
+        &format!("WITH d AS (DELETE FROM {table} WHERE id=5 RETURNING id) UPDATE {table} SET note='x' WHERE id=1"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(v["error"]["code"], "unsupported_write", "{v}");
+    // A row that joins the target set after the check is not written.
+    let (s, v) = request_write(
+        &f,
+        &format!("UPDATE {table} SET note='hit' WHERE id IN (SELECT tid FROM {link})"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["preview"]["bound_to"], "rows", "{v}");
+    let id = v["id"].as_str().unwrap().to_owned();
+    let (s, _) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/approve"),
+            &f.admin_cookie,
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let mut other = target.begin().await.unwrap();
+    sqlx::query(&format!("UPDATE {table} SET note=note WHERE id=1"))
+        .execute(&mut *other)
+        .await
+        .unwrap();
+    sqlx::query(&format!("UPDATE {link} SET tid=2"))
+        .execute(&mut *other)
+        .await
+        .unwrap();
+    let app = f.app.clone();
+    let cookie = f.admin_cookie.clone();
+    let run = tokio::spawn(async move {
+        call(
+            &app,
+            "POST",
+            &format!("/api/v1/approvals/{id}/execute"),
+            &cookie,
+            None,
+            None,
+            "127.0.0.1:1234",
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    other.commit().await.unwrap();
+    let (s, v) = run.await.unwrap();
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["error"]["code"], "effect_changed", "{v}");
+    assert_eq!(note_and_n(&target, &table, 2).await.0, "second");
+    // A receipt copied from another request is not valid on this one.
+    let mut executed = Vec::new();
+    for sql in [
+        format!("UPDATE {table} SET n=1 WHERE id=3"),
+        format!("DELETE FROM {table} WHERE id=4"),
+    ] {
+        let (s, v) = request_write(&f, &sql).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let id = v["id"].as_str().unwrap().to_owned();
+        let (s, v) = f
+            .request(
+                "POST",
+                &format!("/approvals/{id}/approve"),
+                &f.admin_cookie,
+                Some(json!({"run":true})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        executed.push(id);
+    }
+    sqlx::query("UPDATE approvals SET receipt=(SELECT receipt FROM approvals WHERE id=$1::uuid) WHERE id=$2::uuid")
+        .bind(&executed[0])
+        .bind(&executed[1])
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let (_, v) = f
+        .request(
+            "GET",
+            &format!("/approvals/{}/receipt", executed[1]),
+            &f.admin_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(v["valid"], false, "{v}");
+    let (_, v) = f
+        .request(
+            "GET",
+            &format!("/approvals/{}/receipt", executed[0]),
+            &f.admin_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(v["valid"], true, "{v}");
+    assert_eq!(v["signed_with_current_key"], true, "{v}");
+    // An agent's write is first checked as a read, in a read-only transaction:
+    // a protected value in its condition or a function with side effects stops
+    // it before anything runs.
+    let agent = new_agent(&f, &f.grantor_cookie, "Prober", "write").await;
+    let (_, token) = new_token(&f, &f.grantor_cookie, agent).await;
+    let db = json!(f.cluster);
+    let before: i64 = sqlx::query_scalar(&format!("SELECT last_value FROM {seq}"))
+        .fetch_one(&target)
+        .await
+        .unwrap();
+    // SQL that acts only when it is not in a read-only transaction passes the
+    // read check, but nothing of an agent's runs before a person previews it.
+    let (failed, v) = tool(&f, &token, "propose_write", json!({"task":"Probe","database":db,
+        "sql":format!("UPDATE {table} SET n = CASE WHEN current_setting('transaction_read_only')='off' THEN {func}() ELSE n END WHERE id=1")})).await;
+    assert!(!failed, "{v}");
+    assert_eq!(v["previewed"], false, "{v}");
+    assert!(v.get("affected_rows").is_none(), "{v}");
+    let probe = v["approval_id"].as_str().unwrap().to_owned();
+    // A person's preview of it is refused too: it calls a function defined in
+    // the database. A paused agent's request cannot be previewed at all.
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{probe}/preview"),
+            &f.admin_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(
+        v["error"]["message"].as_str().unwrap().contains(&func),
+        "{v}"
+    );
+    let (s, _) = f
+        .request(
+            "PATCH",
+            &format!("/agents/{agent}"),
+            &f.grantor_cookie,
+            Some(json!({"paused":true})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{probe}/preview"),
+            &f.admin_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let (s, _) = f
+        .request(
+            "PATCH",
+            &format!("/agents/{agent}"),
+            &f.grantor_cookie,
+            Some(json!({"paused":false})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "withdraw",
+        json!({"task":"Done","approval_id":probe}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    // The database itself says which functions a statement calls: through
+    // attribute notation, a view, or a name with a dot in it.
+    let (attr, view, dotted) = (
+        format!("vda_attr_{suffix}"),
+        format!("vda_calls_{suffix}"),
+        format!("\"vda.dot_{suffix}\""),
+    );
+    for sql in [
+        format!("CREATE FUNCTION {attr}({table}) RETURNS integer LANGUAGE sql AS 'SELECT setval(''{seq}'', 6000)::integer'"),
+        format!("CREATE VIEW {view} AS SELECT {func}() AS x"),
+        format!("CREATE FUNCTION {dotted}() RETURNS integer LANGUAGE sql AS 'SELECT setval(''{seq}'', 7000)::integer'"),
+    ] {
+        sqlx::query(&sql).execute(&target).await.unwrap();
+    }
+    let branch = "current_setting('transaction_read_only')='off'";
+    for value in [
+        format!("x.{attr}"),
+        format!("(SELECT v.x FROM {view} v)"),
+        format!("public.{dotted}()"),
+    ] {
+        let sql = format!(
+            "UPDATE {table} x SET n = CASE WHEN {branch} THEN {value} ELSE n END WHERE id=1"
+        );
+        let (failed, v) = tool(
+            &f,
+            &token,
+            "propose_write",
+            json!({"task":"Probe","database":db,"sql":sql}),
+        )
+        .await;
+        assert!(!failed, "{value}: {v}");
+        let probe = v["approval_id"].as_str().unwrap().to_owned();
+        let (s, v) = f
+            .request(
+                "POST",
+                &format!("/approvals/{probe}/preview"),
+                &f.admin_cookie,
+                None,
+            )
+            .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{value}: {v}");
+        tool(
+            &f,
+            &token,
+            "withdraw",
+            json!({"task":"Done","approval_id":probe}),
+        )
+        .await;
+    }
+    for sql in [
+        format!("DROP VIEW {view}"),
+        format!("DROP FUNCTION {attr}({table})"),
+        format!("DROP FUNCTION {dotted}()"),
+    ] {
+        sqlx::query(&sql).execute(&target).await.unwrap();
+    }
+    // A cast into a written column's type can call a database function too.
+    let (ty, cast_fn) = (format!("vda_ty_{suffix}"), format!("vda_cast_{suffix}"));
+    for sql in [
+        format!("CREATE TYPE {ty} AS (a integer)"),
+        format!("CREATE FUNCTION {cast_fn}(text) RETURNS {ty} LANGUAGE sql AS 'SELECT ROW(setval(''{seq}'', 8000)::integer)::{ty}'"),
+        format!("CREATE CAST (text AS {ty}) WITH FUNCTION {cast_fn}(text) AS ASSIGNMENT"),
+        format!("ALTER TABLE {table} ADD COLUMN p {ty}"),
+    ] {
+        sqlx::query(&sql).execute(&target).await.unwrap();
+    }
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "propose_write",
+        json!({"task":"Probe","database":db,
+        "sql":format!("UPDATE {table} SET p = note WHERE id=1")}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    let probe = v["approval_id"].as_str().unwrap().to_owned();
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{probe}/preview"),
+            &f.admin_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(
+        v["error"]["message"].as_str().unwrap().contains(&cast_fn),
+        "{v}"
+    );
+    tool(
+        &f,
+        &token,
+        "withdraw",
+        json!({"task":"Done","approval_id":probe}),
+    )
+    .await;
+    for sql in [
+        format!("ALTER TABLE {table} DROP COLUMN p"),
+        format!("DROP CAST (text AS {ty})"),
+        format!("DROP FUNCTION {cast_fn}(text)"),
+        format!("DROP TYPE {ty}"),
+    ] {
+        sqlx::query(&sql).execute(&target).await.unwrap();
+    }
+    let after: i64 = sqlx::query_scalar(&format!("SELECT last_value FROM {seq}"))
+        .fetch_one(&target)
+        .await
+        .unwrap();
+    assert_eq!(before, after, "a preview ran a database function");
+    for (sql, word) in [
+        (format!("UPDATE {table} SET note=note WHERE id=1 AND (SELECT email FROM {table} WHERE id=2)::integer=1"), "email"),
+        (format!("UPDATE {table} SET n={func}() WHERE id=1"), "function"),
+        (format!("UPDATE ONLY {table} SET n=1 WHERE id=1"), "only"),
+    ] {
+        let (failed, v) = tool(&f, &token, "propose_write", json!({"task":"Probe","database":db,"sql":sql})).await;
+        assert!(failed, "{word}: {v}");
+        assert!(!v.to_string().contains("secret.example"), "{word}: {v}");
+    }
+    let after: i64 = sqlx::query_scalar(&format!("SELECT last_value FROM {seq}"))
+        .fetch_one(&target)
+        .await
+        .unwrap();
+    assert_eq!(before, after, "the function ran");
+    // RETURNING is refused for agents; a failed dry run shows no database text.
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "propose_write",
+        json!({"task":"Probe","database":db,
+        "sql":format!("DELETE FROM {table} WHERE id=2 RETURNING email")}),
+    )
+    .await;
+    assert!(failed, "{v}");
+    assert_eq!(v["error"]["code"], "unsupported_write", "{v}");
+    // A successful read does not reset the streak of refused proposals.
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "run_query",
+        json!({"task":"Read","database":db,
+        "sql":format!("SELECT id FROM {table}")}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "propose_write",
+        json!({"task":"Probe","database":db,"sql":"UPDATE nope SET a=1 WHERE id=1"}),
+    )
+    .await;
+    assert!(failed, "{v}");
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "propose_write",
+        json!({"task":"Probe","database":db,"sql":format!("UPDATE {table} SET n=2 WHERE id=1")}),
+    )
+    .await;
+    assert!(failed, "{v}");
+    assert_eq!(v["error"]["code"], "too_many_denials", "{v}");
+    for sql in [
+        format!("DROP TABLE {table}"),
+        format!("DROP TABLE {link}"),
+        format!("DROP FUNCTION {func}()"),
+        format!("DROP SEQUENCE {seq}"),
+    ] {
+        sqlx::query(&sql).execute(&target).await.unwrap();
+    }
+    target.close().await;
+    f.close().await;
 }

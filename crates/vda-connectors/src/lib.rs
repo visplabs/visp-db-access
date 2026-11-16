@@ -226,6 +226,77 @@ pub enum ConnectorError {
     /// A pool connection was unavailable before its deadline.
     #[error("pool exhausted")]
     PoolExhausted,
+    /// An approved write would no longer have the effect that was approved:
+    /// the rows it changes, or how many, are not what the dry run showed. The
+    /// transaction was rolled back.
+    #[error("effect changed since approval: {0}")]
+    EffectChanged(String),
+    /// The engine does not support this operation.
+    #[error("not supported: {0}")]
+    Unsupported(&'static str),
+}
+
+/// What a dry run of a write saw. Nothing was changed: the transaction was
+/// rolled back.
+#[derive(Debug, Clone)]
+pub struct DryRun {
+    /// The rows the write was going to change, as they were before it ran.
+    pub target: Option<QueryResult>,
+    /// The keys and digests of those rows.
+    pub targets: Option<Targets>,
+    /// What the write returned (its `RETURNING` rows) and its affected count.
+    pub written: QueryResult,
+}
+/// The rows a write targets, by key and digest.
+#[derive(Debug, Clone)]
+pub struct Targets {
+    /// How many target rows were read.
+    pub count: u64,
+    /// `false` when there were more than the write may change.
+    pub complete: bool,
+    /// A digest of the digests of every target row, in any order.
+    pub fingerprint: String,
+}
+/// The SQL of one write and of its row plan, from the guard's write planner.
+#[derive(Debug, Clone, Copy)]
+pub struct WriteSql<'a> {
+    /// The statement to run: for a dry run, with `RETURNING` added.
+    pub write: &'a str,
+    /// Selects and locks the target rows, for a preview.
+    pub target_rows: Option<&'a str>,
+    /// Selects and locks a key and a digest of each target row.
+    pub target_keys: Option<&'a str>,
+    /// The statement limited to the rows whose keys are bound as `$1`.
+    pub bound_write: Option<&'a str>,
+    /// The changed table. The row plan is used only when it is a plain or a
+    /// partitioned table; a view gets the count alone.
+    pub table: Option<&'a str>,
+}
+/// The effect that an approval was given for. An approved write runs only if
+/// it still has this effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Expected {
+    /// How many rows the write changes.
+    pub affected_rows: u64,
+    /// A digest of the rows it changes, as they were at the dry run. `None`
+    /// when only the count can be bound.
+    pub rows_fingerprint: Option<String>,
+}
+/// A digest of a set of row digests that does not depend on their order.
+pub fn rows_fingerprint(digests: &[String]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut lines: Vec<&String> = digests.iter().collect();
+    lines.sort_unstable();
+    let mut hasher = Sha256::new();
+    for line in &lines {
+        hasher.update(line.as_bytes());
+        hasher.update(b"\n");
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// A connection pool to one target endpoint (primary or replica).
@@ -314,6 +385,63 @@ impl TargetPool {
         match self {
             Self::Postgres(pool) => postgres::execute(pool, sql, limits, None, cancel).await,
             Self::Mysql(pool) => mysql::execute(pool, sql, limits, None, cancel).await,
+        }
+    }
+
+    /// Run a write and roll it back, to see its effect without changing
+    /// anything. `target_sql` selects (and locks) the rows the write will
+    /// change; it runs first, in the same transaction. PostgreSQL only.
+    pub async fn dry_run_write(
+        &self,
+        sql: WriteSql<'_>,
+        limits: &ExecLimits,
+        max_affected_rows: u64,
+        cancel: CancellationToken,
+    ) -> Result<DryRun, ConnectorError> {
+        match self {
+            Self::Postgres(pool) => {
+                postgres::dry_run(pool, sql, limits, max_affected_rows, cancel).await
+            }
+            Self::Mysql(_) => Err(ConnectorError::Unsupported("dry runs on MySQL")),
+        }
+    }
+
+    /// Functions defined in the database that a `SELECT` would call, as the
+    /// database resolves them. Nothing runs. PostgreSQL only; MySQL: none.
+    /// `target` is the written table and its written columns (`None`: all),
+    /// whose casts into their types count too.
+    pub async fn database_functions(
+        &self,
+        select: &str,
+        target: Option<(&str, Option<&[String]>)>,
+        limits: &ExecLimits,
+        cancel: CancellationToken,
+    ) -> Result<Vec<String>, ConnectorError> {
+        match self {
+            Self::Postgres(pool) => {
+                postgres::database_functions(pool, select, target, limits, cancel).await
+            }
+            Self::Mysql(_) => Ok(vec![]),
+        }
+    }
+
+    /// Run an approved write only if it still has the approved effect: the
+    /// same rows (when a fingerprint was taken) and the same count. With a
+    /// row plan, the write changes only the target rows that were locked and
+    /// checked. Otherwise roll back and return `EffectChanged`. PostgreSQL only.
+    pub async fn execute_bound_write(
+        &self,
+        sql: WriteSql<'_>,
+        expected: &Expected,
+        limits: &ExecLimits,
+        max_affected_rows: u64,
+        cancel: CancellationToken,
+    ) -> Result<QueryResult, ConnectorError> {
+        match self {
+            Self::Postgres(pool) => {
+                postgres::bound_write(pool, sql, expected, limits, max_affected_rows, cancel).await
+            }
+            Self::Mysql(_) => Err(ConnectorError::Unsupported("bound writes on MySQL")),
         }
     }
 

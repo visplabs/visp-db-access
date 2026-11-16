@@ -19,6 +19,9 @@ mod rewrite;
 mod syntax;
 mod tables;
 mod walk;
+mod write_plan;
+
+pub use write_plan::{write_plan, Source, WritePlan};
 
 use serde::{Deserialize, Serialize};
 

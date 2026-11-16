@@ -10,7 +10,7 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Fix {
     /// One of: `rewrite_sql`, `fix_arguments`, `choose_database`, `ask_owner`,
-    /// `retry_later`, `stop`.
+    /// `propose_write`, `retry_later`, `stop`.
     pub action: &'static str,
     /// What to change, in one or two plain sentences.
     pub hint: String,
@@ -120,8 +120,25 @@ pub fn for_error(error: &ApiError) -> Fix {
             "The guard refused this statement. Call check_sql to see why before you run it.",
         ),
         ("approval_required", _) => Fix::new(
-            "ask_owner",
-            "This statement changes data, and an agent cannot change data on its own. Tell your owner what you want to change and why.",
+            "propose_write",
+            "This statement changes data, and an agent cannot change data on its own. Call propose_write with the same SQL and say why in `task`; a person decides.",
+        ),
+        ("effect_changed", _) => Fix::new(
+            "propose_write",
+            "The data changed after the approval, so the write did not run. Check the rows again, then call propose_write again if the change is still needed.",
+        ),
+        ("approval_not_found", _) => Fix::new(
+            "fix_arguments",
+            "No request of yours has this id. Use the approval_id that propose_write gave.",
+        ),
+        ("conflict", _) => Fix::new(
+            "stop",
+            "The request is not in a state that allows this. Call get_approval to see its state; do not retry.",
+        ),
+        ("unsupported_write", _) => Fix::new("rewrite_sql", error.message.clone()),
+        ("too_many_open_requests", _) => Fix::new(
+            "retry_later",
+            "Too many of your writes wait for a person. Wait for a decision, or withdraw one you no longer need.",
         ),
         ("cost_exceeded", _) => Fix::new(
             "rewrite_sql",
@@ -273,7 +290,12 @@ mod tests {
             assert_eq!(for_error(&error).action, action, "{message}");
         }
         for (code, action) in [
-            ("approval_required", "ask_owner"),
+            ("approval_required", "propose_write"),
+            ("effect_changed", "propose_write"),
+            ("approval_not_found", "fix_arguments"),
+            ("conflict", "stop"),
+            ("too_many_open_requests", "retry_later"),
+            ("unsupported_write", "rewrite_sql"),
             ("cost_exceeded", "rewrite_sql"),
             ("forbidden", "choose_database"),
             ("not_found", "choose_database"),
