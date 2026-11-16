@@ -1,11 +1,4 @@
 /* Shared refinement: whitespace in content, material only in floating layers. */
-@font-face {
-  font-family: 'Inter Identifiers';
-  font-style: normal;
-  font-weight: 400 600;
-  font-display: swap;
-  src: url('../assets/fonts/inter-identifiers.woff2') format('woff2');
-}
 body {
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
@@ -51,18 +44,11 @@ b,
 ) {
   font-variant-numeric: tabular-nums;
 }
-:where(
-  .identifier,
-  .schema-name,
-  .cluster-card h3,
-  .cluster-heading-compact h1
-) {
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'Inter Identifiers', 'Inter Variable',
-    'Inter', 'Segoe UI', system-ui, sans-serif;
-  font-feature-settings:
-    'ss02' 1,
-    'zero' 1;
+/* Names that people copy and compare are set in the mono face, where 0 and O,
+   1, l and I are easy to tell apart. */
+:where(.identifier, .schema-name) {
+  font-family: var(--font-mono);
+  font-feature-settings: 'zero' 1;
 }
 :where(.mono, code, pre, .inventory-host, .cluster-endpoint) {
   font-feature-settings: 'zero' 1;
@@ -182,7 +168,7 @@ textarea::placeholder {
   transition: transform var(--motion-base) var(--ease-popover);
 }
 .switch[aria-checked='true'] {
-  background: var(--ink);
+  background: var(--action);
 }
 .switch[aria-checked='true'] .switch-thumb {
   transform: translateX(12px);

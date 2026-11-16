@@ -346,8 +346,10 @@ for (const width of [1440, 390])
         ...['schema', 'health', 'access', 'policy', 'settings'].map(
           (tab) => `/clusters/${cluster}?tab=${tab}`,
         ),
+        `/clusters/${cluster}?tab=agent-login`,
         '/approvals',
         '/history',
+        '/agents',
         '/users',
         '/access',
         '/audit',

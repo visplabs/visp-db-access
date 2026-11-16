@@ -1,42 +1,51 @@
-/* Risk is the only color. All shared foundations live here. */
+/* Harbor: calm slate surfaces, one blue for actions, strong colour only for
+   risk. All shared foundations live here. */
 :root {
-  --font-ui:
-    -apple-system, BlinkMacSystemFont, 'Inter Variable', 'Inter', 'Segoe UI',
-    system-ui, sans-serif;
+  --font-ui: 'Geist Variable', 'Geist', system-ui, sans-serif;
   --font-mono:
-    ui-monospace, 'SF Mono', 'JetBrains Mono Variable', 'JetBrains Mono', Menlo,
-    monospace;
-  --paper: #f3f4f6;
+    'Geist Mono Variable', 'Geist Mono', ui-monospace, Menlo, monospace;
+  --paper: #f4f6f9;
   --surface: #ffffff;
-  --ink: #1a1d23;
+  --raised: #ffffff;
+  --ink: #17202b;
   --label-primary: var(--ink);
-  --label-secondary: color-mix(in srgb, var(--ink) 70%, transparent);
-  --label-tertiary: color-mix(in srgb, var(--ink) 38%, transparent);
+  --label-secondary: #4a5665;
+  --label-tertiary: #5f6b79;
   --label-quaternary: color-mix(in srgb, var(--ink) 18%, transparent);
   --graphite: var(--label-secondary);
   --control-fill: color-mix(in srgb, var(--ink) 6%, var(--surface));
   --hover-fill: color-mix(in srgb, var(--ink) 8%, var(--surface));
   --material: color-mix(in srgb, var(--surface) 80%, transparent);
-  --focus-ring: color-mix(in srgb, var(--ink) 64%, transparent);
+  /* The one accent. It marks what a person can do: primary buttons, links,
+     the focused control, the selected item. It never marks risk. */
+  --action: #3559c7;
+  --action-hover: #2c4bab;
+  --action-soft: #e8edfb;
+  --on-action: #ffffff;
+  --focus-ring: var(--action);
   --floating-shadow:
     0 0 0 0.5px rgb(0 0 0 / 8%), 0 2px 6px rgb(0 0 0 / 8%),
     0 12px 32px rgb(0 0 0 / 12%);
-  --rule: color-mix(in srgb, var(--ink) 10%, transparent);
-  --subtle: #eceef1;
-  --env-prod: #c8242f;
-  --env-prod-soft: #fcecee;
+  --rule: #dde2e9;
+  --subtle: #e9edf2;
+  --env-prod: #c22f3c;
+  --env-prod-soft: #fbe9eb;
   --env-staging: #b7791f;
-  --env-staging-soft: #fcf1dd;
-  --env-staging-text: #855610;
-  --env-dev: #2f7d6d;
-  --env-dev-soft: #e7f3ef;
-  --env-dev-text: #286e60;
-  --env-dev-rail: #a5c8be;
-  --env-prod-action: #c8242f;
+  --env-staging-soft: #fbf0d9;
+  --env-staging-text: #8a5a0b;
+  --env-dev: #17755f;
+  --env-dev-soft: #e2f3ee;
+  --env-dev-text: #17755f;
+  --env-dev-rail: #9fcdc1;
+  --env-prod-action: #c22f3c;
   --on-risk: #ffffff;
   --on-ink: #ffffff;
-  --primary-hover: #343a44;
-  --selection: #dce0e5;
+  --primary-hover: var(--action-hover);
+  --selection: #d6def5;
+  --syntax-keyword: #3559c7;
+  --syntax-string: #8c6a2f;
+  --syntax-number: #6b4fb0;
+  --syntax-comment: #5f6b79;
   --bg: var(--paper);
   --text: var(--ink);
   --muted: var(--graphite);
@@ -94,28 +103,40 @@
   background: var(--paper);
 }
 :root[data-theme='dark'] {
-  --paper: #15171b;
-  --surface: #1c1f24;
-  --ink: #e8eaed;
-  --label-secondary: color-mix(in srgb, var(--ink) 70%, transparent);
-  --focus-ring: color-mix(in srgb, var(--ink) 48%, transparent);
+  --paper: #0e1217;
+  --surface: #141920;
+  --raised: #1b222b;
+  --ink: #e4e9ef;
+  --label-secondary: #aab4c0;
+  --label-tertiary: #8794a2;
+  --control-fill: #1b222b;
+  --hover-fill: #242d38;
+  --action: #8fb0ff;
+  --action-hover: #a6c0ff;
+  --action-soft: #1c2740;
+  --on-action: #0e1217;
   --floating-shadow:
     0 0 0 0.5px rgb(255 255 255 / 8%), 0 2px 6px rgb(0 0 0 / 20%),
     0 12px 32px rgb(0 0 0 / 28%);
-  --rule: color-mix(in srgb, var(--ink) 12%, transparent);
-  --subtle: #282d34;
-  --env-prod: #f47780;
-  --env-prod-soft: #382328;
-  --env-staging: #e6b65c;
-  --env-staging-text: #e6b65c;
-  --env-staging-soft: #352d20;
-  --env-dev: #79c6b2;
-  --env-dev-soft: #20332e;
-  --env-dev-text: #79c6b2;
-  --env-dev-rail: #3b6258;
-  --on-ink: #15171b;
-  --primary-hover: #d0d4da;
-  --selection: #414954;
+  --rule: #26303b;
+  --subtle: #1b222b;
+  --env-prod: #ff9aa0;
+  --env-prod-soft: #3a1d22;
+  --env-prod-action: #ff8087;
+  --env-staging: #edb95e;
+  --env-staging-text: #edb95e;
+  --env-staging-soft: #33290f;
+  --env-dev: #5fd0b3;
+  --env-dev-soft: #12302b;
+  --env-dev-text: #5fd0b3;
+  --env-dev-rail: #3f8f7c;
+  --on-risk: #0e1217;
+  --on-ink: #0e1217;
+  --selection: #2b3a5c;
+  --syntax-keyword: #8fb0ff;
+  --syntax-string: #e2c08d;
+  --syntax-number: #c7b0f2;
+  --syntax-comment: #8794a2;
   --overlay: rgb(0 0 0 / 0.65);
   --shadow: var(--floating-shadow);
   color-scheme: dark;

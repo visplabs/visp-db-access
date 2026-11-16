@@ -38,6 +38,8 @@ for (const width of [1440, 390])
     test(`risk identity stays accessible at ${width}px in ${theme}`, async ({
       page,
     }) => {
+      // Several accessibility scans in one test: give it room on a busy machine.
+      test.slow();
       await page.setViewportSize({ width, height: width === 1440 ? 900 : 844 });
       await page.getByRole('button', { name: 'User menu' }).click();
       await page

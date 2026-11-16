@@ -23,6 +23,7 @@ import {
 } from '../../components/ui';
 import { AddCluster } from './forms';
 import { ClusterCollection } from './collection';
+import { cloudName, engineName } from '../../lib/cloud';
 const healthOrder = ['down', 'degraded', 'unknown', 'healthy'];
 export function Clusters() {
   const [params, setParams] = useSearchParams();
@@ -108,15 +109,9 @@ export function Clusters() {
         ...values.map((value) => ({
           value,
           label:
-            (
-              {
-                postgres: 'PostgreSQL',
-                mysql: 'MySQL',
-                aws: 'AWS',
-                gcp: 'GCP',
-                onprem: 'On-premises',
-              } as Record<string, string>
-            )[value] ?? value.charAt(0).toUpperCase() + value.slice(1),
+            ({ ...cloudName, ...engineName } as Record<string, string>)[
+              value
+            ] ?? value.charAt(0).toUpperCase() + value.slice(1),
         })),
       ]}
     />
@@ -198,7 +193,7 @@ export function Clusters() {
                 'development',
               ])}
               {filter(engine, setEngine, 'Engines', ['postgres', 'mysql'])}
-              {filter(provider, setProvider, 'Providers', [
+              {filter(provider, setProvider, 'Clouds', [
                 'aws',
                 'gcp',
                 'azure',

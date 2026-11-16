@@ -23,6 +23,7 @@ import {
   Monitor,
   ChevronDown,
   LogOut,
+  Bot,
 } from 'lucide-react';
 import type { Cluster, Project, Grant, Page } from '../api/types';
 import { useAction, useResource } from '../lib/query';
@@ -39,6 +40,7 @@ const navigation = [
   { to: '/console', text: 'Console', icon: Terminal },
   { to: '/approvals', text: 'Approvals', icon: CheckCheck },
   { to: '/history', text: 'History', icon: History },
+  { to: '/agents', text: 'Agents', icon: Bot },
 ];
 const administration = [
   { to: '/users', text: 'Users', icon: Users },

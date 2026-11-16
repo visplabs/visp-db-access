@@ -2,7 +2,20 @@ import { ArrowLeft } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import type { Cluster } from '../../api/types';
+import { cloudLine } from '../../lib/cloud';
 import { Badge, HealthBadge, Tip } from './index';
+
+/** Where a cluster runs. Plain text with no colour: colour is kept for risk. */
+export function CloudLabel({
+  cluster,
+  engine = true,
+}: {
+  cluster: Pick<Cluster, 'provider' | 'region' | 'engine'>;
+  /** Leave the engine out where the row already shows it. */
+  engine?: boolean;
+}) {
+  return <span className="cloud-label">{cloudLine(cluster, engine)}</span>;
+}
 
 /** A single operational identity line, shared by cluster and query routes. */
 export function ClusterHeading({
@@ -28,6 +41,7 @@ export function ClusterHeading({
         {cluster.environment.charAt(0).toUpperCase() +
           cluster.environment.slice(1)}
       </span>
+      <CloudLabel cluster={cluster} />
       <HealthBadge
         status={cluster.health.status}
         latency={cluster.health.latency_ms}

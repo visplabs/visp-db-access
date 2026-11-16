@@ -1,5 +1,5 @@
-import '@fontsource-variable/inter/opsz.css';
-import '@fontsource-variable/jetbrains-mono';
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
 import { StrictMode, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom';
@@ -43,6 +43,11 @@ const ApprovalsPage = lazy(() =>
 const HistoryPage = lazy(() =>
   import('./features/history/history').then((module) => ({
     default: module.HistoryPage,
+  })),
+);
+const AgentsPage = lazy(() =>
+  import('./features/agents/agents').then((module) => ({
+    default: module.AgentsPage,
   })),
 );
 const UsersPage = lazy(() =>
@@ -116,6 +121,7 @@ if (root)
                         <Route path="/console" element={<ConsolePage />} />
                         <Route path="/approvals" element={<ApprovalsPage />} />
                         <Route path="/history" element={<HistoryPage />} />
+                        <Route path="/agents" element={<AgentsPage />} />
                         <Route
                           path="/users"
                           element={

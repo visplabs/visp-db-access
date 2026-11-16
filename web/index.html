@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#5b5bd6" />
+    <meta name="theme-color" content="#0e1217" />
+    <!-- Sets the theme before first paint, so there is no flash of the other
+         one. A file, not inline: the server's content security policy does
+         not allow inline scripts. -->
+    <script src="/theme.js"></script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <title>Workspace — visp</title>
