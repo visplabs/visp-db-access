@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import type { Cluster, HistoryEntry, Project } from '../../api/types';
 import { Badge, EngineIcon, HealthBadge } from '../../components/ui';
+import { CloudLabel } from '../../components/ui/cluster-heading';
 import { RelativeTime } from '../../components/ui/time';
 const environments = ['production', 'staging', 'development'] as const;
 /** Environment-first inventory. Rows keep real links and support arrow/Enter navigation. */
@@ -62,8 +63,8 @@ export function ClusterCollection({
                 </div>
                 <h3>{cluster.name}</h3>
                 <p className="provider">
-                  {projectNames.get(cluster.project_id) ?? '—'} ·{' '}
-                  {cluster.region}
+                  {projectNames.get(cluster.project_id) ?? '—'}
+                  <CloudLabel cluster={cluster} />
                   <span
                     className="cluster-card-host mono"
                     title={`${cluster.host}:${cluster.port}`}
@@ -90,6 +91,7 @@ export function ClusterCollection({
                 <tr>
                   <th>Name / engine</th>
                   <th>Health</th>
+                  <th>Cloud</th>
                   <th>Host</th>
                   <th>Project</th>
                   <th>Your access</th>
@@ -156,6 +158,9 @@ export function ClusterCollection({
                         status={cluster.health.status}
                         latency={cluster.health.latency_ms}
                       />
+                    </td>
+                    <td>
+                      <CloudLabel cluster={cluster} engine={false} />
                     </td>
                     <td>
                       <span

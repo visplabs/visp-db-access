@@ -13,6 +13,7 @@ import type {
   QueryResult,
   User,
 } from './types';
+import { createAgents } from './mock-agents';
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const fail = (
   code: string,
@@ -314,6 +315,13 @@ export function createMockTransport({
       return cluster;
     },
   });
+  const agents = createAgents({
+    clusters: () => state.clusters,
+    access: (cluster) => clusterAccess(cluster) ?? undefined,
+    fail,
+    audit: (action, type, id, details) => audit(action, type, id, details),
+    now,
+  });
   async function route(path: string, init: RequestInit = {}): Promise<unknown> {
     const url = new URL(path, 'http://mock');
     const segments = url.pathname.split('/').filter(Boolean);
@@ -494,6 +502,20 @@ export function createMockTransport({
       cancelled.add(id ?? '');
       return undefined;
     }
+    if (resource === 'agents')
+      return agents.route(segments, method, body, actor, url.searchParams);
+    if (resource === 'clusters' && action === 'agent-login') {
+      const cluster = required(state.clusters.find((c) => c.id === id));
+      if (clusterAccess(cluster) !== 'admin')
+        fail('forbidden', 'Access denied', 403);
+      return agents.login(
+        cluster,
+        segments.slice(3),
+        method,
+        body,
+        url.searchParams,
+      );
+    }
     if (resource === 'clusters') {
       if (id === 'test-connection') {
         admin();
@@ -599,6 +621,8 @@ export function createMockTransport({
             'validation',
             'Changing the connection endpoint requires re-entering the password',
           );
+        if (endpointChanged(cluster, body as Partial<Cluster>))
+          agents.endpointChanged(cluster.id);
         const { password: secret, ...fields } = body;
         void secret;
         Object.assign(cluster, fields, { updated_at: now() });
@@ -626,6 +650,7 @@ export function createMockTransport({
         )
           fail('validation', 'Limits must be positive.');
         policies.set(cluster.id, body as unknown as Policy);
+        agents.policyChanged(cluster.id);
         audit('policy.update', 'cluster', cluster.id, body);
         return body;
       }

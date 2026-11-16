@@ -12,9 +12,9 @@ import { autocompletion } from '@codemirror/autocomplete';
 import {
   bracketMatching,
   syntaxHighlighting,
-  defaultHighlightStyle,
   HighlightStyle,
 } from '@codemirror/language';
+import { tags } from '@lezer/highlight';
 import { sql, PostgreSQL, MySQL } from '@codemirror/lang-sql';
 import type { Engine, SchemaTree } from '../../api/types';
 const editorTheme = EditorView.theme({
@@ -73,13 +73,18 @@ const editorTheme = EditorView.theme({
     backgroundColor: 'var(--selection)',
   },
 });
+// Four quiet syntax colours. None is a risk colour: the verdict next to the
+// Run button is the only place that speaks about risk.
 const highlightStyle = syntaxHighlighting(
-  HighlightStyle.define(
-    defaultHighlightStyle.specs.map((style) => ({
-      ...style,
-      color: 'var(--ink)',
-    })),
-  ),
+  HighlightStyle.define([
+    { tag: tags.keyword, color: 'var(--syntax-keyword)' },
+    {
+      tag: [tags.string, tags.special(tags.string)],
+      color: 'var(--syntax-string)',
+    },
+    { tag: [tags.number, tags.bool, tags.null], color: 'var(--syntax-number)' },
+    { tag: tags.comment, color: 'var(--syntax-comment)' },
+  ]),
 );
 const languageExtension = (engine: Engine, schema?: SchemaTree) => {
   const sqlSchema: Record<string, Record<string, string[]>> = {};

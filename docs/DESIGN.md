@@ -1,85 +1,97 @@
 # Design system
 
-The console's visual language is **risk is the only color**. Its audience is
-engineers, DBAs and security administrators querying production databases, so
-the interface stays near-monochrome and color is reserved for what carries
-risk: the environment you're in and the guard's verdict. Primary actions,
-navigation, links, selection and focus are ink. Environments and verdicts share
-one safer → riskier ladder (teal, amber, red), and words and shapes always carry
-the meaning alongside color. Health is neutral when healthy; Degraded (amber
-square) and Down (red hollow dot, red word) take risk color because an
-unavailable database is a risk.
+The console's visual language is **Harbor**: calm slate surfaces, one blue for
+actions, and strong colour only for risk. Its audience is engineers, DBAs and
+security administrators who query production databases, and now the people who
+answer for AI agents that do the same.
 
-The styling follows the restraint of native Apple interfaces: system fonts,
-space instead of lines, quiet controls, translucent materials only on floating
-layers, and motion only in response to the user.
+Three rules decide every colour:
+
+1. **Slate is the ground.** Surfaces, text and lines are one cool grey family.
+   Dark is the default theme; light is a full second theme, not a tint.
+2. **Blue means "you can act here".** One action blue marks primary buttons,
+   the selected item, switches that are on, and the focused control. It never
+   marks risk, and nothing else is blue except SQL keywords in the editor.
+3. **Strong colour means risk.** Environments and verdicts share one safer →
+   riskier ladder (mint, amber, coral). Words and shapes always carry the
+   meaning alongside colour. Health is neutral when healthy; Degraded (amber
+   square) and Down (coral hollow dot and word) take risk colour because an
+   unavailable database is a risk. A cloud label is plain text with no colour.
 
 Implementation: tokens in `web/src/styles/tokens.css`, shared rules in
 `web/src/styles/refinement.css`, primitives in `web/src/components/ui/`
-(previewed at `/ui?kitchen-sink` in development builds).
+(previewed at `/ui?kitchen-sink` in development builds). The source of the look
+is the Harbor design canvas; where the canvas and this document differ, this
+document describes what is built.
 
 ## Tokens and typography
 
 `web/src/styles/tokens.css` is the single foundation source. Existing `--bg`,
 `--text`, `--muted`, `--border` and semantic status names are role aliases, not
-independent palettes. There are no indigo or `--accent*` tokens.
+independent palettes.
 
-| Role                   | Light     | Dark      |
-| ---------------------- | --------- | --------- |
-| Paper                  | `#F3F4F6` | `#15171B` |
-| Surface                | `#FFFFFF` | `#1C1F24` |
-| Ink                    | `#1A1D23` | `#E8EAED` |
-| Label secondary        | ink 70%   | ink 70%   |
-| Rule (hairline)        | ink 10%   | ink 12%   |
-| Subtle                 | `#ECEEF1` | `#282D34` |
-| Production             | `#C8242F` | `#F47780` |
-| Production soft        | `#FCECEE` | `#382328` |
-| Staging                | `#B7791F` | `#E6B65C` |
-| Staging soft           | `#FCF1DD` | `#352D20` |
-| Development            | `#2F7D6D` | `#79C6B2` |
-| Development soft       | `#E7F3EF` | `#20332E` |
-| Staging small text     | `#855610` | `#E6B65C` |
-| Development small text | `#286E60` | `#79C6B2` |
-| Development rail       | `#A5C8BE` | `#3B6258` |
-| Selection              | `#DCE0E5` | `#414954` |
-| On ink                 | `#FFFFFF` | `#15171B` |
+| Role              | Token                | Light     | Dark      |
+| ----------------- | -------------------- | --------- | --------- |
+| Ground            | `--paper`            | `#F4F6F9` | `#0E1217` |
+| Surface           | `--surface`          | `#FFFFFF` | `#141920` |
+| Subtle fill       | `--subtle`           | `#E9EDF2` | `#1B222B` |
+| Hover             | `--hover-fill`       | ink 8%    | `#242D38` |
+| Line              | `--rule`             | `#DDE2E9` | `#26303B` |
+| Text              | `--ink`              | `#17202B` | `#E4E9EF` |
+| Text 2            | `--label-secondary`  | `#4A5665` | `#AAB4C0` |
+| Text 3            | `--label-tertiary`   | `#5F6B79` | `#8794A2` |
+| Action            | `--action`           | `#3559C7` | `#8FB0FF` |
+| Action, hover     | `--action-hover`     | `#2C4BAB` | `#A6C0FF` |
+| Action, soft      | `--action-soft`      | `#E8EDFB` | `#1C2740` |
+| On action         | `--on-action`        | `#FFFFFF` | `#0E1217` |
+| Development       | `--env-dev-text`     | `#17755F` | `#5FD0B3` |
+| Development soft  | `--env-dev-soft`     | `#E2F3EE` | `#12302B` |
+| Staging           | `--env-staging-text` | `#8A5A0B` | `#EDB95E` |
+| Staging soft      | `--env-staging-soft` | `#FBF0D9` | `#33290F` |
+| Production        | `--env-prod`         | `#C22F3C` | `#FF9AA0` |
+| Production soft   | `--env-prod-soft`    | `#FBE9EB` | `#3A1D22` |
+| Production action | `--env-prod-action`  | `#C22F3C` | `#FF8087` |
+| On risk           | `--on-risk`          | `#FFFFFF` | `#0E1217` |
+| Selection         | `--selection`        | `#D6DEF5` | `#2B3A5C` |
+| Syntax keyword    | `--syntax-keyword`   | `#3559C7` | `#8FB0FF` |
+| Syntax string     | `--syntax-string`    | `#8C6A2F` | `#E2C08D` |
+| Syntax number     | `--syntax-number`    | `#6B4FB0` | `#C7B0F2` |
+| Syntax comment    | `--syntax-comment`   | `#5F6B79` | `#8794A2` |
 
-Amber is too light for small text on white, and the base teal falls just below
-AA on paper, so companion _text_ tokens darken those families while the bands
-keep the base colors. In dark mode the production text and band are lifted for
-contrast, but the production Run button keeps `#C8242F` with white text in both
-themes, since white on the lifted pink would fail.
+Amber is too light for text on white, so the light theme darkens the staging
+and development text while the bands keep the base hues. In the dark theme the
+production Run button is coral with dark text; in the light theme it is red
+with white text. The four syntax colours are quiet on purpose: the verdict next
+to the Run button is the only place that speaks about risk.
 
 ### Type
 
-Fonts are Apple-native. The UI stack is `-apple-system, BlinkMacSystemFont,
-'Inter Variable', 'Inter', 'Segoe UI', system-ui`: Apple devices render SF Pro
-from the system, everything else renders bundled Inter (variable, with optical
-sizes). Mono is `ui-monospace, 'SF Mono', 'JetBrains Mono Variable', …`. SF is
-never bundled or served: Apple's license restricts SF Pro to interfaces of apps
-running on Apple platforms, and the system font keywords are the standards-based
-way to use it on those platforms only.
+Two faces, both bundled with the console: **Geist** for the interface and
+**Geist Mono** for SQL, hosts and identifiers (`@fontsource-variable/geist` and
+`@fontsource-variable/geist-mono`, SIL Open Font License 1.1). The console
+never asks another server for a font, or for anything else: a security product
+must not call out. The stacks are `'Geist Variable', 'Geist', system-ui,
+sans-serif` and `'Geist Mono Variable', 'Geist Mono', ui-monospace, Menlo,
+monospace`.
 
-Identifiers, hosts and IDs in the UI face use a separate subset, `Inter
-Identifiers` (`web/src/assets/fonts/`, SIL OFL), because Fontsource's Latin
-subsets omit Inter's `ss02` Disambiguation set and `zero`. With those features
-0/O and l/I/1 are unambiguous — misreading a production identifier is a real
-risk. The subset keeps `kern`; without it, pairs around hyphens drift apart.
-Mono is only for SQL, hosts, IDs and numeric table cells. Numbers that line up
-(counts, timers, durations, table numerals) use tabular figures.
+Names that people copy and compare (cluster names in tables, schema names,
+login names, token hints) use the mono face with the slashed zero, where `0`
+and `O`, and `1`, `l` and `I`, are easy to tell apart.
 
-Scale: 12 caption · 13 secondary/data · **14 body** · 17 section title ·
-22 page title · 28 overview greeting. Two weights, 400 and 600. Negative
-tracking only at ≥ 20px (−0.015em); SF applies its own optical tracking. Text
-hierarchy uses one ink at four strengths — label primary 100%, secondary 70%,
-tertiary 38%, quaternary 18% — instead of separate greys. Headings use
-`text-wrap: balance`, paragraphs `pretty`. Sentence case throughout.
+Sizes are 12 (small labels), 13 (data and body), 14 (base), 17 (section
+titles), 22 (page titles) and 28 (metrics). Weights are 400 and 600. No italic
+face is bundled. Text hierarchy uses three slate tones (text, text 2, text 3),
+not opacity.
+
+The theme is set by `web/public/theme.js` before first paint, so the page
+never flashes the other theme. It is a file because the server's content
+security policy does not allow inline scripts.
 
 ### Layout, controls and motion
 
 - **Space over lines.** At most one bordered container per page. The console
   is one surface; schema, editor, results and safety are separated by hairlines.
-  Hairlines are ink at 10% (12% dark), 0.5px on 2× displays. Tables have no
+  Hairlines use the line colour, 0.5px on 2× displays. Tables have no
   vertical rules, an unboxed 12px header and quaternary-fill row hover.
 - **Quiet controls.** Buttons are 28 / 32 / 44px (phone primary); one primary
   per view. Icon buttons are borderless with a hover fill and a tooltip.
@@ -99,7 +111,9 @@ tertiary 38%, quaternary 18% — instead of separate greys. Headings use
   popovers `cubic-bezier(0.2, 0, 0, 1)` and grow from their trigger. Dialogs
   fade and scale from 0.98; segmented thumbs slide. Nothing animates on load or
   loops; reduced motion leaves fades only.
-- **Focus.** A soft 3px ring of ink (64% light, 48% dark), visible at ≥ 3:1.
+- **Focus.** Controls show an outline plus a 3px ring in the action blue; text
+  buttons in tables show a 2px action outline. Table rows and scrolling
+  regions show a 2px outline in the text colour. All are visible at ≥ 3:1.
   Dialogs focus themselves on open, not their close button, so the close
   tooltip doesn't appear and the first Escape closes the dialog.
 - **Preferences apply and persist immediately** in this browser; there is no
@@ -120,8 +134,8 @@ inventory group headings repeat the treatment as a small swatch. The compact
 header has the cluster name, environment word, health/latency, mono host (hidden
 on phones; available in Settings and on hover), access and an inline drift link.
 
-Run actions name their target: `Run on production` (red, white text), `Run on
-staging` (amber family) and `Run` (ink) in development. Approval-required writes
+Run actions name their target: `Run on production` (production colour), `Run on
+staging` (amber family) and `Run` (action blue) in development. Approval-required writes
 keep the explicit Request approval action; blocked SQL disables execution. One
 Export menu holds CSV/JSON downloads and clipboard formats. Completed results are
 their own confirmation (no toast). Phone editors keep at least six visible lines
@@ -136,8 +150,9 @@ view.
   (Mine/Everyone). The setup checklist is compact, dismissible and hidden once
   complete.
 - **Clusters** default to dense rows grouped Production, Staging, Development:
-  name/engine monogram, health, truncated host, project, your access, last
-  queried. Rows are keyboard navigable. Card view remains available.
+  name/engine monogram, health, cloud and region, truncated host, project,
+  your access, last queried. Rows are keyboard navigable. Card view remains
+  available.
 - **Cluster tabs** (schema, health, access, settings) use grouped-list layouts.
 - **Policy** starts with a plain summary ("Reads return at most 1,000 rows.
   Writes are blocked. DDL is blocked."), then grouped rows of label, one-line
@@ -157,56 +172,78 @@ view.
 
 ## Contrast measurements
 
-Measured from rendered screens (lowest first per theme). Every pair meets WCAG AA.
+Computed from the token values with the WCAG 2 formula (lowest first per
+theme). Every pair meets AA for normal text (4.5:1). The browser tests also
+scan the rendered screens with axe in both themes.
 
-| Theme | Text      | Background | Ratio   | AA   |
-| ----- | --------- | ---------- | ------- | ---- |
-| Dark  | `#F47780` | `#382328`  | 5.41:1  | Pass |
-| Dark  | `#FFFFFF` | `#C8242F`  | 5.60:1  | Pass |
-| Dark  | `#F47780` | `#1C1F24`  | 6.13:1  | Pass |
-| Dark  | `#AEB1B6` | `#282D34`  | 6.44:1  | Pass |
-| Dark  | `#AEB1B4` | `#282B30`  | 6.59:1  | Pass |
-| Dark  | `#F47780` | `#15171B`  | 6.66:1  | Pass |
-| Dark  | `#79C6B2` | `#20332E`  | 6.69:1  | Pass |
-| Dark  | `#ABADB1` | `#1C1F24`  | 7.35:1  | Pass |
-| Dark  | `#ABACB0` | `#1B1D22`  | 7.43:1  | Pass |
-| Dark  | `#E8EAED` | `#414954`  | 7.55:1  | Pass |
-| Dark  | `#A9ABAE` | `#15171B`  | 7.79:1  | Pass |
-| Dark  | `#79C6B2` | `#1C1F24`  | 8.28:1  | Pass |
-| Dark  | `#E6B65C` | `#1C1F24`  | 8.82:1  | Pass |
-| Dark  | `#79C6B2` | `#15171B`  | 9.00:1  | Pass |
-| Dark  | `#E6B65C` | `#15171B`  | 9.57:1  | Pass |
-| Dark  | `#E8EAED` | `#2C2F34`  | 11.14:1 | Pass |
-| Dark  | `#E8EAED` | `#282D34`  | 11.49:1 | Pass |
-| Dark  | `#E8EAED` | `#282B30`  | 11.78:1 | Pass |
-| Dark  | `#15171B` | `#D0D4DA`  | 12.05:1 | Pass |
-| Dark  | `#E8EAED` | `#1C1F24`  | 13.70:1 | Pass |
-| Dark  | `#E8EAED` | `#1B1D22`  | 13.98:1 | Pass |
-| Dark  | `#15171B` | `#E8EAED`  | 14.88:1 | Pass |
-| Dark  | `#E8EAED` | `#15171B`  | 14.88:1 | Pass |
-| Light | `#C8242F` | `#FCECEE`  | 4.90:1  | Pass |
-| Light | `#C8242F` | `#F3F4F6`  | 5.08:1  | Pass |
-| Light | `#286E60` | `#E7F3EF`  | 5.29:1  | Pass |
-| Light | `#286E60` | `#F3F4F6`  | 5.46:1  | Pass |
-| Light | `#C8242F` | `#FFFFFF`  | 5.60:1  | Pass |
-| Light | `#FFFFFF` | `#C8242F`  | 5.60:1  | Pass |
-| Light | `#855610` | `#F3F4F6`  | 5.72:1  | Pass |
-| Light | `#595C61` | `#ECEEF1`  | 5.77:1  | Pass |
-| Light | `#5B5D61` | `#F1F1F2`  | 5.84:1  | Pass |
-| Light | `#5B5D62` | `#F3F4F6`  | 5.98:1  | Pass |
-| Light | `#286E60` | `#FFFFFF`  | 6.01:1  | Pass |
-| Light | `#5E6064` | `#FDFDFD`  | 6.19:1  | Pass |
-| Light | `#5F6165` | `#FFFFFF`  | 6.20:1  | Pass |
-| Light | `#855610` | `#FFFFFF`  | 6.29:1  | Pass |
-| Light | `#FFFFFF` | `#343A44`  | 11.44:1 | Pass |
-| Light | `#1A1D23` | `#DCE0E5`  | 12.73:1 | Pass |
-| Light | `#1A1D23` | `#EDEDED`  | 14.41:1 | Pass |
-| Light | `#1A1D23` | `#ECEEF1`  | 14.52:1 | Pass |
-| Light | `#1A1D23` | `#F1F1F2`  | 14.95:1 | Pass |
-| Light | `#1A1D23` | `#F3F4F6`  | 15.33:1 | Pass |
-| Light | `#1A1D23` | `#FDFDFD`  | 16.59:1 | Pass |
-| Light | `#1A1D23` | `#FFFFFF`  | 16.88:1 | Pass |
-| Light | `#FFFFFF` | `#1A1D23`  | 16.88:1 | Pass |
+| Theme | Pair                      | Text      | Background | Ratio   | AA   |
+| ----- | ------------------------- | --------- | ---------- | ------- | ---- |
+| Dark  | tertiary on surface       | `#8794A2` | `#141920`  | 5.71:1  | Pass |
+| Dark  | syntax comment            | `#8794A2` | `#141920`  | 5.71:1  | Pass |
+| Dark  | development on its soft   | `#5FD0B3` | `#12302B`  | 7.52:1  | Pass |
+| Dark  | production on its soft    | `#FF9AA0` | `#3A1D22`  | 7.53:1  | Pass |
+| Dark  | secondary on raised       | `#AAB4C0` | `#1B222B`  | 7.63:1  | Pass |
+| Dark  | text on production button | `#0E1217` | `#FF8087`  | 7.78:1  | Pass |
+| Dark  | staging on its soft       | `#EDB95E` | `#33290F`  | 7.99:1  | Pass |
+| Dark  | action on surface         | `#8FB0FF` | `#141920`  | 8.26:1  | Pass |
+| Dark  | syntax keyword            | `#8FB0FF` | `#141920`  | 8.26:1  | Pass |
+| Dark  | secondary on surface      | `#AAB4C0` | `#141920`  | 8.40:1  | Pass |
+| Dark  | production on surface     | `#FF9AA0` | `#141920`  | 8.73:1  | Pass |
+| Dark  | action on ground          | `#8FB0FF` | `#0E1217`  | 8.79:1  | Pass |
+| Dark  | text on action button     | `#0E1217` | `#8FB0FF`  | 8.79:1  | Pass |
+| Dark  | secondary on ground       | `#AAB4C0` | `#0E1217`  | 8.95:1  | Pass |
+| Dark  | syntax number             | `#C7B0F2` | `#141920`  | 9.18:1  | Pass |
+| Dark  | syntax string             | `#E2C08D` | `#141920`  | 10.22:1 | Pass |
+| Dark  | text on selected row      | `#E4E9EF` | `#1C2740`  | 12.17:1 | Pass |
+| Dark  | text on raised            | `#E4E9EF` | `#1B222B`  | 13.13:1 | Pass |
+| Dark  | text on surface           | `#E4E9EF` | `#141920`  | 14.46:1 | Pass |
+| Dark  | text on ground            | `#E4E9EF` | `#0E1217`  | 15.39:1 | Pass |
+| Light | production on its soft    | `#C22F3C` | `#FBE9EB`  | 4.77:1  | Pass |
+| Light | development on its soft   | `#17755F` | `#E2F3EE`  | 4.88:1  | Pass |
+| Light | syntax string             | `#8C6A2F` | `#FFFFFF`  | 4.98:1  | Pass |
+| Light | staging on its soft       | `#8A5A0B` | `#FBF0D9`  | 5.23:1  | Pass |
+| Light | tertiary on surface       | `#5F6B79` | `#FFFFFF`  | 5.43:1  | Pass |
+| Light | syntax comment            | `#5F6B79` | `#FFFFFF`  | 5.43:1  | Pass |
+| Light | production on surface     | `#C22F3C` | `#FFFFFF`  | 5.58:1  | Pass |
+| Light | text on production button | `#FFFFFF` | `#C22F3C`  | 5.58:1  | Pass |
+| Light | action on ground          | `#3559C7` | `#F4F6F9`  | 5.70:1  | Pass |
+| Light | action on surface         | `#3559C7` | `#FFFFFF`  | 6.17:1  | Pass |
+| Light | text on action button     | `#FFFFFF` | `#3559C7`  | 6.17:1  | Pass |
+| Light | syntax keyword            | `#3559C7` | `#FFFFFF`  | 6.17:1  | Pass |
+| Light | syntax number             | `#6B4FB0` | `#FFFFFF`  | 6.23:1  | Pass |
+| Light | secondary on ground       | `#4A5665` | `#F4F6F9`  | 6.90:1  | Pass |
+| Light | secondary on surface      | `#4A5665` | `#FFFFFF`  | 7.47:1  | Pass |
+| Light | text on selected row      | `#17202B` | `#E8EDFB`  | 14.04:1 | Pass |
+| Light | text on ground            | `#17202B` | `#F4F6F9`  | 15.18:1 | Pass |
+| Light | text on surface           | `#17202B` | `#FFFFFF`  | 16.43:1 | Pass |
+
+## Agents and the database setup check
+
+Two screens belong to the agent gate.
+
+**Agents** (`/agents`) lists the programs that query for a person. Each row
+has the agent, its one owner, what it can reach, its level and its state. The
+detail has what it can reach (each database with its environment word and
+cloud label), the guardrails, its tokens and the tools it gets.
+
+The guardrail texts say only what is true for every database. They do not
+claim that protected values never leave the gateway, or that other tables are
+hidden from the agent: on a database without an agent login the gateway's own
+checks are the only protection, and the texts say which layer does what. A
+token is shown one time, in the dialog that creates it, and afterwards only as
+`vda_agent_••••` with its last four characters.
+
+**Agent login** (a tab on a PostgreSQL cluster, for its administrators) is the
+database setup check. One badge states the result in the words of the person
+who must act: In sync (mint), Check needed (amber), Too open, Could not check
+and Password needed (coral), Not checked (neutral). A result from before a
+policy or cluster change is never shown as the present state: the badge says
+Check needed until a new check has run. Findings are grouped as "Must be repaired" and "Worth a look", each
+with the object and one sentence. The setup script is shown as text to copy or
+download; the console never runs it.
+
+Neither screen uses risk colour for anything but a real risk state (Too open,
+Could not check, Password needed, a paused agent).
 
 ## Known gaps
 
@@ -227,6 +264,7 @@ columns rather than collapsing into cards.
 
 ## Verification
 
-`npm run test:e2e` scans every route with axe at 1440 × 900 and 390 × 844 in both
-themes; the contrast table above was measured from rendered screens. Keep both
-clean when changing tokens or primitives.
+`npm run test:e2e` scans every route, including Agents and the Agent login tab,
+with axe at 1440 × 900 and 390 × 844 in both themes, and checks that the console loads its fonts from its own bundle and
+calls no other host. Recompute the contrast table when a token changes, and keep
+both clean when changing tokens or primitives.

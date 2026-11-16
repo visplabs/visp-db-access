@@ -15,6 +15,7 @@ import { PolicyPage } from './policy';
 import { ClusterSettings } from './settings';
 import { ClusterHeading } from '../../components/ui/cluster-heading';
 import { ClusterDriftBanner } from '../discovery/drift';
+import { AgentLoginPage } from './agent-login';
 export function ClusterDetail() {
   const { id } = useParams();
   const query = useResource<Cluster>(`/clusters/${id}`);
@@ -60,6 +61,7 @@ export function ClusterDetail() {
           { value: 'health', label: 'Health' },
           ...(admin ? [{ value: 'access', label: 'Access' }] : []),
           { value: 'policy', label: 'Policy' },
+          ...(admin ? [{ value: 'agent-login', label: 'Agent login' }] : []),
           ...(admin ? [{ value: 'settings', label: 'Settings' }] : []),
         ]}
       >
@@ -88,6 +90,9 @@ export function ClusterDetail() {
           {tab === 'health' && <HealthPage cluster={cluster} />}
           {tab === 'access' && admin && <ClusterAccess cluster={cluster} />}
           {tab === 'policy' && <PolicyPage cluster={cluster} />}
+          {tab === 'agent-login' && admin && (
+            <AgentLoginPage cluster={cluster} />
+          )}
           {tab === 'settings' && admin && (
             <ClusterSettings key={cluster.updated_at} cluster={cluster} />
           )}
@@ -97,6 +102,7 @@ export function ClusterDetail() {
             'health',
             'access',
             'policy',
+            'agent-login',
             'settings',
           ].includes(tab) && (
             <Button onClick={() => changeTab('console')}>Open console</Button>

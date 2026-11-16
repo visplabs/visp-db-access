@@ -10,9 +10,10 @@ type Theme = 'light' | 'dark' | 'system';
 function storedTheme(): Theme {
   try {
     const value = localStorage.getItem('vda.theme');
-    return value === 'light' || value === 'dark' ? value : 'system';
+    // Harbor's default is dark. A person who chose light or system keeps it.
+    return value === 'light' || value === 'system' ? value : 'dark';
   } catch {
-    return 'system';
+    return 'dark';
   }
 }
 const ThemeContext = createContext<{

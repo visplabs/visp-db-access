@@ -324,3 +324,50 @@ export interface SourceDraft {
   scan_interval_minutes: number;
   enabled: boolean;
 }
+
+export interface AgentToken {
+  id: string;
+  /** The last four characters of the token. The token itself is shown once. */
+  hint: string;
+  created_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
+}
+export interface Agent {
+  id: string;
+  name: string;
+  description: string;
+  max_level: 'read' | 'write';
+  paused: boolean;
+  hourly_query_budget: number;
+  owner: { id: string; email: string; name: string };
+  cluster_ids: string[];
+  tokens: AgentToken[];
+  created_at: string;
+  updated_at: string;
+}
+export interface NewAgentToken {
+  id: string;
+  token: string;
+  hint: string;
+  expires_at: string;
+}
+export interface SetupFinding {
+  severity: 'critical' | 'warning';
+  code: string;
+  object: string;
+  message: string;
+}
+/** The least-privilege database login that agents' queries run as. */
+export type AgentLogin =
+  | { configured: false }
+  | {
+      configured: true;
+      username: string;
+      status: 'unchecked' | 'ok' | 'drift' | 'error';
+      findings: SetupFinding[];
+      checked_at: string | null;
+      stale: boolean;
+      needs_password: boolean;
+    };

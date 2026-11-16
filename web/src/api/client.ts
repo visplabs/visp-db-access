@@ -60,6 +60,37 @@ export const request: Transport = async <T>(
     );
   }
 };
+/** Fetches a plain-text body, such as a generated SQL script. */
+export async function requestText(path: string): Promise<string> {
+  if (import.meta.env.VITE_MOCK === '1') return request<string>(path);
+  let response: Response;
+  try {
+    response = await fetch(`/api/v1${path}`, {
+      credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'vda' },
+    });
+  } catch (error) {
+    if (typeof window !== 'undefined')
+      window.dispatchEvent(new Event('vda:unreachable'));
+    throw error;
+  }
+  if (response.status === 503 && typeof window !== 'undefined')
+    window.dispatchEvent(new Event('vda:unreachable'));
+  if (!response.ok) {
+    const value = (await response.json().catch(() => null)) as {
+      error?: { code: string; message: string; details: unknown };
+    } | null;
+    if (response.status === 401 && typeof window !== 'undefined')
+      window.dispatchEvent(new Event('vda:session-expired'));
+    throw new ApiError(
+      value?.error?.code ?? 'http_error',
+      value?.error?.message ?? `Request failed (${response.status}).`,
+      response.status,
+      value?.error?.details,
+    );
+  }
+  return response.text();
+}
 export const json = (method: string, body?: unknown): RequestInit => ({
   method,
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
