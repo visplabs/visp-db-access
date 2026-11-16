@@ -7,9 +7,15 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use rand::RngCore;
 use uuid::Uuid;
 
-/// Authenticated credential encryption; debug output never includes the key.
+/// Authenticated credential encryption and record signing; debug output never
+/// includes a key.
 #[derive(Clone)]
-pub struct Crypto(Aes256Gcm);
+pub struct Crypto {
+    cipher: Aes256Gcm,
+    /// A key for signing records, derived from the master key, so a signature
+    /// never reveals or reuses the encryption key.
+    signing: [u8; 32],
+}
 impl std::fmt::Debug for Crypto {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Crypto([redacted])")
@@ -22,7 +28,38 @@ pub struct CryptoError;
 impl Crypto {
     /// Initialize a cipher from a 256-bit key.
     pub fn new(key: &[u8; 32]) -> Self {
-        Self(Aes256Gcm::new(key.into()))
+        use sha2::{Digest, Sha256};
+        let mut signing = Sha256::new();
+        signing.update(b"visp-db-access record signing key v1\0");
+        signing.update(key);
+        Self {
+            cipher: Aes256Gcm::new(key.into()),
+            signing: signing.finalize().into(),
+        }
+    }
+    /// An HMAC-SHA256 signature of `message`, in lower-case hex. Anyone with
+    /// write access to the metadata store but not the master key cannot make
+    /// a signature that verifies.
+    pub fn sign(&self, message: &[u8]) -> String {
+        use hmac::{Hmac, Mac};
+        let mut mac = match <Hmac<sha2::Sha256> as Mac>::new_from_slice(&self.signing) {
+            Ok(mac) => mac,
+            // A 32-byte key is always accepted.
+            Err(_) => return String::new(),
+        };
+        mac.update(message);
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+    /// Whether `signature` is this key's signature of `message`, compared in
+    /// constant time.
+    pub fn verify(&self, message: &[u8], signature: &str) -> bool {
+        use subtle::ConstantTimeEq;
+        let expected = self.sign(message);
+        !expected.is_empty() && bool::from(expected.as_bytes().ct_eq(signature.as_bytes()))
     }
     /// Decode the required standard-base64 master key.
     pub fn from_base64(key: &str) -> Result<Self, CryptoError> {
@@ -35,7 +72,7 @@ impl Crypto {
         let mut nonce = [0u8; 12];
         rand::rngs::OsRng.fill_bytes(&mut nonce);
         let ciphertext = self
-            .0
+            .cipher
             .encrypt(
                 Nonce::from_slice(&nonce),
                 Payload {
@@ -56,7 +93,7 @@ impl Crypto {
         let nonce = bytes.get(..12).ok_or(CryptoError)?;
         let data = bytes.get(12..).ok_or(CryptoError)?;
         let clear = self
-            .0
+            .cipher
             .decrypt(
                 Nonce::from_slice(nonce),
                 Payload {
@@ -66,5 +103,21 @@ impl Crypto {
             )
             .map_err(|_| CryptoError)?;
         String::from_utf8(clear).map_err(|_| CryptoError)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_signature_verifies_only_with_the_same_key_and_message() {
+        let crypto = Crypto::new(&[3; 32]);
+        let signature = crypto.sign(b"receipt");
+        assert_eq!(signature.len(), 64);
+        assert!(crypto.verify(b"receipt", &signature));
+        assert!(!crypto.verify(b"receipt.", &signature));
+        assert!(!Crypto::new(&[4; 32]).verify(b"receipt", &signature));
+        assert!(!crypto.verify(b"receipt", ""));
     }
 }

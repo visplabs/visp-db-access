@@ -1,4 +1,10 @@
-//! Four-eyes review and atomic single-use approved execution.
+//! Four-eyes review, dry runs, effect-bound execution and signed receipts.
+//!
+//! A request for a write is previewed when it is made: the write runs in a
+//! transaction that is rolled back, and the approval is bound to what that
+//! run saw. An approved write then runs only if it still changes the same
+//! rows, and the same number of them. An agent can ask for a write; a person
+//! who is not its owner approves it, and a person runs it.
 use crate::{
     app::AppState,
     auth::User,
@@ -17,14 +23,18 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::Instrument;
 use uuid::Uuid;
+use vda_core::agents::AgentIdentity;
 use vda_guard::{AccessLevel, Verdict};
 
 const APPROVAL_SQL: &str = "SELECT jsonb_build_object( 'id',a.id,'cluster_id',a.cluster_id,'cluster_name',c.name,
          'requester',jsonb_build_object('id',u.id,'email',u.email,'name',u.name),
+         'agent',CASE WHEN a.agent_name IS NULL THEN NULL ELSE
+           jsonb_build_object('id',a.agent_id,'name',a.agent_name) END,
          'sql',a.sql,'sql_truncated',false,'reason',a.reason,'analysis',a.analysis,
+         'preview',a.preview,
          'status',a.status,'error',a.error, 'reviewer',CASE WHEN r.id IS NULL THEN NULL ELSE
          jsonb_build_object('id',r.id,'email',r.email,'name',r.name) END,
-         'review_note',a.review_note,'result',a.result,'created_at',a.created_at,
+         'review_note',a.review_note,'result',a.result,'receipt',a.receipt,'created_at',a.created_at,
          'reviewed_at',a.reviewed_at,'executed_at',a.executed_at,'expires_at',a.expires_at) FROM approvals a
          JOIN clusters c ON c.id=a.cluster_id JOIN users u ON u.id=a.requester_id LEFT JOIN users r ON
          r.id=a.reviewer_id";
@@ -36,34 +46,40 @@ pub struct ApprovalInput {
     sql: String,
     reason: String,
 }
-/// Re-analyze requested SQL and create a 24-hour review request.
-pub async fn create(
-    State(state): State<AppState>,
-    Extension(user): Extension<User>,
-    Extension(ip): Extension<ClientIp>,
-    Input(body): Input<ApprovalInput>,
-) -> Result<Json<Value>, ApiError> {
-    let (c, level) =
-        rbac::require_level_effective(&state.db, &user, body.cluster_id, AccessLevel::Write)
-            .await?;
-    if body.reason.trim().is_empty()
-        || body.reason.len() > 10000
-        || body.sql.trim().is_empty()
-        || body.sql.len() > 1024 * 1024
-    {
-        return Err(ApiError::validation("Invalid SQL or approval reason"));
-    }
-    let policy = db::policy(&state.db, c.id).await?;
-    if !crate::network::allowed(ip.0, &crate::network::parse_cidrs(&policy.allowed_cidrs)?) {
-        return Err(ApiError::forbidden());
-    }
-    let dialect = if c.engine == "mysql" {
+fn dialect(cluster: &db::ClusterRecord) -> vda_guard::Dialect {
+    if cluster.engine == "mysql" {
         vda_guard::Dialect::MySql
     } else {
         vda_guard::Dialect::Postgres
-    };
-    let mut analysis = vda_guard::analyze(&body.sql, dialect, level, &policy.guard());
-    crate::masking::harden_analysis(&mut analysis, &policy.masked_columns, &body.sql, dialect);
+    }
+}
+/// Check, preview and store a request for a write. Shared by people and
+/// agents; `actor` carries the agent's scope when an agent asks.
+async fn open(
+    state: &AppState,
+    actor: &vda_core::access::Actor,
+    cluster_id: Uuid,
+    sql: String,
+    reason: String,
+    ip: std::net::IpAddr,
+) -> Result<Uuid, ApiError> {
+    let (c, level) =
+        vda_core::access::require_level_effective(&state.db, actor, cluster_id, AccessLevel::Write)
+            .await?;
+    if reason.trim().is_empty()
+        || reason.len() > 10000
+        || sql.trim().is_empty()
+        || sql.len() > 1024 * 1024
+    {
+        return Err(ApiError::validation("Invalid SQL or approval reason"));
+    }
+    crate::sanitation::text(&reason)?;
+    let policy = db::policy(&state.db, c.id).await?;
+    if !crate::network::allowed(ip, &crate::network::parse_cidrs(&policy.allowed_cidrs)?) {
+        return Err(ApiError::forbidden());
+    }
+    let mut analysis = vda_guard::analyze(&sql, dialect(&c), level, &policy.guard());
+    crate::masking::harden_analysis(&mut analysis, &policy.masked_columns, &sql, dialect(&c));
     if analysis.verdict == Verdict::Deny {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -72,22 +88,155 @@ pub async fn create(
         )
         .details(analysis));
     }
+    if analysis.is_read_only() {
+        return Err(ApiError::validation(
+            "Only a statement that changes data needs an approval",
+        ));
+    }
+    // A write hidden in WITH is not counted or bound: refuse it.
+    if analysis
+        .issues
+        .iter()
+        .any(|issue| issue.code == "data_modifying_cte")
+    {
+        return Err(unsupported_write(
+            "A write inside WITH cannot be previewed or bound. Send each change as its own statement.",
+        ));
+    }
+    if actor.agent.is_some() && dialect(&c) == vda_guard::Dialect::Postgres {
+        check_agent_reads(state, actor, c.id, &sql, &reason, ip).await?;
+    }
+    // The dry run: the write runs and is rolled back. A write that fails here
+    // would fail when it runs, so it is not stored. An agent's write is not
+    // tried now: nothing an agent sends runs before a person looks at it. A
+    // person starts its dry run with `preview`. (A dry run runs as the
+    // cluster's own login, so an agent could otherwise use it to act, or to
+    // learn from a count, beyond what its own reads allow.)
+    let preview = if actor.agent.is_some() && dialect(&c) == vda_guard::Dialect::Postgres {
+        None
+    } else {
+        Some(
+            vda_core::query::dry_run(
+                &state.core,
+                actor,
+                c.id,
+                QueryInput {
+                    sql: sql.clone(),
+                    query_id: None,
+                    task: None,
+                },
+                ip,
+            )
+            .await?,
+        )
+    };
+    let binding = preview.as_ref().and_then(|preview| preview.binding.clone());
     let id = Uuid::new_v4();
+    let owner = db::user(&state.db, actor.user_id).await?;
+    let agent = match &actor.agent {
+        Some(scope) => {
+            let name: String = sqlx::query_scalar("SELECT name FROM agents WHERE id=$1")
+                .bind(scope.agent_id)
+                .fetch_one(&state.db)
+                .await?;
+            Some((scope.agent_id, name))
+        }
+        None => None,
+    };
     let mut tx = state.db.begin().await?;
     sqlx::query(
-"INSERT INTO approvals(id,cluster_id,requester_id,sql,reason,analysis,status) VALUES ($1,$2,$3,$4,$5,$6,'pending')",
-)
-.bind(id)
-.bind(c.id)
-.bind(user.id)
-.bind(body.sql)
-.bind(body.reason)
-.bind(json!(analysis))
-.execute(&mut *tx).await?;
+        "INSERT INTO approvals(id,cluster_id,requester_id,sql,reason,analysis,status,preview,binding,
+         agent_id,agent_name) VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,$10)",
+    )
+    .bind(id)
+    .bind(c.id)
+    .bind(actor.user_id)
+    .bind(sql)
+    .bind(reason)
+    .bind(json!(analysis))
+    .bind(preview.as_ref().map(|preview| json!(preview)))
+    .bind(binding.map(|binding| json!(binding)))
+    .bind(agent.as_ref().map(|agent| agent.0))
+    .bind(agent.as_ref().map(|agent| agent.1.clone()))
+    .execute(&mut *tx)
+    .await?;
+    let details = json!({
+        "agent_id": agent.as_ref().map(|agent| agent.0),
+        "affected_rows": preview.as_ref().and_then(|preview| preview.affected_rows),
+        "bound_to": preview.as_ref().and_then(|preview| preview.bound_to.clone()),
+    });
     state
-        .audit_change(&mut tx, &user, "approval.create", Some(id), ip.0)
+        .audit_details(&mut tx, &owner, "approval.create", Some(id), ip, details)
         .await?;
     tx.commit().await?;
+    Ok(id)
+}
+fn unsupported_write(message: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "unsupported_write",
+        message.to_owned(),
+    )
+}
+/// Before an agent's write is tried, the agent must be allowed to run, as a
+/// read, everything the write reads and computes. The dry run runs on the
+/// cluster's own login, so without this an agent could learn, from the count
+/// or from an error, a value that its own reads may not see. The read goes
+/// through the agent's normal path (guard, the database as the judge, budget,
+/// history) in a read-only transaction, so a function with side effects in
+/// the statement fails here instead of running in the dry run.
+async fn check_agent_reads(
+    state: &AppState,
+    actor: &vda_core::access::Actor,
+    cluster: Uuid,
+    sql: &str,
+    task: &str,
+    ip: std::net::IpAddr,
+) -> Result<(), ApiError> {
+    let plan = vda_guard::write_plan(sql, vda_guard::Dialect::Postgres);
+    // An agent never sees returned rows, and RETURNING would be evaluated by
+    // the dry run outside the read check.
+    if plan.as_ref().is_some_and(|plan| plan.returning) {
+        return Err(unsupported_write(
+            "An agent's write cannot have RETURNING. Leave it out; you get the count of changed rows.",
+        ));
+    }
+    let read = plan.and_then(|plan| plan.read_check).ok_or_else(|| {
+        unsupported_write(
+            "An agent can ask for one plain INSERT, UPDATE or DELETE: no WITH, ONLY, ON CONFLICT, RETURNING, parameters, joins in the target, or column lists in a tuple.",
+        )
+    })?;
+    vda_core::query::run(
+        &state.core,
+        actor,
+        cluster,
+        QueryInput {
+            sql: read,
+            query_id: None,
+            task: Some(format!("Read check for a proposed write: {task}")),
+        },
+        ip,
+        false,
+    )
+    .await?;
+    Ok(())
+}
+/// Re-analyze, preview and store a request for a write.
+pub async fn create(
+    State(state): State<AppState>,
+    Extension(user): Extension<User>,
+    Extension(ip): Extension<ClientIp>,
+    Input(body): Input<ApprovalInput>,
+) -> Result<Json<Value>, ApiError> {
+    let id = open(
+        &state,
+        &user.actor(),
+        body.cluster_id,
+        body.sql,
+        body.reason,
+        ip.0,
+    )
+    .await?;
     Ok(Json(view(&state, id).await?))
 }
 async fn view(state: &AppState, id: Uuid) -> Result<Value, ApiError> {
@@ -105,18 +254,27 @@ pub struct ApprovalFilters {
     limit: Option<i64>,
     cursor: Option<String>,
 }
+const STATUSES: [&str; 8] = [
+    "pending",
+    "approved",
+    "rejected",
+    "executing",
+    "executed",
+    "failed",
+    "expired",
+    "withdrawn",
+];
 /// List accessible approval requests; expiration is also enforced without a scheduler.
 pub async fn list(
     State(state): State<AppState>,
     Extension(user): Extension<User>,
     Query(filters): Query<ApprovalFilters>,
 ) -> Result<Json<Value>, ApiError> {
-    if filters.status.as_ref().is_some_and(|s| {
-        !matches!(
-            s.as_str(),
-            "pending" | "approved" | "rejected" | "executing" | "executed" | "failed" | "expired"
-        )
-    }) {
+    if filters
+        .status
+        .as_ref()
+        .is_some_and(|s| !STATUSES.contains(&s.as_str()))
+    {
         return Err(ApiError::validation("Invalid approval status"));
     }
     sqlx::query(
@@ -132,12 +290,15 @@ pub async fn list(
         .as_deref()
         .map(db::cursor::Cursor::decode)
         .transpose()?;
+    // The list is light: rows of a preview and the receipt are on the request.
     let projection = APPROVAL_SQL
         .replace(
             "'sql',a.sql,'sql_truncated',false",
             "'sql',encode(substring(convert_to(a.sql,'UTF8') from 1 for 8000),'base64'),'sql_truncated',octet_length(a.sql)>8000",
         )
-        .replace("'result',a.result", "'result',NULL");
+        .replace("'result',a.result", "'result',NULL")
+        .replace("'preview',a.preview", "'preview',NULL")
+        .replace("'receipt',a.receipt", "'receipt',NULL");
     let sql = format!("{projection} JOIN users viewer ON viewer.id=$1
         WHERE (viewer.org_role='admin' OR a.requester_id=$1 OR EXISTS(
             SELECT 1 FROM grants g WHERE g.user_id=$1 AND g.level='admin'
@@ -186,6 +347,15 @@ async fn visible(state: &AppState, user: &User, id: Uuid) -> Result<(Uuid, Uuid)
     }
     Ok((cluster_id, requester))
 }
+async fn expire(state: &AppState, id: Uuid) -> Result<(), ApiError> {
+    sqlx::query(
+        "UPDATE approvals SET status='expired' WHERE id=$1 AND status IN ('pending','approved') AND expires_at<=now()",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await?;
+    Ok(())
+}
 /// Return a visible approval request.
 pub async fn get(
     State(state): State<AppState>,
@@ -194,17 +364,133 @@ pub async fn get(
 ) -> Result<Json<Value>, ApiError> {
     let id = db::id(&id)?;
     visible(&state, &user, id).await?;
-    sqlx::query(
-"UPDATE approvals SET status='expired' WHERE id=$1 AND status IN ('pending','approved') AND expires_at<=now()",
-)
-.bind(id)
-.execute(&state.db).await?;
+    expire(&state, id).await?;
+    Ok(Json(view(&state, id).await?))
+}
+/// An agent's request may be previewed or run only while the agent may act.
+async fn require_active_agent(state: &AppState, agent_id: Option<Uuid>) -> Result<(), ApiError> {
+    let active: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM agents WHERE id=$1 AND NOT paused)")
+            .bind(agent_id)
+            .fetch_one(&state.db)
+            .await?;
+    if active {
+        Ok(())
+    } else {
+        Err(ApiError::conflict(
+            "The agent that asked for this write was paused or deleted",
+        ))
+    }
+}
+/// A person starts the dry run of a request that has none yet (an agent's
+/// request). It runs once; the approval is then bound to what it saw.
+pub async fn preview(
+    State(state): State<AppState>,
+    Extension(user): Extension<User>,
+    Extension(ip): Extension<ClientIp>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let id = db::id(&id)?;
+    let (cluster, _) = visible(&state, &user, id).await?;
+    crate::network::require_cluster(&state, cluster, ip.0).await?;
+    expire(&state, id).await?;
+    type Row = (String, String, bool, Option<Uuid>, bool);
+    let (sql, status, previewed, agent_id, from_agent): Row = sqlx::query_as(
+        "SELECT sql,status,preview IS NOT NULL,agent_id,agent_name IS NOT NULL FROM approvals WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
+    if status != "pending" || previewed {
+        return Err(ApiError::conflict(
+            "Only a pending request without a preview can be previewed",
+        ));
+    }
+    if from_agent {
+        require_active_agent(&state, agent_id).await?;
+        // The preview runs the agent's statement on the cluster's own login.
+        // A function defined in the database could do anything there, so the
+        // agent's statement may call only built-in functions. The database
+        // says which functions its expressions call, however they are written.
+        let plan = vda_guard::write_plan(&sql, vda_guard::Dialect::Postgres);
+        let found = match plan
+            .as_ref()
+            .and_then(|plan| plan.read_check.as_deref().map(|select| (plan, select)))
+        {
+            Some((plan, select)) => {
+                // The written columns, or all of them when they are not known.
+                let columns: Option<Vec<String>> = plan
+                    .assigned
+                    .as_ref()
+                    .map(|assigned| assigned.iter().map(|(name, _)| name.clone()).collect());
+                vda_core::query::database_functions(
+                    &state.core,
+                    cluster,
+                    select,
+                    Some((plan.target.as_str(), columns.as_deref())),
+                )
+                .await?
+            }
+            None => {
+                return Err(unsupported_write(
+                    "This agent's statement cannot be checked before a preview.",
+                ))
+            }
+        };
+        if !found.is_empty() {
+            return Err(unsupported_write(&format!(
+                "This agent's statement calls functions defined in this database ({}). A preview would run them. Reject it, or make the change as your own request.",
+                found.join(", ")
+            )));
+        }
+    }
+    let preview = vda_core::query::dry_run(
+        &state.core,
+        &user.actor(),
+        cluster,
+        QueryInput {
+            sql,
+            query_id: None,
+            task: None,
+        },
+        ip.0,
+    )
+    .await?;
+    let mut tx = state.db.begin().await?;
+    let stored = sqlx::query(
+        "UPDATE approvals SET preview=$2,binding=$3 WHERE id=$1 AND status='pending' AND preview IS NULL
+         AND expires_at>now()",
+    )
+    .bind(id)
+    .bind(json!(preview))
+    .bind(preview.binding.as_ref().map(|binding| json!(binding)))
+    .execute(&mut *tx)
+    .await?;
+    if stored.rows_affected() != 1 {
+        return Err(ApiError::conflict(
+            "Only a pending request without a preview can be previewed",
+        ));
+    }
+    state
+        .audit_details(
+            &mut tx,
+            &user,
+            "approval.preview",
+            Some(id),
+            ip.0,
+            json!({"affected_rows": preview.affected_rows, "bound_to": preview.bound_to}),
+        )
+        .await?;
+    tx.commit().await?;
     Ok(Json(view(&state, id).await?))
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Review {
     note: Option<String>,
+    /// Approve and run in one step.
+    #[serde(default)]
+    run: bool,
 }
 async fn review(
     state: &AppState,
@@ -215,6 +501,7 @@ async fn review(
     ip: std::net::IpAddr,
 ) -> Result<Value, ApiError> {
     // `visible` already requires cluster admin for every non-requester; requesters never self-review.
+    // An agent's request is the request of its owner, so its owner cannot approve it either.
     let (cluster_id, requester) = visible(state, user, id).await?;
     if requester == user.id {
         return Err(ApiError::forbidden());
@@ -227,10 +514,27 @@ async fn review(
             "Rejection requires a note; notes must be at most 10000 bytes",
         ));
     }
+    // An agent's request is approved for what its preview showed, so there
+    // must be one. (A person's request has had its preview since it was made;
+    // requests from before previews existed keep working.)
+    if approved {
+        let previewed: bool = sqlx::query_scalar(
+            "SELECT preview IS NOT NULL OR agent_name IS NULL FROM approvals WHERE id=$1",
+        )
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+        if !previewed {
+            return Err(ApiError::conflict(
+                "Preview the write before you approve it (POST /approvals/{id}/preview)",
+            ));
+        }
+    }
     let mut tx = state.db.begin().await?;
     let result=sqlx::query(
 "UPDATE approvals SET status=$2,reviewer_id=$3,review_note=$4,reviewed_at=now() WHERE id=$1 AND
-         status='pending' AND expires_at>now() AND requester_id<>$3",
+         status='pending' AND expires_at>now() AND requester_id<>$3
+         AND (preview IS NOT NULL OR agent_name IS NULL OR $2='rejected')",
 )
         .bind(id)
 .bind(if approved {"approved"} else {"rejected"})
@@ -258,7 +562,8 @@ async fn review(
     tx.commit().await?;
     view(state, id).await
 }
-/// Approve a pending request as a distinct cluster administrator.
+/// Approve a pending request as a distinct cluster administrator, and with
+/// `run` also run it at once.
 pub async fn approve(
     State(state): State<AppState>,
     Extension(user): Extension<User>,
@@ -266,9 +571,12 @@ pub async fn approve(
     Path(id): Path<String>,
     Input(body): Input<Review>,
 ) -> Result<Json<Value>, ApiError> {
-    Ok(Json(
-        review(&state, &user, db::id(&id)?, body.note, true, ip.0).await?,
-    ))
+    let id = db::id(&id)?;
+    let approved = review(&state, &user, id, body.note, true, ip.0).await?;
+    if !body.run {
+        return Ok(Json(approved));
+    }
+    Ok(Json(execute_inner(state, &user, id, ip.0).await?))
 }
 /// Reject a pending request, requiring a review note.
 pub async fn reject(
@@ -278,9 +586,60 @@ pub async fn reject(
     Path(id): Path<String>,
     Input(body): Input<Review>,
 ) -> Result<Json<Value>, ApiError> {
+    if body.run {
+        return Err(ApiError::validation("A rejected request cannot run"));
+    }
     Ok(Json(
         review(&state, &user, db::id(&id)?, body.note, false, ip.0).await?,
     ))
+}
+/// The requester withdraws a request that has not run.
+pub async fn withdraw(
+    State(state): State<AppState>,
+    Extension(user): Extension<User>,
+    Extension(ip): Extension<ClientIp>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let id = db::id(&id)?;
+    let (_, requester) = visible(&state, &user, id).await?;
+    if requester != user.id {
+        return Err(ApiError::forbidden());
+    }
+    withdraw_as(&state, &user, id, ip.0, None).await?;
+    Ok(Json(view(&state, id).await?))
+}
+async fn withdraw_as(
+    state: &AppState,
+    owner: &User,
+    id: Uuid,
+    ip: std::net::IpAddr,
+    agent: Option<Uuid>,
+) -> Result<(), ApiError> {
+    expire(state, id).await?;
+    let mut tx = state.db.begin().await?;
+    let changed = sqlx::query(
+        "UPDATE approvals SET status='withdrawn' WHERE id=$1 AND status IN ('pending','approved')",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    if changed.rows_affected() != 1 {
+        return Err(ApiError::conflict(
+            "Only a request that is pending or approved can be withdrawn",
+        ));
+    }
+    state
+        .audit_details(
+            &mut tx,
+            owner,
+            "approval.withdraw",
+            Some(id),
+            ip,
+            json!({"agent_id": agent}),
+        )
+        .await?;
+    tx.commit().await?;
+    Ok(())
 }
 /// Atomically claim an approved request before executing; failed claims are never replayed.
 pub async fn execute(
@@ -289,12 +648,28 @@ pub async fn execute(
     Extension(ip): Extension<ClientIp>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let id = db::id(&id)?;
-    let (cluster, requester, reviewer): (Uuid, Uuid, Option<Uuid>) =
-        sqlx::query_as("SELECT cluster_id,requester_id,reviewer_id FROM approvals WHERE id=$1")
-            .bind(id)
-            .fetch_one(&state.db)
-            .await?;
+    Ok(Json(execute_inner(state, &user, db::id(&id)?, ip.0).await?))
+}
+async fn execute_inner(
+    state: AppState,
+    user: &User,
+    id: Uuid,
+    ip: std::net::IpAddr,
+) -> Result<Value, ApiError> {
+    type Row = (
+        Uuid,
+        Uuid,
+        Option<Uuid>,
+        Option<Uuid>,
+        Option<String>,
+        Option<Value>,
+    );
+    let (cluster, requester, reviewer, agent_id, agent_name, binding): Row = sqlx::query_as(
+        "SELECT cluster_id,requester_id,reviewer_id,agent_id,agent_name,binding FROM approvals WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
     if user.id != requester && Some(user.id) != reviewer {
         return Err(ApiError::forbidden());
     }
@@ -307,89 +682,401 @@ pub async fn execute(
     if original.disabled || reviewer.disabled {
         return Err(ApiError::forbidden());
     }
+    // An agent's request runs only while the agent may still act: a pause or
+    // a delete after the approval stops it too.
+    if agent_name.is_some() {
+        require_active_agent(&state, agent_id).await?;
+    }
     // The caller, the requester and the reviewer must all retain their required rights at execution.
     tokio::try_join!(
-        rbac::require_level(&state.db, &user, cluster, AccessLevel::Write),
+        rbac::require_level(&state.db, user, cluster, AccessLevel::Write),
         rbac::require_level(&state.db, &original, cluster, AccessLevel::Write),
         rbac::require_level(&state.db, &reviewer, cluster, AccessLevel::Admin),
     )?;
-    if !crate::network::allowed(ip.0, &crate::network::parse_cidrs(&policy.allowed_cidrs)?) {
+    if !crate::network::allowed(ip, &crate::network::parse_cidrs(&policy.allowed_cidrs)?) {
         return Err(ApiError::forbidden());
     }
+    let expected = binding
+        .map(serde_json::from_value::<vda_connectors::Expected>)
+        .transpose()
+        .map_err(|_| ApiError::internal())?;
     let timeout_ms = policy.statement_timeout_ms;
     let mut tx = state.db.begin().await?;
     let sql: Option<String> = sqlx::query_scalar(
-        "UPDATE approvals SET execution_timeout_ms=$2,execution_started_at=now(),status='executing'
-         WHERE id=$1 AND status='approved' AND expires_at>now() RETURNING sql",
+        "UPDATE approvals SET execution_timeout_ms=$2,execution_started_at=now(),status='executing',
+         executed_by=$3 WHERE id=$1 AND status='approved' AND expires_at>now() RETURNING sql",
     )
     .bind(id)
     .bind(timeout_ms as i64)
+    .bind(user.id)
     .fetch_optional(&mut *tx)
     .await?;
     let sql = sql.ok_or_else(|| {
         ApiError::conflict("Approval is expired, not approved or already consumed")
     })?;
     state
-        .audit_change(&mut tx, &user, "approval.execute", Some(id), ip.0)
+        .audit_change(&mut tx, user, "approval.execute", Some(id), ip)
         .await?;
     tx.commit().await?;
     let tracker = state.core.tasks.clone();
-    let task = tracker.spawn(
-        finish_execution(state, original, cluster, sql, id, ip.0, timeout_ms)
-            .instrument(tracing::Span::current()),
-    );
+    let run = Execution {
+        state,
+        requester: original,
+        executor: user.clone(),
+        cluster,
+        sql,
+        id,
+        ip,
+        timeout_ms,
+        expected,
+    };
+    let task = tracker.spawn(run.finish().instrument(tracing::Span::current()));
     task.await.map_err(|_| ApiError::internal())?
 }
 
-async fn finish_execution(
+struct Execution {
     state: AppState,
     requester: User,
+    executor: User,
     cluster: Uuid,
     sql: String,
     id: Uuid,
     ip: std::net::IpAddr,
     timeout_ms: u64,
-) -> Result<Json<Value>, ApiError> {
-    let result = vda_core::query::run_approved(
-        &state.core,
-        &requester.actor(),
-        cluster,
-        QueryInput {
+    expected: Option<vda_connectors::Expected>,
+}
+impl Execution {
+    async fn finish(self) -> Result<Value, ApiError> {
+        let Self {
+            state,
+            requester,
+            executor,
+            cluster,
             sql,
-            query_id: None,
-            task: None,
-        },
-        ip,
-        timeout_ms,
+            id,
+            ip,
+            timeout_ms,
+            expected,
+        } = self;
+        let bound_to = expected.as_ref().map(|expected| {
+            if expected.rows_fingerprint.is_some() {
+                "rows"
+            } else {
+                "count"
+            }
+        });
+        let result = vda_core::query::run_approved_bound(
+            &state.core,
+            &requester.actor(),
+            cluster,
+            QueryInput {
+                sql,
+                query_id: None,
+                task: None,
+            },
+            ip,
+            timeout_ms,
+            expected,
+        )
+        .await;
+        let mut tx = state.db.begin().await?;
+        match result {
+            Ok(result) => {
+                sqlx::query(
+                    "UPDATE approvals SET status='executed',result=$2,executed_at=now() WHERE id=$1 AND status='executing'",
+                )
+                .bind(id)
+                .bind(json!(result))
+                .execute(&mut *tx)
+                .await?;
+                let receipt = receipt(&state, &mut tx, id, &executor, bound_to).await?;
+                sqlx::query("UPDATE approvals SET receipt=$2 WHERE id=$1")
+                    .bind(id)
+                    .bind(&receipt)
+                    .execute(&mut *tx)
+                    .await?;
+                state
+                    .audit_details(
+                        &mut tx,
+                        &requester,
+                        "approval.executed",
+                        Some(id),
+                        ip,
+                        json!({
+                            "affected_rows": result.affected_rows,
+                            "receipt_digest": receipt.get("digest"),
+                        }),
+                    )
+                    .await?;
+                tx.commit().await?;
+                view(&state, id).await
+            }
+            Err(error) => {
+                sqlx::query(
+                    "UPDATE approvals SET status='failed',error=$2,executed_at=now() WHERE id=$1 AND status='executing'",
+                )
+                .bind(id)
+                .bind(&error.message)
+                .execute(&mut *tx)
+                .await?;
+                state
+                    .audit_details(
+                        &mut tx,
+                        &requester,
+                        "approval.failed",
+                        Some(id),
+                        ip,
+                        json!({"code": error.code}),
+                    )
+                    .await?;
+                tx.commit().await?;
+                Err(error)
+            }
+        }
+    }
+}
+
+/// The record of a write that ran: what, on which database, who asked, who
+/// approved, who ran it, when, and its effect. Its digest covers all of that,
+/// and its signature can only be made with the master key.
+async fn receipt(
+    state: &AppState,
+    tx: &mut sqlx::PgConnection,
+    id: Uuid,
+    executor: &User,
+    bound_to: Option<&str>,
+) -> Result<Value, ApiError> {
+    let body: Value = sqlx::query_scalar(
+        "SELECT jsonb_build_object('version',1,'approval_id',a.id,
+           'cluster',jsonb_build_object('id',c.id,'name',c.name,'engine',c.engine),
+           'sql',a.sql,'reason',a.reason,
+           'requested_by',jsonb_build_object('id',u.id,'email',u.email),
+           'agent',CASE WHEN a.agent_name IS NULL THEN NULL ELSE
+             jsonb_build_object('id',a.agent_id,'name',a.agent_name) END,
+           'approved_by',jsonb_build_object('id',r.id,'email',r.email),'review_note',a.review_note,
+           'requested_at',a.created_at,'approved_at',a.reviewed_at,'executed_at',a.executed_at,
+           'previewed_rows',a.preview->'affected_rows',
+           'affected_rows',a.result->'affected_rows')
+         FROM approvals a JOIN clusters c ON c.id=a.cluster_id JOIN users u ON u.id=a.requester_id
+         JOIN users r ON r.id=a.reviewer_id WHERE a.id=$1",
     )
-    .await;
-    let mut tx = state.db.begin().await?;
-    match result {
-        Ok(result) => {
-            sqlx::query(
-"UPDATE approvals SET status='executed',result=$2,executed_at=now() WHERE id=$1 AND status='executing'",
-)
-                .bind(id)
-.bind(json!(result))
-.execute(&mut *tx).await?;
-            state
-                .audit_change(&mut tx, &requester, "approval.executed", Some(id), ip)
-                .await?;
-            tx.commit().await?;
-            Ok(Json(view(&state, id).await?))
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let mut body = body;
+    if let Some(object) = body.as_object_mut() {
+        object.insert(
+            "executed_by".into(),
+            json!({"id": executor.id, "email": executor.email}),
+        );
+        object.insert("bound_to".into(), json!(bound_to));
+        object.insert("key_id".into(), json!(key_id(state)));
+    }
+    Ok(seal(state, body))
+}
+/// Add the digest and the signature to a receipt body.
+fn seal(state: &AppState, mut body: Value) -> Value {
+    use sha2::{Digest, Sha256};
+    let text = canonical(&body).to_string();
+    let digest: String = Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let signature = state.core.crypto.sign(digest.as_bytes());
+    if let Some(object) = body.as_object_mut() {
+        object.insert("digest".into(), Value::String(digest));
+        object.insert("signature".into(), Value::String(signature));
+    }
+    body
+}
+/// The same value with the keys of every object in sorted order. A crate in
+/// the build turns on `preserve_order` for serde_json, so a map keeps the order
+/// it was built in, and a receipt read back from `jsonb` has another order.
+fn canonical(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            Value::Object(
+                keys.into_iter()
+                    .filter_map(|key| map.get(key).map(|item| (key.clone(), canonical(item))))
+                    .collect(),
+            )
         }
-        Err(error) => {
-            sqlx::query(
-"UPDATE approvals SET status='failed',error=$2,executed_at=now() WHERE id=$1 AND status='executing'",
-)
-                .bind(id)
-.bind(&error.message)
-.execute(&mut *tx).await?;
-            state
-                .audit_change(&mut tx, &requester, "approval.failed", Some(id), ip)
-                .await?;
-            tx.commit().await?;
-            Err(error)
-        }
+        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
+        other => other.clone(),
+    }
+}
+/// The receipt of an executed write, and whether it is intact: its digest
+/// matches its content and its signature was made with this master key.
+pub async fn get_receipt(
+    State(state): State<AppState>,
+    Extension(user): Extension<User>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let id = db::id(&id)?;
+    visible(&state, &user, id).await?;
+    type Row = (Option<Value>, String, Uuid, String);
+    let (receipt, sql, cluster, status): Row =
+        sqlx::query_as("SELECT receipt,sql,cluster_id,status FROM approvals WHERE id=$1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await?;
+    let receipt = receipt.ok_or_else(ApiError::not_found)?;
+    // The receipt must be this request's: a valid receipt copied from another
+    // request is not valid here.
+    let belongs = status == "executed"
+        && receipt.get("approval_id") == Some(&json!(id))
+        && receipt.get("sql") == Some(&json!(sql))
+        && receipt.pointer("/cluster/id") == Some(&json!(cluster));
+    let signed_here = receipt.get("key_id") == Some(&json!(key_id(&state)));
+    Ok(Json(json!({
+        "receipt": receipt,
+        "valid": belongs && intact(&state, &receipt),
+        "signed_with_current_key": signed_here,
+    })))
+}
+/// Names the signing key without revealing it, so a receipt signed before a
+/// change of the master key can be told apart from a forged one.
+fn key_id(state: &AppState) -> String {
+    state
+        .core
+        .crypto
+        .sign(b"receipt key id")
+        .chars()
+        .take(16)
+        .collect()
+}
+fn intact(state: &AppState, receipt: &Value) -> bool {
+    let mut body = receipt.clone();
+    let Some(object) = body.as_object_mut() else {
+        return false;
+    };
+    let (Some(Value::String(digest)), Some(Value::String(signature))) =
+        (object.remove("digest"), object.remove("signature"))
+    else {
+        return false;
+    };
+    // Keys may come back from `jsonb` in any order; the digest does not care.
+    let resealed = seal(state, body);
+    resealed.get("digest") == Some(&Value::String(digest.clone()))
+        && state.core.crypto.verify(digest.as_bytes(), &signature)
+}
+
+/// How many requests one agent may have waiting at once.
+pub(crate) const OPEN_REQUESTS_PER_AGENT: i64 = 10;
+/// How many requests one agent may make in an hour, withdrawn ones included.
+pub(crate) const PROPOSALS_PER_HOUR: i64 = 30;
+/// An agent asks for a write. The request is its owner's; a person previews
+/// it, a person who is not the owner approves it, and a person runs it.
+pub(crate) async fn propose_for_agent(
+    state: &AppState,
+    identity: &AgentIdentity,
+    cluster: Uuid,
+    sql: String,
+    task: String,
+    ip: std::net::IpAddr,
+) -> Result<Value, ApiError> {
+    // Each request costs a person's time, so an agent may have only a few
+    // open at once.
+    let open_requests: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM approvals WHERE agent_id=$1 AND status IN ('pending','approved','executing')
+           AND expires_at>now()",
+    )
+    .bind(identity.agent_id)
+    .fetch_one(&state.db)
+    .await?;
+    let last_hour: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM approvals WHERE agent_id=$1 AND created_at>now()-interval '1 hour'",
+    )
+    .bind(identity.agent_id)
+    .fetch_one(&state.db)
+    .await?;
+    if last_hour >= PROPOSALS_PER_HOUR {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "Too many writes asked for in one hour",
+        )
+        .details(json!({"retry_after_seconds": 600})));
+    }
+    if open_requests >= OPEN_REQUESTS_PER_AGENT {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_open_requests",
+            "You have too many writes waiting for a person; wait for them or withdraw one",
+        )
+        .details(json!({"limit": OPEN_REQUESTS_PER_AGENT})));
+    }
+    let id = open(state, &identity.actor, cluster, sql, task, ip).await?;
+    status_for_agent(state, identity, id).await
+}
+/// What an agent may know about its request: the state, whether a person
+/// has previewed it, the reviewer's note, and after it ran the count of
+/// changed rows. Never rows, never counts before a person approved it.
+pub(crate) async fn status_for_agent(
+    state: &AppState,
+    identity: &AgentIdentity,
+    id: Uuid,
+) -> Result<Value, ApiError> {
+    expire(state, id).await?;
+    let row: Option<Value> = sqlx::query_scalar(
+        "SELECT jsonb_build_object('approval_id',a.id,'database',a.cluster_id,'status',a.status,
+           'previewed',coalesce((a.preview->>'supported')::boolean,false),'review_note',a.review_note,
+           'executed_rows',a.result->'affected_rows',
+           'error',CASE WHEN a.error IS NULL THEN NULL
+             WHEN a.error LIKE 'The data changed after the approval%' THEN a.error
+             ELSE 'The write failed when it ran. Your owner can see why.' END,
+           'created_at',a.created_at,'expires_at',a.expires_at,'executed_at',a.executed_at)
+         FROM approvals a WHERE a.id=$1 AND a.agent_id=$2",
+    )
+    .bind(id)
+    .bind(identity.agent_id)
+    .fetch_optional(&state.db)
+    .await?;
+    row.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            "approval_not_found",
+            "No request of this agent has this id",
+        )
+    })
+}
+/// An agent withdraws a request that it made and that has not run.
+pub(crate) async fn withdraw_for_agent(
+    state: &AppState,
+    identity: &AgentIdentity,
+    id: Uuid,
+    ip: std::net::IpAddr,
+) -> Result<Value, ApiError> {
+    // Only its own request: this also answers "not found" for anything else.
+    status_for_agent(state, identity, id).await?;
+    let owner = db::user(&state.db, identity.actor.user_id).await?;
+    withdraw_as(state, &owner, id, ip, Some(identity.agent_id)).await?;
+    status_for_agent(state, identity, id).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical;
+    use serde_json::{json, Map, Value};
+
+    #[test]
+    fn canonical_text_does_not_depend_on_key_order() {
+        let mut first = Map::new();
+        first.insert("b".into(), json!({"y": 1, "x": [ {"d": 1, "c": 2} ]}));
+        first.insert("a".into(), json!(null));
+        let mut second = Map::new();
+        second.insert("a".into(), json!(null));
+        second.insert("b".into(), json!({"x": [ {"c": 2, "d": 1} ], "y": 1}));
+        let (first, second) = (Value::Object(first), Value::Object(second));
+        assert_eq!(
+            canonical(&first).to_string(),
+            canonical(&second).to_string()
+        );
+        assert_eq!(
+            canonical(&first).to_string(),
+            r#"{"a":null,"b":{"x":[{"c":2,"d":1}],"y":1}}"#
+        );
     }
 }

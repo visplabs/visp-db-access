@@ -202,9 +202,13 @@ interface Approval {
     | 'executing'
     | 'executed'
     | 'failed'
-    | 'expired';
+    | 'expired'
+    | 'withdrawn';
   error: string | null;
   sql_truncated: boolean;
+  agent: { id: string | null; name: string } | null; // the agent that asked, for its owner
+  preview: Preview | null; // null in lists
+  receipt: Receipt | null; // null in lists and until the write has run
   reviewer: { id: string; email: string; name: string } | null;
   review_note: string | null;
   result: QueryResult | null;
@@ -370,20 +374,96 @@ database, username, password, tls_mode, replica_host?, replica_port?, tags?}` �
 
 ### Approvals
 
-- `POST /approvals` `{cluster_id, sql, reason}` → `Approval` (write level; re-analyzed server-side; 422 if `deny`)
+- `POST /approvals` `{cluster_id, sql, reason}` → `Approval` (write level; re-analyzed server-side; 422 if `deny`;
+  400 for a read-only statement; 422 `unsupported_write` for a write inside `WITH`). The
+  write is first tried in a dry run (see below); a write that fails in the dry run is
+  refused with the same error and is not stored.
 - `GET /approvals?status=&cluster_id=&mine=true&limit=50&cursor=` → `{items: Approval[], next_cursor: string | null}`.
   Org admins see all, scoped admins see requests on administered clusters, and other
   members see their own requests. Detail/review/execution also check current access.
   Keyset pagination orders by creation time and ID descending; `limit` must be 1–100.
-  List items set `result` to null, truncate `sql` to 2,000 characters, and set
+  List items set `result`, `preview` and `receipt` to null, truncate `sql` to 2,000 characters, and set
   `sql_truncated` to true when truncated. `GET /approvals/:id` returns full SQL
   and result, with `sql_truncated: false`. `executing` claims are never expired;
   abandoned claims become `failed` with an `error` after the statement timeout
   plus five minutes. Failed executions remain consumed and cannot be replayed.
 - `GET /approvals/:id` → `Approval`
-- `POST /approvals/:id/approve` `{note?}` → `Approval` (cluster admin, ≠ requester)
-- `POST /approvals/:id/reject` `{note}` → `Approval`
+- `POST /approvals/:id/preview` → `Approval` (requester or cluster admin). For a pending
+  request without a preview, that is an agent's request: runs the dry run once, as the
+  caller, and binds the approval to it; else 409. A preview runs the agent's statement
+  and rolls it back, so read the SQL first. It is refused while the agent is paused or
+  deleted (409), and when the statement calls a function defined in the database rather
+  than a built-in one (422 `unsupported_write`), because the preview would run that
+  function. The database itself reports what the statement calls (from a temporary view
+  of its expressions in a transaction that is rolled back): direct calls, attribute
+  notation (`row.fn`), operators, casts, functions inside views it reads, and cast
+  functions into the types of the columns it writes. Not checked, and run in the
+  preview: triggers (also those fired by foreign-key actions), column defaults,
+  generated columns, CHECK and domain constraints, expression and partial indexes,
+  row-security policies, and foreign tables on the target. The cluster's login needs
+  the `TEMP` privilege for this check; without it, previews of agent requests fail.
+- `POST /approvals/:id/approve` `{note?, run?}` → `Approval` (cluster admin, ≠ requester;
+  for an agent's request, 409 until it has a preview). With
+  `run: true` the request is approved and then run at once, as `execute` does.
+- `POST /approvals/:id/reject` `{note}` → `Approval` (`run: true` is 400)
 - `POST /approvals/:id/execute` → `Approval` with `result` (requester or approver; once; approval valid 24h)
+- `POST /approvals/:id/withdraw` → `Approval` (requester only; `pending` or `approved` →
+  `withdrawn`; else 409)
+- `GET /approvals/:id/receipt` → `{receipt, valid, signed_with_current_key}` (same
+  visibility as the request; 404 until the write has run)
+
+`Approval` also has `agent: {id, name} | null` (the agent that asked, for its owner, who is
+the `requester`), `preview: Preview | null` and `receipt: Receipt | null`. Status is one of
+`pending`, `approved`, `rejected`, `executing`, `executed`, `failed`, `expired`, `withdrawn`.
+
+**Dry run and preview (PostgreSQL).** When a person makes a request (for an agent's
+request: when a person calls `preview`), the write runs in a
+read-write transaction on the primary that is always rolled back. First the rows that the
+write targets are read with `SELECT … FOR UPDATE OF <table>`, then the write runs with
+`RETURNING <table>.*` (`RETURNING *` for an `INSERT`). `Preview` is
+`{supported, reason, kind, target, affected_rows, before, after, bound_to, notes}`.
+`before` and `after` are `{columns, hidden, rows, total}` with at most 20 rows. Protected
+columns are masked by name, and a new value that is computed from a protected column or
+from a subquery is hidden. So is a new value computed from any name that is not a column
+of the target, or from a whole row (`t::text`, `concat(t.*)`, `(t.*)::text`). For an `UPDATE`,
+`after` has the target's own columns only. `notes` says what the preview could not show.
+
+**Binding.** The approval is bound to the effect of the dry run. At execution the target
+rows are read again under `FOR UPDATE`, each with its key (`tableoid` and `ctid`) and a
+digest of the whole row as text. With `bound_to: "rows"` the digests must be the same as
+in the dry run (the digest is never sent to clients). The write is then limited to
+exactly the locked rows (their keys are a query parameter), so a row that would join the
+target set later (through a subquery, a volatile function or a new snapshot) is not
+written. With `bound_to: "count"` the number of changed rows must be the same. This is
+the case when the target rows and the changed rows did not match one to one, for a
+target that is not a plain or partitioned table (a view), and for a statement the
+planner does not cover (such as `UPDATE ONLY`, `ON CONFLICT`, or a statement with
+parameters). A planned statement on a table is still limited to the locked rows. Otherwise the
+transaction is rolled back and the request becomes `failed` with `409 effect_changed`.
+
+**MySQL.** There is no dry run: `supported: false`, and nothing is bound beyond the
+statement itself.
+
+**Limits of the dry run.** A dry run runs the statement on the primary before anyone
+approves it, and then rolls it back. What cannot be rolled back still happens: sequences
+advance, and functions and triggers that act outside the transaction (for example
+`dblink`, or `setval` in a user function) do so. `NOTIFY` is not sent. Target rows stay
+locked while it runs. A person who can request writes can learn whether rows match a
+condition from the count. An agent's write is never tried until a person starts its
+preview (see `propose_write`).
+
+**Receipt.** A write that runs leaves a receipt:
+`{version, approval_id, cluster: {id, name, engine}, sql, reason, requested_by, agent,
+approved_by, review_note, executed_by, requested_at, approved_at, executed_at,
+previewed_rows, affected_rows, bound_to, key_id, digest, signature}`. `digest` is the SHA-256 of the
+receipt without `digest` and `signature`, as compact JSON with the keys of every object
+sorted. `signature` is an
+HMAC-SHA256 of the digest with a key derived from the master key; `key_id` names that
+key without revealing it. `valid` is true when the digest and the signature match and the
+receipt belongs to this request (same `approval_id`, `sql` and cluster, status
+`executed`). `signed_with_current_key` is false for a receipt signed before the master
+key changed; such a receipt cannot be checked any more. The receipt proves who asked, who approved and what ran; it is not a
+backup and has no undo script.
 
 ### Agents
 
@@ -606,6 +686,39 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
   | `describe_table` | `task, database, table`                | `{table, kind, row_estimate, columns: [{name, type, nullable, primary_key, protected}]}` |
   | `check_sql`      | `task, database, sql`                  | `{verdict, risk, issues, will_run_as, suggestions, fix}`; nothing runs                   |
   | `run_query`      | `task, database, sql, max_rows? = 100` | `{query_id, columns, rows, row_count, truncated, ran_as, elapsed_ms}`                    |
+  | `propose_write`  | `task, database, sql`                  | `{approval_id, status, previewed, …}`; nothing runs                                      |
+  | `get_approval`   | `task, approval_id`                    | `{approval_id, status, previewed, review_note, executed_rows, error, …}`                 |
+  | `withdraw`       | `task, approval_id`                    | the same as `get_approval`, with `status: "withdrawn"`                                   |
+
+  `propose_write` opens an approval request for the agent's owner, with `task` as the
+  reason. The agent needs write level (its own limit and its owner's access). On
+  PostgreSQL it takes one plain `INSERT`, `UPDATE` or `DELETE` without `RETURNING`;
+  anything else is `422 unsupported_write`.
+
+  Nothing of an agent's write runs before a person looks at it. First, a read that
+  touches everything the statement reads and computes runs as the agent's own read. For
+  an `UPDATE` it is `SELECT <new values> FROM <tables> WHERE <condition>`; for an
+  `INSERT` it reads every column of its source. The guard, the database as the judge, the
+  budget and query history all apply, in a read-only transaction. If the agent may not
+  read it, the proposal is refused with that read's error. Otherwise the request is
+  stored with no preview. A person starts its dry run with
+  `POST /approvals/:id/preview`; it cannot be approved before that. (A dry run runs as
+  the cluster's own login. SQL can tell a read-only check from a dry run, so a dry run
+  started by an agent could act, or show a count, beyond what the agent's reads allow.)
+
+  The agent never sees rows, and sees no counts before its write has run: `get_approval`
+  shows the status, `previewed`, the reviewer's note and, after execution,
+  `executed_rows`. A failure at execution shows as "The write failed when it ran"
+  (except `effect_changed`). A person who is not the owner approves it, and a person
+  runs it. An agent's request does not run if the agent was paused or deleted after it
+  asked.
+
+  Limits per agent: one proposal at a time and five refused proposals in a row give
+  `too_many_denials` (both per node; a successful read does not reset this count); at
+  most 10 requests waiting (`429 too_many_open_requests`) and 30 in an hour, withdrawn
+  ones included (`429 rate_limited`).
+  `get_approval` and `withdraw` work only on the agent's own requests; any other id is
+  `404 approval_not_found`.
 
   `database` is an `id` from `list_databases`. Tables that the cluster policy blocks are
   left out of `search_schema`, and `describe_table` answers `table_not_found` for them, the
@@ -621,7 +734,9 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
   A refused tool call is a normal result with `isError: true` and
   `structuredContent: {error: {code, message, fix}}`. `fix` is
   `{action, hint, retry_after_seconds?}`. `action` is one of `rewrite_sql`, `fix_arguments`,
-  `choose_database`, `ask_owner`, `retry_later`, `stop`. When a statement has several
+  `choose_database`, `ask_owner`, `propose_write`, `retry_later`, `stop`. A write that needs
+  approval (`approval_required`) and a write whose data changed after the approval
+  (`effect_changed`) have the fix `propose_write`. When a statement has several
   blocking issues, the hardest stop decides the fix. A failure inside the gateway (5xx
   other than `upstream`) has a generic message. Error codes are those of the query API,
   plus:
@@ -638,7 +753,9 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
   - `budget_exceeded` (429): the hourly query budget is used; `fix.retry_after_seconds` says
     how long to wait. The budget is exact also under parallel calls, and a refusal for the
     budget records nothing.
-  - `too_many_denials` (429): five `run_query` calls in a row were refused (`query_denied`,
+  - `unsupported_write` (422): a write that cannot be previewed and bound this way. The
+    fix is `rewrite_sql`.
+  - `too_many_denials` (429): five `run_query` calls (or five `propose_write` calls) in a row were refused (`query_denied`,
     `approval_required`, `forbidden`, `not_found`, `cost_exceeded`). The agent is stopped for up to ten
     minutes from the first refusal, on the node that counted them; the other tools still
     work. A successful `run_query` resets the count. Parallel calls that the guard or the

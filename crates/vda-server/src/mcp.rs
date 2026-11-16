@@ -158,12 +158,15 @@ fn tool_result(outcome: Result<Value, ApiError>) -> Value {
     })
 }
 
-const TOOL_NAMES: [&str; 5] = [
+const TOOL_NAMES: [&str; 8] = [
     "list_databases",
     "search_schema",
     "describe_table",
     "check_sql",
     "run_query",
+    "propose_write",
+    "get_approval",
+    "withdraw",
 ];
 
 fn tools() -> Value {
@@ -171,6 +174,8 @@ fn tools() -> Value {
         "description":"One sentence: what you are doing and why. It is kept in the audit record."});
     let database = json!({"type":"string","format":"uuid",
         "description":"A database id from list_databases."});
+    let approval_id = json!({"type":"string","format":"uuid",
+        "description":"The approval_id that propose_write gave."});
     let tool = |name: &str, description: &str, properties: Value, required: &[&str]| {
         json!({
             "name": name,
@@ -222,6 +227,28 @@ fn tools() -> Value {
                 "max_rows": {"type":"integer","minimum":1,"maximum":MAX_ROWS,"default":DEFAULT_ROWS}}),
             &["task", "database", "sql"],
         ),
+        tool(
+            "propose_write",
+            "Ask for a write (one INSERT, UPDATE or DELETE, without RETURNING). Nothing runs now. \
+             A person tries it and rolls it back to see its effect, a person who is not your owner approves it, and a person runs it. \
+             It runs only if it still changes the same rows. Your `task` is the reason the approver reads. \
+             Call get_approval later to see the outcome.",
+            json!({"task": task, "database": database,
+                "sql": {"type":"string","minLength":1,"description":"One INSERT, UPDATE or DELETE statement."}}),
+            &["task", "database", "sql"],
+        ),
+        tool(
+            "get_approval",
+            "Read the state of a write you asked for: pending, approved, rejected, executed, failed, expired or withdrawn.",
+            json!({"task": task, "approval_id": approval_id}),
+            &["task", "approval_id"],
+        ),
+        tool(
+            "withdraw",
+            "Withdraw a write you asked for, if it has not run.",
+            json!({"task": task, "approval_id": approval_id}),
+            &["task", "approval_id"],
+        ),
     ])
 }
 
@@ -235,6 +262,7 @@ struct Arguments {
     table: Option<String>,
     sql: Option<String>,
     max_rows: Option<usize>,
+    approval_id: Option<Uuid>,
 }
 /// The argument names each tool takes, as its input schema says.
 fn accepted(tool: &str) -> &'static [&'static str] {
@@ -243,6 +271,8 @@ fn accepted(tool: &str) -> &'static [&'static str] {
         "describe_table" => &["task", "database", "table"],
         "check_sql" => &["task", "database", "sql"],
         "run_query" => &["task", "database", "sql", "max_rows"],
+        "propose_write" => &["task", "database", "sql"],
+        "get_approval" | "withdraw" => &["task", "approval_id"],
         _ => &["task"],
     }
 }
@@ -326,8 +356,19 @@ async fn run_tool(
     arguments: Arguments,
 ) -> Result<Value, ApiError> {
     let actor = &identity.actor;
-    if tool == "list_databases" {
-        return Ok(json!({"databases": crate::agents::reachable_now(state, actor, ip).await?}));
+    match tool {
+        "list_databases" => {
+            return Ok(json!({"databases": crate::agents::reachable_now(state, actor, ip).await?}));
+        }
+        "get_approval" => {
+            let id = required(arguments.approval_id, "approval_id")?;
+            return crate::approvals::status_for_agent(state, identity, id).await;
+        }
+        "withdraw" => {
+            let id = required(arguments.approval_id, "approval_id")?;
+            return crate::approvals::withdraw_for_agent(state, identity, id, ip).await;
+        }
+        _ => {}
     }
     let database = required(arguments.database, "database")?;
     match tool {
@@ -519,6 +560,53 @@ async fn run_tool(
                 "rows": result.rows, "row_count": result.rows.len(), "truncated": truncated,
                 "ran_as": result.executed_sql, "elapsed_ms": result.elapsed_ms}),
             )
+        }
+        "propose_write" => {
+            let sql = required(arguments.sql, "sql")?;
+            // One proposal of an agent at a time, under the same lock and
+            // streak as run_query: each one costs a dry run, and a refused or
+            // failed one counts toward the loop breaker.
+            // Its own streak: a successful read does not reset it.
+            let streak = state
+                .agent_proposals
+                .get_with(identity.agent_id, async { Default::default() })
+                .await;
+            let mut refused = streak.lock().await;
+            if *refused >= DENIAL_LIMIT {
+                return Err(ApiError::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too_many_denials",
+                    "Too many refused or failed write requests in a row",
+                )
+                .details(json!({"retry_after_seconds": DENIAL_WINDOW_SECONDS})));
+            }
+            let result = match visible(state, identity, database, ip).await {
+                Ok(_) => {
+                    crate::approvals::propose_for_agent(
+                        state,
+                        identity,
+                        database,
+                        sql,
+                        arguments.task,
+                        ip,
+                    )
+                    .await
+                }
+                Err(error) => Err(error),
+            };
+            match &result {
+                Ok(_) => *refused = 0,
+                Err(error)
+                    if !matches!(
+                        error.code,
+                        "rate_limited" | "too_many_open_requests" | "busy" | "internal"
+                    ) =>
+                {
+                    *refused += 1;
+                }
+                Err(_) => {}
+            }
+            result
         }
         _ => Err(ApiError::internal()),
     }

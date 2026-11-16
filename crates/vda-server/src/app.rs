@@ -45,6 +45,9 @@ pub struct AppState {
     account_failures: Cache<String, Arc<AtomicU32>>,
     /// Refused queries in a row, per agent, for the loop breaker in `mcp`.
     pub(crate) agent_denials: Cache<Uuid, Arc<tokio::sync::Mutex<u32>>>,
+    /// Refused proposals in a row, per agent; the lock also lets one agent
+    /// make one proposal at a time.
+    pub(crate) agent_proposals: Cache<Uuid, Arc<tokio::sync::Mutex<u32>>>,
     /// Tool calls in the current minute, per agent.
     pub(crate) agent_calls: Cache<Uuid, Arc<AtomicU32>>,
     login_rates: Cache<(IpAddr, String), Arc<AtomicU32>>,
@@ -113,6 +116,12 @@ impl AppState {
                 agent_denials: Cache::builder()
                     .max_capacity(20000)
                     .time_to_live(Duration::from_secs(crate::mcp::DENIAL_WINDOW_SECONDS))
+                    .build(),
+                // Idle, not total, time: an entry is not dropped while calls
+                // keep coming, so the lock is not replaced while it is held.
+                agent_proposals: Cache::builder()
+                    .max_capacity(20000)
+                    .time_to_idle(Duration::from_secs(crate::mcp::DENIAL_WINDOW_SECONDS))
                     .build(),
                 account_failures: Cache::builder()
                     .max_capacity(20000)
@@ -301,6 +310,12 @@ pub fn router(state: AppState) -> Router {
         .route("/approvals/{id}/approve", post(crate::approvals::approve))
         .route("/approvals/{id}/reject", post(crate::approvals::reject))
         .route("/approvals/{id}/execute", post(crate::approvals::execute))
+        .route("/approvals/{id}/withdraw", post(crate::approvals::withdraw))
+        .route("/approvals/{id}/preview", post(crate::approvals::preview))
+        .route(
+            "/approvals/{id}/receipt",
+            get(crate::approvals::get_receipt),
+        )
         .route(
             "/agents",
             get(crate::agents::list).post(crate::agents::create),

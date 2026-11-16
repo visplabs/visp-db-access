@@ -13,6 +13,7 @@ pub mod masking;
 pub mod network;
 pub mod policy;
 pub mod pools;
+pub mod preview;
 pub mod query;
 pub mod records;
 pub mod sanitation;

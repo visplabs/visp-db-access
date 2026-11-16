@@ -137,7 +137,7 @@ pub(crate) async fn execute(
         pid.store(id, Ordering::Relaxed);
         setup(&mut connection, limits, write_cap.is_some()).await?;
         let result = if let Some(cap) = write_cap {
-            write(&mut connection, sql, limits, cap).await
+            write(&mut connection, sql, None, limits, cap).await
         } else {
             read(&mut connection, sql, limits).await
         };
@@ -184,6 +184,274 @@ pub(crate) async fn execute(
         result
     })
 }
+/// Run `body` in a read-write transaction with the limits applied, then
+/// commit or roll back. Cancellation and the deadline kill the statement on
+/// the server, as for [`execute`].
+async fn in_write_transaction<T>(
+    pool: &PgPool,
+    limits: &ExecLimits,
+    token: CancellationToken,
+    commit: bool,
+    body: impl AsyncFnOnce(&mut PgConnection) -> Result<T, ConnectorError>,
+) -> Result<T, ConnectorError> {
+    let start = Instant::now();
+    let timeout = limits::hard_timeout(limits);
+    let acquired = cancel::race(
+        async { pool.acquire().await.map_err(cancel::error) },
+        &token,
+        timeout,
+    )
+    .await?;
+    let mut connection = GuardedConnection::new(acquired);
+    let pid = AtomicI32::new(0);
+    let operation = async {
+        let id: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .persistent(false)
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(cancel::error)?;
+        pid.store(id, Ordering::Relaxed);
+        setup(&mut connection, limits, true).await?;
+        match body(&mut connection).await {
+            Ok(value) => {
+                command(&mut connection, if commit { "COMMIT" } else { "ROLLBACK" }).await?;
+                connection.clean();
+                Ok(value)
+            }
+            Err(error) => {
+                if command(&mut connection, "ROLLBACK").await.is_ok() {
+                    connection.clean();
+                }
+                Err(error)
+            }
+        }
+    };
+    let remaining = timeout.saturating_sub(start.elapsed());
+    let result = cancel::race(operation, &token, remaining).await;
+    if matches!(
+        result,
+        Err(ConnectorError::Cancelled | ConnectorError::Timeout)
+    ) {
+        connection.discard();
+        let id = pid.load(Ordering::Relaxed);
+        if id != 0 {
+            cancel::postgres(pool, id).await;
+        }
+    }
+    result
+}
+/// Limits for reading the rows a write targets: all of them, up to one more
+/// than the write may change, so a fingerprint covers every row.
+fn target_limits(limits: &ExecLimits, cap: u64) -> ExecLimits {
+    ExecLimits {
+        max_rows: usize::try_from(cap.saturating_add(1)).unwrap_or(usize::MAX),
+        ..*limits
+    }
+}
+/// The keys and digests of the target rows, locked.
+async fn target_keys(
+    connection: &mut PgConnection,
+    sql: &str,
+    limits: &ExecLimits,
+) -> Result<(Vec<String>, crate::Targets), ConnectorError> {
+    let rows = read(connection, sql, limits).await?;
+    let mut keys = Vec::with_capacity(rows.rows.len());
+    let mut digests = Vec::with_capacity(rows.rows.len());
+    for row in &rows.rows {
+        let (Some(serde_json::Value::String(key)), Some(serde_json::Value::String(digest))) =
+            (row.first(), row.get(1))
+        else {
+            return Err(ConnectorError::EffectChanged(
+                "the rows it changes could not be identified".into(),
+            ));
+        };
+        keys.push(key.clone());
+        digests.push(digest.clone());
+    }
+    let targets = crate::Targets {
+        count: keys.len() as u64,
+        complete: !rows.truncated,
+        fingerprint: crate::rows_fingerprint(&digests),
+    };
+    Ok((keys, targets))
+}
+/// Whether `table` is a plain or a partitioned table: only those have the
+/// `tableoid` and `ctid` that name a row.
+async fn has_row_keys(
+    connection: &mut PgConnection,
+    table: Option<&str>,
+) -> Result<bool, ConnectorError> {
+    let Some(table) = table else {
+        return Ok(false);
+    };
+    let plain: Option<bool> = sqlx::query_scalar(
+        "SELECT relkind IN ('r','p') FROM pg_catalog.pg_class WHERE oid = pg_catalog.to_regclass($1)",
+    )
+    .bind(table)
+    .persistent(false)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(cancel::error)?;
+    Ok(plain == Some(true))
+}
+/// Every function outside `pg_catalog` and `information_schema` that a
+/// `SELECT` would call, as PostgreSQL itself resolves it: directly, through
+/// attribute notation (`row.fn`), an operator, a cast, or a view (followed
+/// through views of views). The `SELECT` is made into a temporary view in a
+/// transaction that is rolled back; nothing in it runs.
+pub(crate) async fn database_functions(
+    pool: &PgPool,
+    select: &str,
+    target: Option<(&str, Option<&[String]>)>,
+    limits: &ExecLimits,
+    token: CancellationToken,
+) -> Result<Vec<String>, ConnectorError> {
+    // A value written to a column is cast to the column's type, which can
+    // call a cast function the SELECT never shows. Any cast function into the
+    // type of a written column (or its base or element type) counts.
+    const CASTS: &str = "SELECT DISTINCT p.oid::regprocedure::text
+      FROM pg_catalog.pg_attribute a
+      JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
+      JOIN pg_catalog.pg_cast c ON c.casttarget IN (t.oid, t.typbasetype, t.typelem)
+      JOIN pg_catalog.pg_proc p ON p.oid = c.castfunc
+      JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+      WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attnum > 0 AND NOT a.attisdropped
+        AND ($2::text[] IS NULL OR lower(a.attname) = ANY($2::text[]))
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')";
+    const DEPENDS: &str = "WITH RECURSIVE deps(classid, objid, depth) AS (
+        SELECT 'pg_catalog.pg_class'::regclass::oid, 'pg_temp.vda_function_check'::regclass::oid, 0
+        UNION
+        SELECT d.refclassid, d.refobjid, deps.depth + 1
+        FROM deps
+        JOIN pg_catalog.pg_rewrite r
+          ON deps.classid = 'pg_catalog.pg_class'::regclass AND r.ev_class = deps.objid
+        JOIN pg_catalog.pg_depend d
+          ON d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.objid = r.oid
+        WHERE deps.depth < 32
+      ), called(oid) AS (
+        SELECT objid FROM deps WHERE classid = 'pg_catalog.pg_proc'::regclass
+        UNION
+        SELECT o.oprcode FROM deps JOIN pg_catalog.pg_operator o
+          ON deps.classid = 'pg_catalog.pg_operator'::regclass AND o.oid = deps.objid
+      )
+      SELECT DISTINCT p.oid::regprocedure::text
+      FROM called JOIN pg_catalog.pg_proc p ON p.oid = called.oid
+      JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+      ORDER BY 1";
+    in_write_transaction(pool, limits, token, false, async |connection| {
+        command(
+            connection,
+            &format!(
+                "CREATE TEMP VIEW vda_function_check AS SELECT 1 FROM ({select}) AS vda_check"
+            ),
+        )
+        .await?;
+        let mut found: Vec<String> = sqlx::query_scalar(DEPENDS)
+            .persistent(false)
+            .fetch_all(&mut *connection)
+            .await
+            .map_err(cancel::error)?;
+        if let Some((table, columns)) = target {
+            let columns =
+                columns.map(|columns| columns.iter().map(|c| c.to_lowercase()).collect::<Vec<_>>());
+            let casts: Vec<String> = sqlx::query_scalar(CASTS)
+                .bind(table)
+                .bind(columns)
+                .persistent(false)
+                .fetch_all(&mut *connection)
+                .await
+                .map_err(cancel::error)?;
+            found.extend(casts);
+        }
+        found.sort();
+        found.dedup();
+        Ok(found)
+    })
+    .await
+}
+pub(crate) async fn dry_run(
+    pool: &PgPool,
+    sql: crate::WriteSql<'_>,
+    limits: &ExecLimits,
+    cap: u64,
+    token: CancellationToken,
+) -> Result<crate::DryRun, ConnectorError> {
+    let start = Instant::now();
+    let target_limits = target_limits(limits, cap);
+    // Never committed: a dry run changes nothing.
+    in_write_transaction(pool, limits, token, false, async |connection| {
+        let keyed = has_row_keys(connection, sql.table).await?;
+        let targets = match sql.target_keys.filter(|_| keyed) {
+            Some(keys) => Some(target_keys(connection, keys, &target_limits).await?.1),
+            None => None,
+        };
+        let target = match sql.target_rows.filter(|_| keyed) {
+            Some(rows) => Some(read(connection, rows, &target_limits).await?),
+            None => None,
+        };
+        let mut written = write(connection, sql.write, None, limits, cap).await?;
+        written.elapsed_ms = limits::elapsed(start);
+        Ok(crate::DryRun {
+            target,
+            targets,
+            written,
+        })
+    })
+    .await
+}
+pub(crate) async fn bound_write(
+    pool: &PgPool,
+    sql: crate::WriteSql<'_>,
+    expected: &crate::Expected,
+    limits: &ExecLimits,
+    cap: u64,
+    token: CancellationToken,
+) -> Result<QueryResult, ConnectorError> {
+    let start = Instant::now();
+    let target_limits = target_limits(limits, cap);
+    let changed = |reason: &str| ConnectorError::EffectChanged(reason.into());
+    in_write_transaction(pool, limits, token, true, async |connection| {
+        // The target rows are read with FOR UPDATE: from here to the commit
+        // nobody else can change them. The write is then limited to exactly
+        // these rows, so a row that joins the target set later (through a
+        // subquery or a new snapshot) is not written.
+        let keyed = has_row_keys(connection, sql.table).await?;
+        let (statement, keys) = match (sql.target_keys, sql.bound_write) {
+            (Some(keys_sql), Some(bound)) if keyed => {
+                let (keys, targets) = target_keys(connection, keys_sql, &target_limits).await?;
+                if !targets.complete {
+                    return Err(changed("it now targets more rows than may be changed"));
+                }
+                if expected
+                    .rows_fingerprint
+                    .as_ref()
+                    .is_some_and(|fingerprint| *fingerprint != targets.fingerprint)
+                {
+                    return Err(changed(
+                        "the rows it changes are not the rows that were approved",
+                    ));
+                }
+                (bound, Some(keys))
+            }
+            _ if expected.rows_fingerprint.is_some() => {
+                return Err(changed("the rows it changes can no longer be identified"));
+            }
+            _ => (sql.write, None),
+        };
+        let mut result = write(connection, statement, keys.as_deref(), limits, cap).await?;
+        let affected = result.affected_rows.unwrap_or(0);
+        if affected != expected.affected_rows {
+            return Err(ConnectorError::EffectChanged(format!(
+                "it changes {affected} rows, and {} were approved",
+                expected.affected_rows
+            )));
+        }
+        result.elapsed_ms = limits::elapsed(start);
+        Ok(result)
+    })
+    .await
+}
 async fn describe(connection: &mut PgConnection, sql: &str) -> Result<Vec<Column>, ConnectorError> {
     Ok(decode::columns(
         connection
@@ -215,16 +483,20 @@ async fn read(
 async fn write(
     connection: &mut PgConnection,
     sql: &str,
+    keys: Option<&[String]>,
     limits: &ExecLimits,
     cap: u64,
 ) -> Result<QueryResult, ConnectorError> {
     let mut results = Results::new(limits);
     results.columns(describe(connection, sql).await?);
     let mut affected = 0u64;
+    // A bound write takes the locked row keys as `$1`.
+    let mut query = sqlx::query(sql).persistent(false);
+    if let Some(keys) = keys {
+        query = query.bind(keys.to_vec());
+    }
     // CommandComplete carries the true affected count even with RETURNING.
-    let mut stream = sqlx::query(sql)
-        .persistent(false)
-        .fetch_many(&mut *connection);
+    let mut stream = query.fetch_many(&mut *connection);
     while let Some(item) = stream.try_next().await.map_err(cancel::error)? {
         match item {
             Either::Left(result) => {
