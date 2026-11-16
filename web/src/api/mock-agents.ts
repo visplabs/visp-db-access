@@ -33,7 +33,7 @@ export function createAgents(context: {
           'Every cluster must exist and be one that you can access',
         );
     }
-    return list.sort();
+    return list.sort((a, b) => a.localeCompare(b));
   };
   const named = (value: unknown, owner: string, except?: string): string => {
     const name = String(value ?? '').trim();

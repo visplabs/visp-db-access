@@ -196,7 +196,7 @@ function AgentDetail({
   const lastUsed = agent.tokens
     .map((token) => token.last_used_at)
     .filter((value): value is string => !!value)
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .at(-1);
   const path = `/agents/${agent.id}`;
   return (
@@ -541,7 +541,9 @@ function AgentForm({
   );
   const kept = chosen.filter((id) => !lost.includes(id));
   const same = (a: string[], b: string[]) =>
-    a.length === b.length && [...a].sort().join() === [...b].sort().join();
+    a.length === b.length &&
+    [...a].sort((a, b) => a.localeCompare(b)).join() ===
+      [...b].sort((a, b) => a.localeCompare(b)).join();
   const listChanged =
     !agent ||
     !same(
