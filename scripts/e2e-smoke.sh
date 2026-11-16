@@ -122,16 +122,15 @@ check "(.items | length) == 1 and .items[0].id != \"$first_grant_id\" and .next_
 call GET /grants 403 "$member_jar"
 pass 'scoped grant pagination and minimal user lookup'
 
-# An approved write against the SELECT-only role must fail and remain consumed.
-call POST /approvals 200 "$member_jar" "$(jq -n --arg cluster "$cluster_id" '{cluster_id:$cluster,sql:"UPDATE products SET price=price WHERE id=1",reason:"Smoke: reader cannot write"}')"
-failed_approval_id=$(jq -er '.id' "$response")
-call POST "/approvals/$failed_approval_id/approve" 200 "$reviewer_jar" '{}'
-call POST "/approvals/$failed_approval_id/execute" 502 "$member_jar"
+# A write that the SELECT-only role cannot run fails in its dry run, when it is
+# requested, and no request is stored.
+call GET "/approvals?cluster_id=$cluster_id&limit=100" 200 "$reviewer_jar"
+approvals_before=$(jq -r '.items | length' "$response")
+call POST /approvals 502 "$member_jar" "$(jq -n --arg cluster "$cluster_id" '{cluster_id:$cluster,sql:"UPDATE products SET price=price WHERE id=1",reason:"Smoke: reader cannot write"}')"
 check '.error.code == "upstream"'
-call GET "/approvals/$failed_approval_id" 200 "$member_jar"
-check '.status == "failed" and (.error | length) > 0 and .result == null'
-call POST "/approvals/$failed_approval_id/execute" 409 "$member_jar"
-pass 'reader write rejection and failed approval consumed once'
+call GET "/approvals?cluster_id=$cluster_id&limit=100" 200 "$reviewer_jar"
+check "(.items | length) == $approvals_before"
+pass 'reader write rejected by its dry run and not stored'
 
 # Rotate explicitly to the write role; a SELECT-only role must never apply a write.
 call PATCH "/clusters/$cluster_id" 200 "$admin_jar" "$(jq -n --arg username "$writer" --arg password "$writer_password" '{username:$username,password:$password}')"
@@ -139,6 +138,10 @@ write_sql='UPDATE products SET price=price WHERE id=1'
 write_body=$(jq -n --arg sql "$write_sql" '{sql:$sql}')
 call POST "/clusters/$cluster_id/query" 409 "$member_jar" "$write_body"
 check '.error.code == "approval_required"'
+# A second request makes a list of two for the paging checks.
+call POST /approvals 200 "$member_jar" "$(jq -n --arg cluster "$cluster_id" --arg sql "$write_sql" '{cluster_id:$cluster,sql:$sql,reason:"Smoke: second request"}')"
+check '.preview.supported == true and .preview.affected_rows == 1 and .preview.bound_to == "rows"'
+second_approval_id=$(jq -er '.id' "$response")
 # SQL over the summary bound proves that the detail endpoint retains the full query.
 long_sql="$write_sql /* $(printf '%2100s' '' | tr ' ' x) */"
 call POST /approvals 200 "$member_jar" "$(jq -n --arg cluster "$cluster_id" --arg sql "$long_sql" '{cluster_id:$cluster,sql:$sql,reason:"Smoke: verify four-eyes write"}')"
@@ -148,7 +151,7 @@ check '.items[0].sql_truncated == true and .items[0].result == null and (.items[
 check '.next_cursor != null'
 approval_cursor=$(jq -r '.next_cursor | @uri' "$response")
 call GET "/approvals?cluster_id=$cluster_id&limit=1&cursor=$approval_cursor" 200 "$reviewer_jar"
-check '.items[0].status == "failed" and .next_cursor == null'
+check ".items[0].id == \"$second_approval_id\" and .next_cursor == null"
 
 call GET "/approvals/$approval_id" 200 "$reviewer_jar"
 check '.sql_truncated == false and (.sql | length) > 2000'
@@ -156,13 +159,15 @@ call POST "/approvals/$approval_id/approve" 403 "$member_jar" '{}'
 call POST "/approvals/$approval_id/approve" 200 "$reviewer_jar" '{"note":"Verified one-row predicate"}'
 check '.status == "approved"'
 call POST "/approvals/$approval_id/execute" 200 "$member_jar"
-check '.status == "executed" and .error == null and .result.affected_rows == 1'
+check '.status == "executed" and .error == null and .result.affected_rows == 1 and .receipt.bound_to == "rows"'
 write_query_id=$(jq -er '.result.query_id' "$response")
+call GET "/approvals/$approval_id/receipt" 200 "$member_jar"
+check '.valid == true'
 call POST "/approvals/$approval_id/execute" 409 "$member_jar"
 pass 'write approval, second-user review, execution and replay rejection'
 
 call GET "/history?cluster_id=$cluster_id&limit=200" 200 "$admin_jar"
-check '([.items[] | select(.status == "ok" and (.sql | startswith("SELECT id,name,email")))] | length) == 1 and ([.items[] | select(.status == "ok" and (.sql | startswith("UPDATE products")))] | length) == 1 and ([.items[] | select(.status == "blocked")] | length) >= 1'
+check '([.items[] | select(.status == "ok" and (.sql | startswith("SELECT id,name,email")))] | length) == 1 and ([.items[] | select(.status == "ok" and (.sql | startswith("UPDATE products")) and ((.task // "") | startswith("Dry run") | not))] | length) == 1 and ([.items[] | select(.status == "blocked")] | length) >= 1'
 # Audit uses actor IDs to avoid unrelated fixture activity; intent and completion must persist.
 call GET "/audit?actor_id=$admin_id&limit=200" 200 "$admin_jar"
 check "([.items[] | select(.action == \"query.execute\" and .details.query_id == \"$read_query_id\" and .details.status == \"running\")] | length) == 1 and ([.items[] | select(.action == \"query.execute\" and .target_id == \"$cluster_id\" and .details.status == \"blocked\")] | length) >= 1"
