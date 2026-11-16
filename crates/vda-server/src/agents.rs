@@ -623,6 +623,13 @@ pub(crate) async fn reachable_now(
                 "region": record.region,
                 "environment": record.environment,
                 "level": level,
+                // Who has the last word on what this agent can read: the
+                // target database itself, or only the gateway's own checks.
+                "enforced_by": if vda_core::judge::login(&state.db, record.id).await?.is_some() {
+                    "database"
+                } else {
+                    "gateway"
+                },
             }));
         }
     }

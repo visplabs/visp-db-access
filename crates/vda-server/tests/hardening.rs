@@ -2980,3 +2980,681 @@ async fn a_token_cannot_be_minted_while_its_owner_is_losing_access() {
     assert_eq!(s, StatusCode::OK, "{v}");
     f.close().await;
 }
+
+/// A GET that returns the body as text, for the setup script.
+async fn get_text(f: &Fixture, path: &str, cookie: &str) -> (StatusCode, String) {
+    let mut req = Request::get(format!("/api/v1{path}"))
+        .header("cookie", cookie)
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo("127.0.0.1:1234".parse::<SocketAddr>().unwrap()));
+    let response = f.app.clone().oneshot(req).await.unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), 4 * 1024 * 1024)
+        .await
+        .unwrap();
+    (status, String::from_utf8(body.to_vec()).unwrap())
+}
+
+#[tokio::test]
+async fn the_database_is_the_judge_for_agents() {
+    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    // This test is the database administrator. It makes a database of its own
+    // and points the cluster at it, so that its grants and other tests' tables
+    // do not get in each other's way.
+    let suffix = &Uuid::new_v4().simple().to_string()[..12];
+    let (schema, role) = (format!("judge_{suffix}"), format!("vda_agent_{suffix}"));
+    let database = format!("judge_db_{suffix}");
+    let server = sqlx::PgPool::connect(&target_url).await.unwrap();
+    sqlx::query(&format!("CREATE DATABASE {database}"))
+        .execute(&server)
+        .await
+        .unwrap();
+    let (base_url, _) = target_url.rsplit_once('/').unwrap();
+    let target_url = format!("{base_url}/{database}");
+    let dba = sqlx::PgPool::connect(&target_url).await.unwrap();
+    sqlx::query("UPDATE clusters SET database=$1,updated_at=clock_timestamp() WHERE id=$2")
+        .bind(&database)
+        .bind(f.cluster)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let run = |sql: String| {
+        let dba = dba.clone();
+        async move {
+            sqlx::raw_sql(&sql).execute(&dba).await.unwrap();
+        }
+    };
+    // Older PostgreSQL lets everyone create in `public`; a hardened database does not.
+    run("REVOKE CREATE ON SCHEMA public FROM PUBLIC".into()).await;
+    run(format!(
+        "CREATE SCHEMA {schema};
+         CREATE TABLE {schema}.users(id integer PRIMARY KEY,email text,note text);
+         INSERT INTO {schema}.users VALUES (1,'ada@canary.example','first'),(2,'bob@canary.example','second');
+         CREATE TABLE {schema}.vault(id integer,api_key text);
+         INSERT INTO {schema}.vault VALUES (1,'canary-api-key');
+         CREATE VIEW {schema}.v_vault AS SELECT * FROM {schema}.vault;
+         CREATE MATERIALIZED VIEW {schema}.m_users AS SELECT * FROM {schema}.users;
+         CREATE TABLE {schema}.orders(id integer,who text) PARTITION BY RANGE (id);
+         CREATE TABLE {schema}.orders_p1 PARTITION OF {schema}.orders FOR VALUES FROM (0) TO (100);
+         INSERT INTO {schema}.orders VALUES (1,'canary-partition');
+         CREATE TABLE {schema}.people(id integer,name text);
+         CREATE TABLE {schema}.vip_people(extra text) INHERITS ({schema}.people);
+         INSERT INTO {schema}.vip_people VALUES (7,'canary-vip','x');
+         CREATE TABLE {schema}.accounts(id integer,ssn text) PARTITION BY RANGE (id);
+         CREATE TABLE {schema}.accounts_p1 PARTITION OF {schema}.accounts FOR VALUES FROM (0) TO (100);
+         INSERT INTO {schema}.accounts VALUES (1,'canary-ssn');
+         CREATE TABLE {schema}.pa(id integer,tag text);
+         CREATE TABLE {schema}.pb(id integer,tag text);
+         CREATE TABLE {schema}.kid() INHERITS ({schema}.pa,{schema}.pb);
+         INSERT INTO {schema}.kid VALUES (7,'canary-two-parents');"
+    ))
+    .await;
+    let mut policy = Policy::for_environment("development");
+    policy.masked_columns = vec!["email".into(), "accounts.ssn".into()];
+    policy.blocked_tables = vec![
+        format!("{schema}.vault"),
+        format!("{schema}.orders"),
+        format!("{schema}.vip_people"),
+        format!("{schema}.pa"),
+    ];
+    f.policy(&policy).await;
+    // The owner is an organization administrator: the strongest owner there is.
+    let agent = new_agent(&f, &f.admin_cookie, "Judge", "read").await;
+    let (_, token) = new_token(&f, &f.admin_cookie, agent).await;
+    let identity = vda_core::agents::authenticate(&f.db, &token).await.unwrap();
+    let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+    let ask = |sql: String| {
+        let (core, actor, cluster) = (f.state.core.clone(), identity.actor.clone(), f.cluster);
+        async move {
+            let input = vda_core::query::QueryInput {
+                sql,
+                query_id: None,
+                task: Some("Probe".into()),
+            };
+            vda_core::query::run(&core, &actor, cluster, input, ip, false).await
+        }
+    };
+    let canaries = [
+        "canary.example",
+        "canary-api-key",
+        "canary-partition",
+        "canary-vip",
+        "canary-ssn",
+        "canary-two-parents",
+        "canary-ext",
+    ];
+    let leaked = |result: &Result<vda_core::query::QueryResult, vda_server::error::ApiError>| {
+        let text = format!("{result:?}");
+        canaries.iter().any(|canary| text.contains(canary))
+    };
+    // Statements that try to get a hidden value out. Some fool a guard that
+    // reads SQL text; none may fool the database.
+    let attacks: Vec<String> = [
+        "SELECT * FROM {s}.v_vault",
+        "SELECT api_key FROM {s}.v_vault",
+        "SELECT * FROM {s}.m_users",
+        "SELECT email FROM {s}.m_users",
+        "SELECT * FROM {s}.vault",
+        "TABLE {s}.vault",
+        "SELECT * FROM ONLY {s}.vault",
+        "SELECT email FROM {s}.users",
+        "SELECT * FROM {s}.users",
+        "SELECT u.* FROM {s}.users u",
+        "SELECT (u).* FROM {s}.users u",
+        "SELECT u FROM {s}.users u",
+        "SELECT u::text FROM {s}.users u",
+        "SELECT row_to_json(u) FROM {s}.users u",
+        "SELECT to_jsonb(u) FROM {s}.users u",
+        "SELECT x.e FROM {s}.users u, LATERAL (VALUES (u.email)) x(e)",
+        "SELECT e FROM {s}.users u CROSS JOIN LATERAL unnest(ARRAY[u.email]) e",
+        "SELECT (SELECT u.email) FROM {s}.users u",
+        "SELECT max(email) FROM {s}.users",
+        "SELECT string_agg(email, ',') FROM {s}.users",
+        "SELECT substr(email, 1, 20) FROM {s}.users",
+        "SELECT id FROM {s}.users WHERE email LIKE 'ada%'",
+        "SELECT id FROM {s}.users ORDER BY email",
+        "SELECT count(*) FROM {s}.users GROUP BY email",
+        "SELECT id, CASE WHEN email LIKE 'a%' THEN 1 ELSE 0 END FROM {s}.users",
+        "WITH t AS (SELECT * FROM {s}.users) SELECT * FROM t",
+        "SELECT * FROM {s}.users NATURAL JOIN {s}.vault",
+        "SELECT a.id FROM {s}.users a JOIN {s}.vault b ON b.api_key LIKE 'canary%'",
+        // A blocked table is also closed through its partitions, and through
+        // the parent of a blocked child. A protected column follows too.
+        "SELECT who FROM {s}.orders_p1",
+        "SELECT * FROM {s}.orders",
+        "SELECT name FROM {s}.people",
+        "SELECT id FROM {s}.people",
+        "SELECT ssn FROM {s}.accounts_p1",
+        "SELECT ssn FROM {s}.accounts",
+        // A child with two parents: the other parent of a blocked table's child.
+        "SELECT tag FROM {s}.pb",
+        "SELECT id FROM {s}.pb",
+        "SELECT tag FROM {s}.kid",
+    ]
+    .iter()
+    .map(|sql| sql.replace("{s}", &schema))
+    .collect();
+    // Before the agent login exists, the cluster's own login decides. The
+    // guard does not know that the view reads the blocked table: it leaks.
+    let through_view = ask(attacks[0].clone()).await;
+    assert!(
+        leaked(&through_view),
+        "expected the known hole: {through_view:?}"
+    );
+    let (failed, v) = tool(&f, &token, "list_databases", json!({"task":"Look"})).await;
+    assert!(!failed);
+    assert_eq!(v["databases"][0]["enforced_by"], "gateway");
+    // The gateway writes the script; the administrator runs it and sets a password.
+    let base = format!("/clusters/{}/agent-login", f.cluster);
+    let (s, v) = f.request("GET", &base, &f.admin_cookie, None).await;
+    assert_eq!((s, v), (StatusCode::OK, json!({"configured":false})));
+    let (s, script) = get_text(
+        &f,
+        &format!("{base}/script?username={role}"),
+        &f.admin_cookie,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{script}");
+    assert!(script.contains(&format!(
+        "GRANT SELECT (\"id\", \"note\") ON \"{schema}\".\"users\" TO \"{role}\";"
+    )));
+    assert!(!script.contains("canary") && !script.contains("test-password"));
+    run(script).await;
+    run(format!("ALTER ROLE {role} PASSWORD 'agent-login-pw'")).await;
+    // Only a cluster administrator can see or set it, and only a sound name.
+    let recipient = Fixture::session(&f.db, f.recipient).await;
+    for (method, path, body) in [
+        ("GET", base.clone(), None),
+        (
+            "PUT",
+            base.clone(),
+            Some(json!({"username":role,"password":"agent-login-pw"})),
+        ),
+        ("DELETE", base.clone(), None),
+        ("POST", format!("{base}/check"), None),
+        ("GET", format!("{base}/script"), None),
+    ] {
+        let (s, _) = f.request(method, &path, &recipient, body).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{method} {path}");
+    }
+    let cluster_login: String = sqlx::query_scalar("SELECT username FROM clusters WHERE id=$1")
+        .bind(f.cluster)
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    for name in [
+        cluster_login.as_str(),
+        "Bad-Name",
+        "pg_monitor",
+        "",
+        "a\"; DROP ROLE x; --",
+    ] {
+        let (s, v) = f
+            .request(
+                "PUT",
+                &base,
+                &f.admin_cookie,
+                Some(json!({"username":name,"password":"agent-login-pw"})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{name} {v}");
+    }
+    let (s, bad) = get_text(
+        &f,
+        &format!("{base}/script?username=x%22y"),
+        &f.admin_cookie,
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}");
+    // A wrong password is stored but fails the check, and agents are refused.
+    let (s, v) = f
+        .request(
+            "PUT",
+            &base,
+            &f.admin_cookie,
+            Some(json!({"username":role,"password":"wrong"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], "error", "{v}");
+    assert_eq!(v["findings"][0]["code"], "check_failed", "{v}");
+    let refused = ask(format!("SELECT id FROM {schema}.users"))
+        .await
+        .unwrap_err();
+    // Not drift: the agent is told to try later, not that a person must act.
+    assert_eq!(refused.code, "database_check_failed");
+    // The right password: the check passes. What is left are notes about
+    // tables the policy would allow but the login cannot read.
+    let (s, v) = f
+        .request(
+            "PUT",
+            &base,
+            &f.admin_cookie,
+            Some(json!({"username":role,"password":"agent-login-pw"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], "ok", "{v}");
+    assert_eq!(v["stale"], false);
+    assert!(!v.to_string().contains("agent-login-pw"));
+    assert!(v["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|f| f["severity"] == "warning"));
+    let stored: String = sqlx::query_scalar(
+        "SELECT password_enc||(SELECT string_agg(details::text,'') FROM audit_log) FROM cluster_agent_logins",
+    )
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert!(!stored.contains("agent-login-pw"));
+    let (_, v) = tool(&f, &token, "list_databases", json!({"task":"Look"})).await;
+    assert_eq!(v["databases"][0]["enforced_by"], "database");
+    // Now the database decides. Allowed columns still read.
+    let rows = ask(format!("SELECT id, note FROM {schema}.users ORDER BY id"))
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.rows,
+        vec![
+            vec![json!(1), json!("first")],
+            vec![json!(2), json!("second")]
+        ]
+    );
+    let rows = ask(format!("SELECT id FROM {schema}.accounts_p1"))
+        .await
+        .unwrap();
+    assert_eq!(rows.rows, vec![vec![json!(1)]]);
+    // Every attack fails to produce a hidden value. The statements that reach
+    // the database are refused by the database, not by a text rule.
+    let mut refused_by_database = 0;
+    for sql in &attacks {
+        let result = ask(sql.clone()).await;
+        assert!(!leaked(&result), "{sql} leaked: {result:?}");
+        assert!(result.is_err(), "{sql} must not succeed: {result:?}");
+        if result.is_err_and(|error| error.code == "upstream") {
+            refused_by_database += 1;
+        }
+    }
+    assert!(
+        refused_by_database >= 5,
+        "only {refused_by_database} reached the database"
+    );
+    // The agent login cannot change anything either, whatever the guard thinks.
+    let attempt: Result<_, sqlx::Error> = async {
+        let login = target_url.replacen("vda:test-password", &format!("{role}:agent-login-pw"), 1);
+        let pool = sqlx::PgPool::connect(&login).await?;
+        let outcome = sqlx::query(&format!("UPDATE {schema}.users SET note='x'"))
+            .execute(&pool)
+            .await;
+        pool.close().await;
+        outcome
+    }
+    .await;
+    assert!(attempt.is_err(), "the agent login could write");
+    // A person's query is not affected: it still uses the cluster's own login.
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/clusters/{}/query", f.cluster),
+            &f.admin_cookie,
+            Some(json!({"sql":format!("SELECT id FROM {schema}.vault")})),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "the guard still blocks the table: {v}"
+    );
+    // A column added later is closed until someone decides about it.
+    run(format!(
+        "ALTER TABLE {schema}.users ADD COLUMN ssn text DEFAULT 'canary-ssn'"
+    ))
+    .await;
+    let result = ask(format!("SELECT ssn FROM {schema}.users")).await;
+    assert!(result.is_err() && !format!("{result:?}").contains("canary-ssn"));
+    // Drift: each way the database can be left more open than the policy is
+    // found by the check, and agents are refused until it is repaired.
+    let check = || async {
+        let (s, v) = f
+            .request("POST", &format!("{base}/check"), &f.admin_cookie, None)
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        v
+    };
+    assert_eq!(check().await["status"], "ok");
+    for (open, close, code, object) in [
+        (
+            format!("GRANT SELECT ON {schema}.vault TO PUBLIC"),
+            format!("REVOKE SELECT ON {schema}.vault FROM PUBLIC"),
+            "readable_beyond_policy",
+            format!("{schema}.vault"),
+        ),
+        (
+            format!("GRANT SELECT (email) ON {schema}.users TO {role}"),
+            format!("REVOKE SELECT (email) ON {schema}.users FROM {role}"),
+            "readable_beyond_policy",
+            format!("{schema}.users"),
+        ),
+        (
+            format!("GRANT SELECT ON {schema}.v_vault TO {role}"),
+            format!("REVOKE SELECT ON {schema}.v_vault FROM {role}"),
+            "readable_beyond_policy",
+            format!("{schema}.v_vault"),
+        ),
+        (
+            format!("GRANT UPDATE (note) ON {schema}.users TO {role}"),
+            format!("REVOKE UPDATE (note) ON {schema}.users FROM {role}"),
+            "can_write",
+            format!("{schema}.users"),
+        ),
+        (
+            format!("GRANT CREATE ON SCHEMA {schema} TO {role}"),
+            format!("REVOKE CREATE ON SCHEMA {schema} FROM {role}"),
+            "can_create",
+            schema.clone(),
+        ),
+        (
+            format!("CREATE FUNCTION {schema}.peek() RETURNS text LANGUAGE sql SECURITY DEFINER AS 'SELECT api_key FROM {schema}.vault'"),
+            format!("DROP FUNCTION {schema}.peek()"),
+            "definer_function",
+            format!("{schema}.peek"),
+        ),
+        (
+            "GRANT SELECT ON pg_catalog.pg_statistic TO PUBLIC".to_owned(),
+            "REVOKE SELECT ON pg_catalog.pg_statistic FROM PUBLIC".to_owned(),
+            "system_catalog_readable",
+            "pg_catalog.pg_statistic".to_owned(),
+        ),
+        (
+            "GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_file(text) TO PUBLIC".to_owned(),
+            "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_read_file(text) FROM PUBLIC".to_owned(),
+            "dangerous_function",
+            "pg_catalog.pg_read_file".to_owned(),
+        ),
+        (
+            format!("CREATE EXTENSION IF NOT EXISTS postgres_fdw; CREATE SERVER loop_{suffix} FOREIGN DATA WRAPPER postgres_fdw; GRANT USAGE ON FOREIGN SERVER loop_{suffix} TO PUBLIC"),
+            format!("DROP SERVER loop_{suffix} CASCADE"),
+            "foreign_server",
+            format!("loop_{suffix}"),
+        ),
+        (
+            // Objects that someone put into a system schema are checked too.
+            format!("CREATE VIEW information_schema.leak_{suffix} AS SELECT * FROM {schema}.vault; GRANT SELECT ON information_schema.leak_{suffix} TO PUBLIC"),
+            format!("DROP VIEW information_schema.leak_{suffix}"),
+            "system_catalog_readable",
+            format!("information_schema.leak_{suffix}"),
+        ),
+        (
+            format!("CREATE FUNCTION pg_catalog.peek_{suffix}() RETURNS text LANGUAGE sql SECURITY DEFINER AS 'SELECT api_key FROM {schema}.vault LIMIT 1'"),
+            format!("DROP FUNCTION pg_catalog.peek_{suffix}()"),
+            "definer_function",
+            format!("pg_catalog.peek_{suffix}"),
+        ),
+        (
+            // A definer function in a schema the login cannot use is still
+            // reachable through an aggregate that calls it.
+            format!("CREATE SCHEMA priv_{suffix}; CREATE FUNCTION priv_{suffix}.step(text, integer) RETURNS text LANGUAGE sql SECURITY DEFINER AS 'SELECT api_key FROM {schema}.vault LIMIT 1'; CREATE AGGREGATE {schema}.peekagg(integer) (SFUNC = priv_{suffix}.step, STYPE = text)"),
+            format!("DROP SCHEMA priv_{suffix} CASCADE"),
+            "definer_function",
+            format!("priv_{suffix}.step"),
+        ),
+        (
+            // An extension's own table is not excused when the policy names it.
+            format!("CREATE EXTENSION IF NOT EXISTS hstore; CREATE TABLE {schema}.ext_cfg(id integer,email text); INSERT INTO {schema}.ext_cfg VALUES (1,'canary-ext'); ALTER EXTENSION hstore ADD TABLE {schema}.ext_cfg; GRANT SELECT ON {schema}.ext_cfg TO PUBLIC"),
+            format!("ALTER EXTENSION hstore DROP TABLE {schema}.ext_cfg; DROP TABLE {schema}.ext_cfg"),
+            "readable_beyond_policy",
+            format!("{schema}.ext_cfg"),
+        ),
+        (
+            format!("GRANT SELECT ON {schema}.pb TO PUBLIC"),
+            format!("REVOKE SELECT ON {schema}.pb FROM PUBLIC"),
+            "readable_beyond_policy",
+            format!("{schema}.pb"),
+        ),
+        (
+            "CREATE EXTENSION dblink".to_owned(),
+            "DROP EXTENSION dblink".to_owned(),
+            "dangerous_function",
+            "public.dblink functions".to_owned(),
+        ),
+        (
+            format!("GRANT SELECT ON {schema}.orders_p1 TO PUBLIC"),
+            format!("REVOKE SELECT ON {schema}.orders_p1 FROM PUBLIC"),
+            "readable_beyond_policy",
+            format!("{schema}.orders_p1"),
+        ),
+        (
+            format!("ALTER ROLE {role} CREATEROLE"),
+            format!("ALTER ROLE {role} NOCREATEROLE"),
+            "role_too_powerful",
+            "login".to_owned(),
+        ),
+        (
+            format!("GRANT pg_read_all_data TO {role}"),
+            format!("REVOKE pg_read_all_data FROM {role}"),
+            "role_too_powerful",
+            "login".to_owned(),
+        ),
+    ] {
+        run(open.clone()).await;
+        let v = check().await;
+        assert_eq!(v["status"], "drift", "{open}: {v}");
+        assert!(
+            v["findings"].as_array().unwrap().iter().any(|f| f["severity"] == "critical"
+                && f["code"] == code
+                && f["object"] == json!(object)),
+            "{open}: {v}"
+        );
+        let refused = ask(format!("SELECT id FROM {schema}.users")).await.unwrap_err();
+        assert_eq!(refused.code, "database_setup_drift", "{open}");
+        run(close).await;
+        assert_eq!(check().await["status"], "ok", "{open}");
+        ask(format!("SELECT id FROM {schema}.users")).await.unwrap();
+    }
+    // Things that are worth a note but do not close the cluster.
+    run(format!(
+        "ALTER ROLE {role} RESET default_transaction_read_only; CREATE EXTENSION pg_stat_statements"
+    ))
+    .await;
+    let v = check().await;
+    assert_eq!(v["status"], "ok", "{v}");
+    let noted = |code: &str, object: &str| {
+        v["findings"].as_array().unwrap().iter().any(|f| {
+            f["severity"] == "warning" && f["code"] == code && f["object"] == json!(object)
+        })
+    };
+    assert!(noted("not_read_only", "login"), "{v}");
+    assert!(
+        noted("extension_object_readable", "public.pg_stat_statements"),
+        "{v}"
+    );
+    run(format!(
+        "ALTER ROLE {role} SET default_transaction_read_only = on; DROP EXTENSION pg_stat_statements"
+    ))
+    .await;
+    // The script refuses a login that owns something: it would strip it and
+    // drop what it owns. Nothing is changed when it stops.
+    let owner = format!("app_owner_{suffix}");
+    run(format!(
+        "CREATE ROLE {owner}; CREATE TABLE {schema}.app_data(id integer); ALTER TABLE {schema}.app_data OWNER TO {owner}"
+    ))
+    .await;
+    let (s, harmful) = get_text(
+        &f,
+        &format!("{base}/script?username={owner}"),
+        &f.admin_cookie,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    // The script stops inside its transaction; roll that back, as psql's
+    // ON_ERROR_STOP or closing the session would.
+    let mut session = dba.acquire().await.unwrap();
+    let stopped = sqlx::raw_sql(&harmful)
+        .execute(&mut *session)
+        .await
+        .unwrap_err();
+    sqlx::raw_sql("ROLLBACK")
+        .execute(&mut *session)
+        .await
+        .unwrap();
+    drop(session);
+    assert!(stopped.to_string().contains("owns objects"), "{stopped}");
+    let kept: bool = sqlx::query_scalar(&format!(
+        "SELECT to_regclass('{schema}.app_data') IS NOT NULL AND NOT rolcanlogin FROM pg_roles WHERE rolname='{owner}'"
+    ))
+    .fetch_one(&dba)
+    .await
+    .unwrap();
+    assert!(kept, "the script changed a login that owns objects");
+    run(format!("DROP TABLE {schema}.app_data; DROP ROLE {owner}")).await;
+    // Nor will the gateway write a script for the cluster's own login.
+    let (s, _) = get_text(
+        &f,
+        &format!("{base}/script?username={cluster_login}"),
+        &f.admin_cookie,
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    // A stricter policy takes effect at once, without anyone running a check:
+    // the next agent query checks first, finds the login too open, and stops.
+    policy.blocked_tables.push(format!("{schema}.users"));
+    f.policy(&policy).await;
+    let (_, v) = f.request("GET", &base, &f.admin_cookie, None).await;
+    assert_eq!(v["stale"], true, "{v}");
+    let refused = ask(format!("SELECT id FROM {schema}.users"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused.code, "query_denied" | "database_setup_drift"),
+        "{refused}"
+    );
+    let refused = ask("SELECT 1".into()).await.unwrap_err();
+    assert_eq!(refused.code, "database_setup_drift");
+    // Running the new script closes the table in the database too.
+    let (_, script) = get_text(&f, &format!("{base}/script"), &f.admin_cookie).await;
+    assert!(
+        script.contains(&format!("TO \"{role}\"")),
+        "the stored name is the default"
+    );
+    assert!(!script.contains(&format!("ON \"{schema}\".\"users\"")));
+    run(script).await;
+    assert_eq!(check().await["status"], "ok");
+    assert_eq!(
+        ask("SELECT 1 AS n".into()).await.unwrap().rows,
+        vec![vec![json!(1)]]
+    );
+    // Removing the login puts agents back on the cluster's own login.
+    let (s, _) = f.request("DELETE", &base, &f.admin_cookie, None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = f.request("DELETE", &base, &f.admin_cookie, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (_, v) = tool(&f, &token, "list_databases", json!({"task":"Look"})).await;
+    assert_eq!(v["databases"][0]["enforced_by"], "gateway");
+    let events: Vec<String> = sqlx::query_scalar(
+        "SELECT action FROM audit_log WHERE action LIKE 'agent_login.%' ORDER BY created_at,id",
+    )
+    .fetch_all(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        events,
+        ["agent_login.set", "agent_login.set", "agent_login.remove"]
+    );
+    // When the cluster's endpoint changes, the stored agent password is
+    // cleared: it is never sent to an endpoint it was not entered for. The
+    // login stays, so agents are refused; they do not quietly fall back to
+    // the cluster's own login.
+    let (s, v) = f
+        .request(
+            "PUT",
+            &base,
+            &f.admin_cookie,
+            Some(json!({"username":role,"password":"agent-login-pw"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], "ok", "{v}");
+    let cluster_password = target_url
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split_once('@'))
+        .and_then(|(login, _)| login.split_once(':'))
+        .map(|(_, password)| password.to_owned())
+        .unwrap();
+    let (s, v) = f
+        .request(
+            "PATCH",
+            &format!("/clusters/{}", f.cluster),
+            &f.admin_cookie,
+            Some(json!({"tls_mode":"prefer","password":cluster_password})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, v) = f.request("GET", &base, &f.admin_cookie, None).await;
+    assert_eq!(
+        (v["configured"].clone(), v["needs_password"].clone()),
+        (json!(true), json!(true))
+    );
+    let kept: String = sqlx::query_scalar("SELECT password_enc FROM cluster_agent_logins")
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(kept, "");
+    let noted: Value = sqlx::query_scalar(
+        "SELECT details FROM audit_log WHERE action='cluster.update' ORDER BY created_at DESC,id DESC LIMIT 1",
+    )
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(noted, json!({"agent_login_password_cleared":true}));
+    let refused = ask("SELECT 1".into()).await.unwrap_err();
+    assert_eq!(refused.code, "database_setup_drift");
+    let v = check().await;
+    assert_eq!(v["findings"][0]["code"], "password_needed", "{v}");
+    let (_, v) = tool(&f, &token, "list_databases", json!({"task":"Look"})).await;
+    assert_eq!(v["databases"][0]["enforced_by"], "database");
+    // A change that does not move the endpoint keeps it.
+    let (s, _) = f
+        .request(
+            "PUT",
+            &base,
+            &f.admin_cookie,
+            Some(json!({"username":role,"password":"agent-login-pw"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = f
+        .request(
+            "PATCH",
+            &format!("/clusters/{}", f.cluster),
+            &f.admin_cookie,
+            Some(json!({"name":"Renamed cluster"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, v) = f.request("GET", &base, &f.admin_cookie, None).await;
+    assert_eq!(
+        (v["status"].clone(), v["needs_password"].clone()),
+        (json!("ok"), json!(false))
+    );
+    ask("SELECT 1".into()).await.unwrap();
+    f.close().await;
+    run(format!("DROP OWNED BY {role}")).await;
+    dba.close().await;
+    for sql in [
+        format!("DROP DATABASE {database} WITH (FORCE)"),
+        format!("DROP ROLE {role}"),
+    ] {
+        sqlx::query(&sql).execute(&server).await.unwrap();
+    }
+    server.close().await;
+}

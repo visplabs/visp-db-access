@@ -92,6 +92,14 @@ Protocol endpoint over plain HTTP POST with five read tools. It keeps no
 session, so it works behind any load balancer. Each tool calls the same
 `vda-core` functions as the console, with the agent's `Actor`.
 
+`judge` makes the target database the last word for agents. A PostgreSQL
+cluster can have an agent login with column grants for exactly what the policy
+allows. `judge::script` writes the SQL for a database administrator;
+`judge::verify` connects as that login and asks PostgreSQL's own privilege
+functions what it can do; `judge::require` refuses an agent's query when the
+answer is more than the policy. The gateway holds no administrative power on
+the target. The text guard stays as the fast first check.
+
 ### crates/vda-server (binary `visp-db-access`)
 
 axum HTTP API + embedded SPA. Metadata in Postgres (sqlx migrations). Owns

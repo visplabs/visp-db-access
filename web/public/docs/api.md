@@ -441,6 +441,130 @@ Agent rules in the query pipeline:
 - Query history has `agent_id` (null for a person's own query); `user_id` and `user_email`
   hold the owner. `query.execute` audit details also carry `agent_id`.
 
+### Agent login (the database is the judge)
+
+The SQL guard reads text, and text can hide what a statement really does: a view over a
+blocked table, a function that returns a protected column. The target database cannot be
+fooled that way. So a PostgreSQL cluster can have a second login, the _agent login_, that
+agents' queries run as. It holds `SELECT` on the columns that the cluster policy allows,
+and nothing else:
+
+- no grant on a blocked table, on a protected (masked) column, or on any view or
+  materialized view;
+- a rule about a table also covers every table that shares rows with it: its partitions,
+  its parents and children by inheritance, and the other parents of a shared child, however
+  far the links go. Blocking any of them closes all of them, and a protected column is
+  protected on all of them;
+- grants are per column, never per table, so a column added later is closed until the
+  script is run again;
+- its sessions are read-only, and it has no role memberships and no create rights.
+
+The gateway never creates or changes this login. It writes a script; a database
+administrator reads it, runs it and sets a password. The gateway then connects as that
+login and asks the database what the login can really do. Anything beyond the policy is
+_drift_, and agents are refused on that cluster (`database_setup_drift`, 409) until a check
+finds it gone. People's queries always use the cluster's own login and are not affected.
+
+All endpoints need admin access to the cluster. PostgreSQL only (400 for MySQL), except
+`DELETE`, which works for any cluster.
+
+- `GET /clusters/:id/agent-login` → `AgentLogin`:
+  `{configured: false}` or
+  `{configured: true, username, status, findings, checked_at, stale, needs_password}`.
+  `status` is `unchecked`, `ok`, `drift` (a critical finding) or `error` (the check could not
+  run, for example a wrong password). `stale` is true when the cluster or its policy changed
+  after the last check; the next agent query checks again before it runs.
+  `findings` is `[{severity: "critical"|"warning", code, object, message}]`:
+
+  | Code                                 | Severity | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+  | ------------------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `readable_beyond_policy`             | critical | The login can read a column that the policy hides, or a view. Includes grants to `PUBLIC`, and partitions, parents and children of a blocked table.                                                                                                                                                                                                                                                                                           |
+  | `can_write`                          | critical | The login can change a table.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+  | `can_create`                         | critical | The login can create objects in a schema, or schemas in the database.                                                                                                                                                                                                                                                                                                                                                                         |
+  | `definer_function`                   | critical | The login can run a `SECURITY DEFINER` function, which reads with its owner's rights. Every schema counts, also one the login cannot use, because an aggregate or an operator can call the function. Revoke `EXECUTE` on it from `PUBLIC`.                                                                                                                                                                                                    |
+  | `system_catalog_readable`            | critical | The login can read `pg_statistic`, `pg_statistic_ext_data`, `pg_authid`, `pg_shadow`, `pg_largeobject`, `pg_user_mapping`, or a table in `pg_toast`: these hold copies of table data or credentials. Also any table or view that someone added to `pg_catalog` or `information_schema`.                                                                                                                                                       |
+  | `foreign_server`                     | critical | The login can use a foreign server, which reads with another login's rights.                                                                                                                                                                                                                                                                                                                                                                  |
+  | `dangerous_function`                 | critical | The login can run a function that reads files or connects to other servers: `pg_read_file`, `pg_read_binary_file`, `pg_ls_dir`, `pg_ls_logdir`, `pg_ls_waldir`, `pg_stat_file`, `lo_import`, `lo_export`, or the `dblink` functions (one finding for all of them). Installing `dblink` gives them to `PUBLIC`; revoke `EXECUTE` from `PUBLIC` and grant it to the roles that need it.                                                         |
+  | `role_too_powerful`                  | critical | Superuser, create role or database, replication, bypass row security, or member of another role.                                                                                                                                                                                                                                                                                                                                              |
+  | `check_failed`, `database_too_large` | critical | The check could not run as the login, or the database has more columns than it reads (about 200,000). Status `error`.                                                                                                                                                                                                                                                                                                                         |
+  | `not_read_only`                      | warning  | The login's sessions are not read-only by default.                                                                                                                                                                                                                                                                                                                                                                                            |
+  | `password_needed`                    | critical | The cluster's endpoint changed and the stored password was cleared. Enter it again, or remove the login.                                                                                                                                                                                                                                                                                                                                      |
+  | `extension_object_readable`          | warning  | The login can read a view or table that an extension installed, such as `pg_stat_statements`, and that the policy has no rule about. Revoke it from `PUBLIC` if it shows anything sensitive. An extension's object that the policy blocks or protects is `readable_beyond_policy`; a broad protection pattern, such as `*name*`, can match a column of an extension's view and so close the cluster until that view is revoked from `PUBLIC`. |
+  | `not_granted`                        | warning  | The policy allows a column that the login cannot read. Agents get a permission error for it.                                                                                                                                                                                                                                                                                                                                                  |
+
+- `GET /clusters/:id/agent-login/script?username=` → `text/plain`: the SQL to run as a database
+  administrator. `username` defaults to the stored login, or `vda_agent`; it cannot be the
+  cluster's own login. The script is made from the current catalog and policy and contains no
+  secret. **Use a new login name, and one name per database.** The script removes every
+  privilege the login holds in that database, and its rights on other databases and
+  tablespaces of the same server such as `CONNECT` (`DROP OWNED BY`), and then grants the
+  exact list, so it is safe to run again
+  for the agent login, and it stops without changing anything when the login is a superuser
+  or owns any object, or when it is run in another database. It reads at most 5,000 tables
+  from the catalog; tables beyond that stay closed. It does not remove grants to `PUBLIC`;
+  the check reports them.
+- `PUT /clusters/:id/agent-login` `{username, password}` → `AgentLogin`. Stores the login
+  (the password encrypted, like the cluster's own) and checks it at once. `username` is 1–63
+  lower-case letters, digits or `_`, not a reserved name, and must differ from the cluster's
+  own login.
+- `POST /clusters/:id/agent-login/check` → `AgentLogin`. Checks now.
+- `DELETE /clusters/:id/agent-login` → `204`. Agents use the cluster's own login again.
+
+When the check runs. A clean result is trusted for five minutes on the node that made it,
+then repeated before the next agent query. A bad result (`drift` or `error`) is repeated
+after fifteen seconds, so a repair is noticed without anyone asking; `POST …/check` does it
+at once on the node that handles it. A policy change makes the result stale at once. So a
+stricter policy closes the cluster to agents until the script has been run again; a looser
+policy leaves it working, with `not_granted` warnings. While the check cannot run, agents
+get `database_check_failed` (503) with a `retry_later` fix.
+
+When the cluster's connection endpoint changes (engine, host, port, database, login, TLS
+mode, replica), the stored agent password is cleared, and `cluster.update` records
+`agent_login_password_cleared`. A stored password is only ever sent to the endpoint it was
+entered for. The login itself stays, with `needs_password: true`, so agents are refused
+(`database_setup_drift`, finding `password_needed`) and never fall back to the cluster's own
+login. Enter the password again with `PUT`, or remove the login on purpose with `DELETE`.
+
+Limits. State them to whoever relies on this:
+
+- **Names and definitions stay visible.** The PostgreSQL catalog shows every login the
+  names of tables and columns, column defaults, check constraints, comments, the source of
+  views and functions, index definitions, partition bounds and row-count estimates (also of
+  a partial index, which is a count behind its condition), also for blocked tables.
+  Only the rows are closed. Do not put secrets in those places.
+- **The policy works on names.** A generated column, or a copy of a protected column under
+  another name, is a different column to the policy and is granted. So is a field inside a
+  composite or JSON column: protect the whole column. Blocking one partition closes its
+  parent and all its sibling partitions too. A view is never
+  granted, so an agent cannot read through any view.
+- **One login for all agents of a cluster.** They can see each other's running statements
+  in `pg_stat_activity`. Set `CONNECTION LIMIT` on the login to cover the gateway's pools:
+  five connections per pool, for the primary and the replica, on each gateway node (the
+  script sets 16).
+- **Between checks.** A new object that is open to `PUBLIC` can be readable for up to five
+  minutes. The same holds for a granted table that is attached as a partition of a blocked
+  table. The gateway's own name-based checks still apply in that time. A partition that is
+  detached from a blocked table becomes an ordinary table; block it by name if it must stay
+  closed.
+- **What the check does not cover:** sequences, large-object grants, the `TEMPORARY` right
+  on the database, and built-in functions other than those listed above. The guard's
+  function list is the only layer for these. A read-only setting made with
+  `ALTER ROLE … IN DATABASE` is not seen by `not_read_only`. Only the primary is checked; a physical
+  replica has the same grants, a logical replica may not.
+- **Row-level security policies.** PostgreSQL does not check column grants for a column
+  that a policy uses. A policy on a protected column is a yes-or-no test of that column, and
+  a policy function that prints its argument sends the value to the login as a notice or an
+  error. Do not write such functions on tables that agents can read.
+- **Other clues.** Timing and error messages can still tell an attacker something, and
+  allowed columns can still be combined across many queries.
+- **Large catalogs.** At most 200 findings are listed, critical ones first, with a
+  `more_findings` note that gives the totals.
+- **PostgreSQL 14 and older** let everyone create in schema `public`, which the check
+  reports as `can_create`. `REVOKE CREATE ON SCHEMA public FROM PUBLIC` closes it, and also
+  takes that right from every role that had it only through `PUBLIC`; grant it to them
+  first.
+- **MySQL** has no agent login yet.
+
 ### Agent door (bearer token, no session)
 
 These endpoints take `Authorization: Bearer <agent token>` and never a session cookie.
@@ -450,7 +574,8 @@ needed on the endpoints listed here. Every authentication failure is the same `4
 malformed, expired or revoked token, paused agent, disabled owner.
 
 - `GET /agent/whoami` → `{agent: {id, name, max_level}, owner: {email},
-clusters: [{id, name, engine, provider, region, environment, level}]}`. `clusters` lists
+clusters: [{id, name, engine, provider, region, environment, level, enforced_by}]}`.
+  `enforced_by` is `database` when the cluster has an agent login, else `gateway`. `clusters` lists
   only what the agent can reach now, with its effective `level`.
 
 - `POST /mcp` — the Model Context Protocol endpoint (Streamable HTTP, without sessions and
@@ -476,7 +601,7 @@ clusters: [{id, name, engine, provider, region, environment, level}]}`. `cluster
 
   | Tool             | Arguments                              | Result                                                                                   |
   | ---------------- | -------------------------------------- | ---------------------------------------------------------------------------------------- |
-  | `list_databases` | `task`                                 | `{databases: [{id, name, engine, provider, region, environment, level}]}`                |
+  | `list_databases` | `task`                                 | `{databases: [{id, name, engine, provider, region, environment, level, enforced_by}]}`   |
   | `search_schema`  | `task, database, query, limit? = 20`   | `{tables: [{table, kind, row_estimate, matching_columns}], more}`                        |
   | `describe_table` | `task, database, table`                | `{table, kind, row_estimate, columns: [{name, type, nullable, primary_key, protected}]}` |
   | `check_sql`      | `task, database, sql`                  | `{verdict, risk, issues, will_run_as, suggestions, fix}`; nothing runs                   |
@@ -484,8 +609,9 @@ clusters: [{id, name, engine, provider, region, environment, level}]}`. `cluster
 
   `database` is an `id` from `list_databases`. Tables that the cluster policy blocks are
   left out of `search_schema`, and `describe_table` answers `table_not_found` for them, the
-  same as for a table that does not exist. This is a filter on names in the gateway; it is not
-  yet enforced by the target database. `check_sql` still answers `blocked_table` for a
+  same as for a table that does not exist. This is a filter on names in the gateway. When the
+  cluster has an agent login (`enforced_by: "database"`), the database also refuses to read
+  them, whatever the statement looks like. `check_sql` still answers `blocked_table` for a
   blocked name, so the block list is not a secret from the agent. `run_query` goes through the same pipeline as a
   person's query (guard, policy, masking, cost gate, audit) and stores `task` in query
   history. It returns at most `max_rows` rows (1000 at most) and at most about one megabyte
@@ -500,6 +626,10 @@ clusters: [{id, name, engine, provider, region, environment, level}]}`. `cluster
   other than `upstream`) has a generic message. Error codes are those of the query API,
   plus:
   - `table_not_found` (404): `describe_table` found no such table.
+  - `database_setup_drift` (409): the cluster's agent login allows more than the policy. The
+    fix is `ask_owner`.
+  - `database_check_failed` (503): the agent login could not be checked. The fix is
+    `retry_later`.
   - `result_too_large` (422): one row alone is larger than about one megabyte.
   - `network_denied` (403): the cluster's own network policy excludes the agent's address.
     Such a cluster is also left out of `list_databases`.
@@ -531,7 +661,8 @@ clusters: [{id, name, engine, provider, region, environment, level}]}`. `cluster
   details contain `{query_id, history_id, status}` with initial `running`/`blocked`
   status. Final outcome is in history. Approval actions include `approval.create`,
   `approval.approve`, `approval.reject`, `approval.execute` (claim), `approval.executed`,
-  and `approval.failed`. Administrative actions use `*.create`, `*.update`, `*.delete`. Agent actions are
+  and `approval.failed`. Administrative actions use `*.create`, `*.update`, `*.delete`. The agent login of a cluster writes `agent_login.set` (`{username}`) and
+  `agent_login.remove`. Agent actions are
   `agent.create` (`{owner_id, name, max_level, cluster_ids, hourly_query_budget}`), `agent.update` (each changed
   field as `{from, to}`, except `description`, which is only marked `"changed"`; a change of name, level or clusters is always its own event, also
   when the same request pauses or resumes), `agent.pause`, `agent.resume`, `agent.delete`

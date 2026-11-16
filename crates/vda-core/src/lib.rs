@@ -8,6 +8,7 @@ pub mod agents;
 pub mod audit;
 pub mod crypto;
 pub mod error;
+pub mod judge;
 pub mod masking;
 pub mod network;
 pub mod policy;
@@ -33,6 +34,8 @@ pub struct Core {
     pub active: Arc<dashmap::DashMap<Uuid, ActiveQuery>>,
     pub tasks: tokio_util::task::TaskTracker,
     pub replica_health: Cache<Uuid, bool>,
+    /// Whether a cluster version's agent login was verified clean, for a short time.
+    pub judged: Cache<(Uuid, chrono::DateTime<chrono::Utc>), (judge::Verdict, std::time::Instant)>,
     /// Permit loopback and private target addresses (local development).
     pub allow_private_targets: bool,
 }
@@ -69,6 +72,10 @@ impl Core {
             replica_health: Cache::builder()
                 .max_capacity(512)
                 .time_to_live(Duration::from_secs(5))
+                .build(),
+            judged: Cache::builder()
+                .max_capacity(2048)
+                .time_to_live(Duration::from_secs(judge::TRUST_SECONDS))
                 .build(),
             allow_private_targets,
         }

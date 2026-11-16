@@ -252,6 +252,7 @@ async fn run_inner(
         .await
         .map_err(unavailable)?;
     tx.commit().await.map_err(unavailable)?;
+    let agent = actor.agent.is_some();
     let cancel_on_drop = token.clone().drop_guard();
     let core = core.clone();
     let tracker = core.tasks.clone();
@@ -272,7 +273,7 @@ async fn run_inner(
                     analysis.clone(),
                     query_id,
                     token,
-                    approved,
+                    (approved, agent),
                 ),
             )
             .await
@@ -344,7 +345,7 @@ async fn pipeline(
     analysis: Analysis,
     query_id: Uuid,
     token: CancellationToken,
-    approved: bool,
+    (approved, agent): (bool, bool),
 ) -> Result<QueryResult, ApiError> {
     match analysis.verdict {
         Verdict::Deny => {
@@ -370,9 +371,18 @@ async fn pipeline(
         .clone()
         .ok_or_else(ApiError::internal)?;
     let pools = core.pools.get(core, c, policy).await?;
+    // An agent's query runs as the cluster's agent login when one is set, and
+    // only while the database itself is verified to allow no more than the
+    // policy. The guard above is then the first check and the database the last.
+    let (primary, standby) = if agent && crate::judge::require(core, c, policy).await? {
+        let agent = pools.agent.as_ref().ok_or_else(ApiError::internal)?;
+        (&agent.primary, agent.replica.as_ref())
+    } else {
+        (&pools.primary, pools.replica.as_ref())
+    };
     let limits = policy.limits();
     let read = analysis.is_read_only();
-    let replica = if read && policy.route_reads_to_replica && pools.replica.is_some() {
+    let replica = if read && policy.route_reads_to_replica && standby.is_some() {
         core.replica_health.try_get_with(c.id, async {
             sqlx::query_scalar::<_,bool>(
                 "SELECT COALESCE((SELECT status IN ('healthy','degraded') AND checked_at>now()-interval '2 minutes'
@@ -386,9 +396,9 @@ async fn pipeline(
         false
     };
     let pool = if replica {
-        pools.replica.as_ref().unwrap_or(&pools.primary)
+        standby.unwrap_or(primary)
     } else {
-        &pools.primary
+        primary
     };
     // EXPLAIN also consumes production resources and must share the concurrency cap.
     let permit = tokio::select! {

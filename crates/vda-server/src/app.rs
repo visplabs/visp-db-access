@@ -269,6 +269,20 @@ pub fn router(state: AppState) -> Router {
             "/clusters/{id}/policy",
             get(crate::clusters::get_policy).put(crate::clusters::put_policy),
         )
+        .route(
+            "/clusters/{id}/agent-login",
+            get(crate::agent_login::get)
+                .put(crate::agent_login::put)
+                .delete(crate::agent_login::remove),
+        )
+        .route(
+            "/clusters/{id}/agent-login/script",
+            get(crate::agent_login::script),
+        )
+        .route(
+            "/clusters/{id}/agent-login/check",
+            post(crate::agent_login::check),
+        )
         .route("/clusters/{id}/grants", get(crate::admin::cluster_grants))
         .route(
             "/grants",
