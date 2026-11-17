@@ -15,6 +15,9 @@ ignore = [
     { id = "RUSTSEC-2023-0071", reason = "no fixed release; sqlx-mysql uses public-key encryption only" },
     # pin-utils is unmaintained, not vulnerable; pulled by the AWS SDK.
     { id = "RUSTSEC-2026-0441", reason = "unmaintained only; transitive through the AWS SDK" },
+    # chrono is unmaintained, not vulnerable, and has no replacement release
+    # yet; it is used directly and by sqlx.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained only; no replacement release yet; used directly and by sqlx" },
 ]
 
 [licenses]

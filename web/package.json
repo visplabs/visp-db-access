@@ -14,6 +14,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "audit:dev": "node scripts/audit-dev.mjs",
     "audit:ui": "node scripts/ui-audit.mjs after",
     "audit:states": "node scripts/ui-state-audit.mjs after",
     "screenshots:readme": "node scripts/readme-screenshots.mjs"

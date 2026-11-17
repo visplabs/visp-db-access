@@ -108,10 +108,12 @@ jobs:
       - run: npm run format:check
         working-directory: web
       # Packages that ship in the console must have no known vulnerability;
-      # build and test tooling may not carry a high or critical one.
+      # build and test tooling may not carry a high or critical one. The only
+      # exceptions for tooling, each with a reason and a date, live in
+      # web/scripts/audit-dev.mjs; it fails on anything else and on a stale one.
       - run: npm audit --omit=dev
         working-directory: web
-      - run: npm audit --audit-level=high
+      - run: npm run audit:dev
         working-directory: web
       - run: npm test
         working-directory: web
