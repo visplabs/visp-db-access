@@ -127,9 +127,21 @@ pub fn for_error(error: &ApiError) -> Fix {
             "propose_write",
             "The data changed after the approval, so the write did not run. Check the rows again, then call propose_write again if the change is still needed.",
         ),
+        ("outcome_unknown", _) => Fix::new(
+            "stop",
+            "Nobody knows whether the write ran. Do not ask for it again; tell your owner.",
+        ),
+        ("write_failed", _) => Fix::new(
+            "ask_owner",
+            "The write failed when it ran, and the request is used up. Tell your owner; they can see why. Ask again only if they agree.",
+        ),
         ("approval_not_found", _) => Fix::new(
             "fix_arguments",
-            "No request of yours has this id. Use the approval_id that propose_write gave.",
+            "No request of yours has this id. Use the approval_id that propose_write gave, or call get_approval without approval_id to list your open requests.",
+        ),
+        ("insufficient_access", _) => Fix::new(
+            "ask_owner",
+            "Your access level does not allow writes on this database. Ask your owner; do not retry.",
         ),
         ("conflict", _) => Fix::new(
             "stop",
@@ -138,7 +150,7 @@ pub fn for_error(error: &ApiError) -> Fix {
         ("unsupported_write", _) => Fix::new("rewrite_sql", error.message.clone()),
         ("too_many_open_requests", _) => Fix::new(
             "retry_later",
-            "Too many of your writes wait for a person. Wait for a decision, or withdraw one you no longer need.",
+            "Too many of your writes wait for a person. `error.details.requests` lists them. Wait for a decision, or withdraw one you no longer need.",
         ),
         ("cost_exceeded", _) => Fix::new(
             "rewrite_sql",
@@ -178,10 +190,17 @@ pub fn for_error(error: &ApiError) -> Fix {
         },
         ("too_many_denials", _) => Fix {
             retry_after_seconds: error.details.get("retry_after_seconds").and_then(Value::as_u64),
-            ..Fix::new(
-                "stop",
-                "Several queries in a row were refused. Stop, and tell your owner what you tried and what was refused.",
-            )
+            ..if error.details.get("tool").and_then(Value::as_str) == Some("propose_write") {
+                Fix::new(
+                    "stop",
+                    "Several write requests in a row were refused. Stop, and tell your owner what you asked for and what was refused.",
+                )
+            } else {
+                Fix::new(
+                    "stop",
+                    "Several queries in a row were refused. Stop, and tell your owner what you tried and what was refused.",
+                )
+            }
         },
         ("upstream", _) => match (error.kind, error.message.as_str()) {
             (crate::error::ErrorKind::Cancelled, _) => Fix::new(
@@ -292,7 +311,10 @@ mod tests {
         for (code, action) in [
             ("approval_required", "propose_write"),
             ("effect_changed", "propose_write"),
+            ("outcome_unknown", "stop"),
+            ("write_failed", "ask_owner"),
             ("approval_not_found", "fix_arguments"),
+            ("insufficient_access", "ask_owner"),
             ("conflict", "stop"),
             ("too_many_open_requests", "retry_later"),
             ("unsupported_write", "rewrite_sql"),
@@ -319,6 +341,17 @@ mod tests {
         let limited = ApiError::new(StatusCode::TOO_MANY_REQUESTS, "budget_exceeded", "x")
             .details(json!({"retry_after_seconds":120}));
         assert_eq!(for_error(&limited).retry_after_seconds, Some(120));
+        // A stop on write requests talks about write requests.
+        let stopped = |details: Value| {
+            for_error(
+                &ApiError::new(StatusCode::TOO_MANY_REQUESTS, "too_many_denials", "x")
+                    .details(details),
+            )
+        };
+        let fix = stopped(json!({"retry_after_seconds":42,"tool":"propose_write"}));
+        assert_eq!((fix.action, fix.retry_after_seconds), ("stop", Some(42)));
+        assert!(fix.hint.contains("write requests"), "{}", fix.hint);
+        assert!(stopped(json!({})).hint.contains("queries"));
         // The wire shape leaves out an absent wait.
         assert_eq!(
             json!(for_issue("multiple_statements", "")),

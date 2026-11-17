@@ -4076,7 +4076,8 @@ async fn an_agent_proposes_a_write_sees_no_rows_and_a_person_decides() {
         assert!(failed, "{v}");
         assert_eq!(v["error"]["code"], "approval_not_found", "{v}");
     }
-    // A read-only agent cannot propose a write.
+    // A read-only agent cannot propose a write. It can reach the database,
+    // so it is told to ask its owner, not to pick another database.
     let (failed, v) = tool(
         &f,
         &reader_token,
@@ -4085,6 +4086,18 @@ async fn an_agent_proposes_a_write_sees_no_rows_and_a_person_decides() {
     )
     .await;
     assert!(failed, "{v}");
+    assert_eq!(v["error"]["code"], "insufficient_access", "{v}");
+    assert_eq!(v["error"]["fix"]["action"], "ask_owner", "{v}");
+    // A database it cannot reach at all keeps its own answer.
+    let (failed, v) = tool(
+        &f,
+        &reader_token,
+        "propose_write",
+        json!({"task":"Try","database":Uuid::new_v4(),"sql":sql}),
+    )
+    .await;
+    assert!(failed, "{v}");
+    assert_eq!(v["error"]["fix"]["action"], "choose_database", "{v}");
     // The owner cannot approve the agent's request; another admin can, after
     // a person has previewed it. The preview runs once.
     let (s, _) = f
@@ -4253,6 +4266,12 @@ async fn an_agent_proposes_a_write_sees_no_rows_and_a_person_decides() {
     .await;
     assert!(failed, "{v}");
     assert_eq!(v["error"]["code"], "too_many_open_requests", "{v}");
+    // The refusal lists the open requests, so the agent can find their ids.
+    let open = v["error"]["details"]["requests"].as_array().unwrap();
+    assert_eq!(open.len(), 10, "{v}");
+    assert!(open
+        .iter()
+        .all(|r| r["task"] == "Test" && r["status"] == "pending"));
     // Deleting the agent keeps its name on the request.
     let (s, _) = f
         .request(
@@ -4267,6 +4286,268 @@ async fn an_agent_proposes_a_write_sees_no_rows_and_a_person_decides() {
         .request("GET", &format!("/approvals/{id}"), &f.admin_cookie, None)
         .await;
     assert_eq!(v["agent"]["name"], "Fixer", "{v}");
+    sqlx::query(&format!("DROP TABLE {table}"))
+        .execute(&target)
+        .await
+        .unwrap();
+    target.close().await;
+    f.close().await;
+}
+
+#[tokio::test]
+async fn an_agent_that_follows_the_write_fix_is_not_stopped_and_reads_a_coded_outcome() {
+    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let target = sqlx::PgPool::connect(&target_url).await.unwrap();
+    let table = safe_table(&f, &target).await;
+    let agent = new_agent(&f, &f.grantor_cookie, "Follower", "write").await;
+    let (_, token) = new_token(&f, &f.grantor_cookie, agent).await;
+    let other = new_agent(&f, &f.grantor_cookie, "Neighbour", "write").await;
+    let (_, other_token) = new_token(&f, &f.grantor_cookie, other).await;
+    let db = json!(f.cluster);
+    // run_query refuses each write and points at propose_write. An agent that
+    // does what the fix says, six times, is never stopped for it.
+    let mut ids = Vec::new();
+    for round in 1..=6 {
+        let sql = format!("UPDATE {table} SET n={round} WHERE id={}", round % 5 + 1);
+        let (failed, v) = tool(
+            &f,
+            &token,
+            "run_query",
+            json!({"task":"Bump a counter","database":db,"sql":sql}),
+        )
+        .await;
+        assert!(failed, "{v}");
+        assert_eq!(v["error"]["code"], "approval_required", "{round}: {v}");
+        assert_eq!(v["error"]["fix"]["action"], "propose_write", "{v}");
+        let (failed, v) = tool(
+            &f,
+            &token,
+            "propose_write",
+            json!({"task":format!("Bump counter, round {round}"),"database":db,"sql":sql}),
+        )
+        .await;
+        assert!(!failed, "{round}: {v}");
+        ids.push(v["approval_id"].as_str().unwrap().to_owned());
+    }
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "run_query",
+        json!({"task":"Read the counters","database":db,"sql":format!("SELECT id,n FROM {table}")}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    // Without an id, get_approval lists the agent's own open requests, newest
+    // first; another agent's requests are not in it.
+    let (failed, v) = tool(
+        &f,
+        &other_token,
+        "propose_write",
+        json!({"task":"Neighbour's write","database":db,
+            "sql":format!("UPDATE {table} SET note='n' WHERE id=1")}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    let neighbour = v["approval_id"].as_str().unwrap().to_owned();
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "get_approval",
+        json!({"task":"Find my requests"}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    let listed: Vec<&str> = v["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["approval_id"].as_str().unwrap())
+        .collect();
+    let newest_first: Vec<&str> = ids.iter().rev().map(String::as_str).collect();
+    assert_eq!(listed, newest_first, "{v}");
+    assert_eq!(v["requests"][0]["task"], "Bump counter, round 6", "{v}");
+    assert_eq!(v["requests"][0]["status"], "pending", "{v}");
+    assert!(v["requests"][0]["expires_at"].is_string(), "{v}");
+    assert_eq!(v["requests"][0]["database"], db, "{v}");
+    assert!(!v.to_string().contains(&neighbour), "{v}");
+    let (_, v) = tool(&f, &other_token, "get_approval", json!({"task":"Mine"})).await;
+    assert_eq!(v["requests"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["requests"][0]["approval_id"], json!(neighbour), "{v}");
+    // A write whose effect changed after the approval fails. People see why;
+    // the agent sees a code, a fix and a fixed sentence without the counts.
+    let id = ids[0].clone();
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/preview"),
+            &f.admin_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["preview"]["affected_rows"], 1, "{v}");
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/approve"),
+            &f.admin_cookie,
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // As if the dry run had counted seven rows: the write changes one.
+    sqlx::query(
+        "UPDATE approvals SET binding=jsonb_set(binding,'{affected_rows}','7') WHERE id=$1::uuid",
+    )
+    .bind(&id)
+    .execute(&f.db)
+    .await
+    .unwrap();
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/execute"),
+            &f.admin_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["error"]["code"], "effect_changed", "{v}");
+    assert_eq!(note_and_n(&target, &table, 2).await.1, 0);
+    let (_, v) = f
+        .request("GET", &format!("/approvals/{id}"), &f.admin_cookie, None)
+        .await;
+    assert_eq!(v["status"], "failed", "{v}");
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap()
+            .contains("it changes 1 rows, and 7 were approved"),
+        "{v}"
+    );
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "get_approval",
+        json!({"task":"Check","approval_id":id}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    assert_eq!(v["status"], "failed", "{v}");
+    assert_eq!(v["error_code"], "effect_changed", "{v}");
+    assert_eq!(v["fix"]["action"], "propose_write", "{v}");
+    let error = v["error"].as_str().unwrap();
+    assert_eq!(
+        error,
+        "The data changed after the approval, so the write was not run."
+    );
+    assert!(!error.chars().any(|c| c.is_ascii_digit()), "{v}");
+    assert!(!v.to_string().contains("were approved"), "{v}");
+    // Any other failure reads as `write_failed` with the generic sentence;
+    // the stored code stays for people.
+    sqlx::query("UPDATE approvals SET status='failed',error='it changes 3 rows',error_code='upstream' WHERE id=$1::uuid")
+        .bind(&ids[1])
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let (_, v) = tool(
+        &f,
+        &token,
+        "get_approval",
+        json!({"task":"Check","approval_id":ids[1]}),
+    )
+    .await;
+    assert_eq!(v["error_code"], "write_failed", "{v}");
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT error_code FROM approvals WHERE id=$1::uuid")
+            .bind(&ids[1])
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    assert_eq!(stored.as_deref(), Some("upstream"));
+    assert_eq!(
+        v["error"], "The write failed when it ran. Your owner can see why.",
+        "{v}"
+    );
+    // Whatever the code, a failed write sends the agent to its owner: never
+    // to retry, to another database, or to rewrite the SQL.
+    assert_eq!(v["fix"]["action"], "ask_owner", "{v}");
+    assert!(v["fix"].get("retry_after_seconds").is_none(), "{v}");
+    // A lost node: nobody knows whether the write ran, so it does not say it
+    // failed. An old failed row without a code reads as `write_failed`.
+    for (id, stored, code, action, error) in [
+        (
+            &ids[3],
+            Some("outcome_unknown"),
+            "outcome_unknown",
+            "stop",
+            "Nobody knows whether the write ran. Your owner can see more.",
+        ),
+        (
+            &ids[4],
+            None,
+            "write_failed",
+            "ask_owner",
+            "The write failed when it ran. Your owner can see why.",
+        ),
+    ] {
+        sqlx::query(
+            "UPDATE approvals SET status='failed',error='lost',error_code=$2 WHERE id=$1::uuid",
+        )
+        .bind(id)
+        .bind(stored)
+        .execute(&f.db)
+        .await
+        .unwrap();
+        let (_, v) = tool(
+            &f,
+            &token,
+            "get_approval",
+            json!({"task":"Check","approval_id":id}),
+        )
+        .await;
+        assert_eq!(v["error_code"], code, "{v}");
+        assert_eq!(v["error"], error, "{v}");
+        assert_eq!(v["fix"]["action"], action, "{v}");
+    }
+    // A request that has not failed has no fix.
+    let (_, v) = tool(
+        &f,
+        &token,
+        "get_approval",
+        json!({"task":"Check","approval_id":ids[2]}),
+    )
+    .await;
+    assert_eq!(v["error_code"], Value::Null, "{v}");
+    assert!(v.get("fix").is_none(), "{v}");
+    // The list holds only open requests: the failed ones are gone.
+    let (_, v) = tool(
+        &f,
+        &token,
+        "get_approval",
+        json!({"task":"Find my requests"}),
+    )
+    .await;
+    assert_eq!(v["requests"].as_array().unwrap().len(), 2, "{v}");
+    // A task of the full 500 characters is accepted: the read check keeps its
+    // own record of the task within the limit.
+    let long = "Bump the counter for the weekly report. ".repeat(13);
+    let long: String = long.chars().take(500).collect();
+    assert_eq!(long.chars().count(), 500);
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "propose_write",
+        json!({"task":long,"database":db,"sql":format!("UPDATE {table} SET n=9 WHERE id=4")}),
+    )
+    .await;
+    assert!(!failed, "{v}");
     sqlx::query(&format!("DROP TABLE {table}"))
         .execute(&target)
         .await

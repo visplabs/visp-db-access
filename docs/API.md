@@ -679,21 +679,24 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
   Tools. Every tool takes `task`: one line of 1–500 visible characters that says what the
   agent is doing and why. A tool accepts only the arguments in its own row below.
 
-  | Tool             | Arguments                              | Result                                                                                   |
-  | ---------------- | -------------------------------------- | ---------------------------------------------------------------------------------------- |
-  | `list_databases` | `task`                                 | `{databases: [{id, name, engine, provider, region, environment, level, enforced_by}]}`   |
-  | `search_schema`  | `task, database, query, limit? = 20`   | `{tables: [{table, kind, row_estimate, matching_columns}], more}`                        |
-  | `describe_table` | `task, database, table`                | `{table, kind, row_estimate, columns: [{name, type, nullable, primary_key, protected}]}` |
-  | `check_sql`      | `task, database, sql`                  | `{verdict, risk, issues, will_run_as, suggestions, fix}`; nothing runs                   |
-  | `run_query`      | `task, database, sql, max_rows? = 100` | `{query_id, columns, rows, row_count, truncated, ran_as, elapsed_ms}`                    |
-  | `propose_write`  | `task, database, sql`                  | `{approval_id, status, previewed, …}`; nothing runs                                      |
-  | `get_approval`   | `task, approval_id`                    | `{approval_id, status, previewed, review_note, executed_rows, error, …}`                 |
-  | `withdraw`       | `task, approval_id`                    | the same as `get_approval`, with `status: "withdrawn"`                                   |
+  | Tool             | Arguments                              | Result                                                                                                      |
+  | ---------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+  | `list_databases` | `task`                                 | `{databases: [{id, name, engine, provider, region, environment, level, enforced_by}]}`                      |
+  | `search_schema`  | `task, database, query, limit? = 20`   | `{tables: [{table, kind, row_estimate, matching_columns}], more}`                                           |
+  | `describe_table` | `task, database, table`                | `{table, kind, row_estimate, columns: [{name, type, nullable, primary_key, protected}]}`                    |
+  | `check_sql`      | `task, database, sql`                  | `{verdict, risk, issues, will_run_as, suggestions, fix}`; nothing runs                                      |
+  | `run_query`      | `task, database, sql, max_rows? = 100` | `{query_id, columns, rows, row_count, truncated, ran_as, elapsed_ms}`                                       |
+  | `propose_write`  | `task, database, sql`                  | `{approval_id, status, previewed, …}`; nothing runs                                                         |
+  | `get_approval`   | `task, approval_id?`                   | `{approval_id, status, previewed, review_note, executed_rows, error_code, error, fix?, …}`, or `{requests}` |
+  | `withdraw`       | `task, approval_id`                    | the same as `get_approval`, with `status: "withdrawn"`                                                      |
 
   `propose_write` opens an approval request for the agent's owner, with `task` as the
-  reason. The agent needs write level (its own limit and its owner's access). On
-  PostgreSQL it takes one plain `INSERT`, `UPDATE` or `DELETE` without `RETURNING`;
-  anything else is `422 unsupported_write`.
+  reason. The agent needs write level (its own limit and its owner's access). An agent
+  that can read the database but not write it gets `403 insufficient_access` (fix
+  `ask_owner`); a database it cannot reach at all is `403 forbidden` or `404 not_found`
+  (fix `choose_database`), as for the other tools. On PostgreSQL it takes one plain
+  `INSERT`, `UPDATE` or `DELETE`; `WITH`, `ONLY`, `ON CONFLICT`, `RETURNING`, parameters,
+  joins in the target and tuple assignments (`SET (a, b) = …`) are `422 unsupported_write`.
 
   Nothing of an agent's write runs before a person looks at it. First, a read that
   touches everything the statement reads and computes runs as the agent's own read. For
@@ -706,17 +709,50 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
   the cluster's own login. SQL can tell a read-only check from a dry run, so a dry run
   started by an agent could act, or show a count, beyond what the agent's reads allow.)
 
+  A person who is not the owner approves the request, and a person runs it. An agent's
+  request does not run if the agent was paused or deleted after it asked.
+
   The agent never sees rows, and sees no counts before its write has run: `get_approval`
   shows the status, `previewed`, the reviewer's note and, after execution,
-  `executed_rows`. A failure at execution shows as "The write failed when it ran"
-  (except `effect_changed`). A person who is not the owner approves it, and a person
-  runs it. An agent's request does not run if the agent was paused or deleted after it
-  asked.
+  `executed_rows`. While a request has not failed, `error_code` and `error` are null and
+  there is no `fix`. When the write failed at execution, the agent reads one of three
+  outcomes, each with a fixed sentence in `error` and a fix:
 
-  Limits per agent: one proposal at a time and five refused proposals in a row give
-  `too_many_denials` (both per node; a successful read does not reset this count); at
-  most 10 requests waiting (`429 too_many_open_requests`) and 30 in an hour, withdrawn
-  ones included (`429 rate_limited`).
+  | `error_code`      | `error`                                                          | `fix.action`    |
+  | ----------------- | ---------------------------------------------------------------- | --------------- |
+  | `effect_changed`  | "The data changed after the approval, so the write was not run." | `propose_write` |
+  | `outcome_unknown` | "Nobody knows whether the write ran. Your owner can see more."   | `stop`          |
+  | `write_failed`    | "The write failed when it ran. Your owner can see why."          | `ask_owner`     |
+
+  `outcome_unknown` means the node that ran the write was lost. `write_failed` covers
+  every other failure, also an old failed request with no stored code; the request is
+  used up. A failed write is never told to retry later, to choose another database or to
+  rewrite its SQL. People see the full text in `Approval.error`, which can hold counts
+  from the dry run and database messages; the agent never does. The original error code
+  is kept with the request (`approvals.error_code`).
+
+  `get_approval` without `approval_id` returns
+  `{requests: [{approval_id, database, status, task, created_at, expires_at}]}`: the
+  agent's own open requests (`pending`, `approved` or `executing`, and not expired),
+  newest first, at most 20, so an agent that lost an id can find it. `database` is the
+  cluster id. Requests expire 24 hours after they are made. Each call of `get_approval`
+  writes an audit event; poll no more than about once a minute.
+
+  Limits per agent: one proposal at a time (per node). Five refused proposals in a row
+  give `429 too_many_denials` for ten minutes from the refusal that made five; calls
+  during the stop do not make it longer, and `fix.retry_after_seconds` is the time
+  left. A refusal is a proposal that ends in `query_denied`, `unsupported_write`,
+  `forbidden`, `not_found`, `insufficient_access` or `cost_exceeded`, or in `upstream`
+  when the database refused the statement itself: its own error, `Query timed out`, or
+  the affected-row limit. An `upstream` error because the database cannot be reached
+  (fix `retry_later`) does not count, nor does a cancelled query. Other errors
+  (`validation`, `budget_exceeded`, `rate_limited`, `too_many_open_requests`, `busy`,
+  `internal`, `network_denied`, …) do not count either. An accepted proposal resets the
+  count; a successful read does not. The count is kept on the node that made it and is
+  dropped after ten minutes without a proposal. At most 10 requests waiting
+  (`429 too_many_open_requests`, with the open requests in `error.details`) and 30 in an
+  hour, withdrawn ones included (`429 rate_limited`). A task may use all 500 characters:
+  the read check records it after a prefix, cut to fit.
   `get_approval` and `withdraw` work only on the agent's own requests; any other id is
   `404 approval_not_found`.
 
@@ -755,13 +791,21 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
     budget records nothing.
   - `unsupported_write` (422): a write that cannot be previewed and bound this way. The
     fix is `rewrite_sql`.
-  - `too_many_denials` (429): five `run_query` calls (or five `propose_write` calls) in a row were refused (`query_denied`,
-    `approval_required`, `forbidden`, `not_found`, `cost_exceeded`). The agent is stopped for up to ten
-    minutes from the first refusal, on the node that counted them; the other tools still
-    work. A successful `run_query` resets the count. Parallel calls that the guard or the
-    access check refuses cannot pass the limit. Statements that the guard accepts run in
-    parallel, so several of them can reach the cost gate at once and each be refused there;
-    the budget still bounds them.
+  - `insufficient_access` (403): `propose_write` on a database where the agent can read
+    but not write. The fix is `ask_owner`.
+  - `too_many_open_requests` (429): ten of the agent's writes wait for a person.
+    `error.details` is `{limit, requests}`, with `requests` as `get_approval` lists them
+    without an id; it is the only error whose `details` an agent sees. The fix is
+    `retry_later`.
+  - `too_many_denials` (429): five `run_query` calls in a row were refused (`query_denied`,
+    `forbidden`, `not_found`, `cost_exceeded`; `approval_required` is not a refusal here,
+    because its fix sends the agent to `propose_write`). The agent is stopped for up to
+    ten minutes from the first refusal, on the node that counted them; the other tools
+    still work. A successful `run_query` resets the count. Parallel calls that the guard
+    or the access check refuses cannot pass the limit. Statements that the guard accepts
+    run in parallel, so several of them can reach the cost gate at once and each be
+    refused there; the budget still bounds them. Five refused `propose_write` calls stop
+    that tool for ten minutes; see its limits above.
 
   Each tool call whose arguments parse is recorded as an `agent.tool` audit event:
   `{tool, task, database, outcome}`, under the owner, with the agent as the target. These

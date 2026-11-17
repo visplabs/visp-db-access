@@ -266,7 +266,8 @@ pub async fn recover_executions(db: &sqlx::PgPool) -> Result<(), ApiError> {
     .await?;
     sqlx::query(
         "UPDATE approvals a SET
-         status='failed',error='execution outcome unknown (node crashed or lost)',executed_at=now()
+         status='failed',error='execution outcome unknown (node crashed or lost)',
+         error_code='outcome_unknown',executed_at=now()
          WHERE a.status='executing' AND
          COALESCE(a.execution_started_at,a.reviewed_at,a.created_at)< now() -
          ((a.execution_timeout_ms+300000)*interval '1 millisecond')",
