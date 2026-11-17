@@ -6,6 +6,7 @@
 // Fails closed: a refused finding, audit output that cannot be read, or an
 // exception that no longer matches anything all exit non-zero.
 import { spawnSync } from 'node:child_process';
+import { existsSync, statSync } from 'node:fs';
 
 // Each exception names the advisory, why it is accepted, and when it was
 // added. Remove an entry as soon as a fixed release is available.
@@ -26,8 +27,25 @@ function fail(message) {
   process.exit(1);
 }
 
+// npm's own CLI script, as npm gives it to `npm run`. npm is run through the
+// current Node binary and this path, never looked up on PATH.
+function npmCli() {
+  const cli = process.env.npm_execpath;
+  if (
+    !cli ||
+    !/\.c?js$/.test(cli) ||
+    !existsSync(cli) ||
+    !statSync(cli).isFile()
+  ) {
+    fail(
+      "cannot find npm's CLI script (npm_execpath); run this with `npm run audit:dev`",
+    );
+  }
+  return cli;
+}
+
 function readAudit() {
-  const run = spawnSync('npm', ['audit', '--json'], {
+  const run = spawnSync(process.execPath, [npmCli(), 'audit', '--json'], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   });
