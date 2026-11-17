@@ -45,9 +45,9 @@ pub struct AppState {
     account_failures: Cache<String, Arc<AtomicU32>>,
     /// Refused queries in a row, per agent, for the loop breaker in `mcp`.
     pub(crate) agent_denials: Cache<Uuid, Arc<tokio::sync::Mutex<u32>>>,
-    /// Refused proposals in a row, per agent; the lock also lets one agent
-    /// make one proposal at a time.
-    pub(crate) agent_proposals: Cache<Uuid, Arc<tokio::sync::Mutex<u32>>>,
+    /// Refused proposals in a row, per agent, and when they reached the
+    /// limit; the lock also lets one agent make one proposal at a time.
+    pub(crate) agent_proposals: Cache<Uuid, Arc<tokio::sync::Mutex<crate::mcp::ProposalStreak>>>,
     /// Tool calls in the current minute, per agent.
     pub(crate) agent_calls: Cache<Uuid, Arc<AtomicU32>>,
     login_rates: Cache<(IpAddr, String), Arc<AtomicU32>>,
@@ -119,6 +119,8 @@ impl AppState {
                     .build(),
                 // Idle, not total, time: an entry is not dropped while calls
                 // keep coming, so the lock is not replaced while it is held.
+                // The length of a stop comes from the time stored in the
+                // entry, so calls during a stop do not make it longer.
                 agent_proposals: Cache::builder()
                     .max_capacity(20000)
                     .time_to_idle(Duration::from_secs(crate::mcp::DENIAL_WINDOW_SECONDS))

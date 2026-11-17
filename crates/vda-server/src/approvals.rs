@@ -64,8 +64,20 @@ async fn open(
     ip: std::net::IpAddr,
 ) -> Result<Uuid, ApiError> {
     let (c, level) =
-        vda_core::access::require_level_effective(&state.db, actor, cluster_id, AccessLevel::Write)
+        vda_core::access::require_level_effective(&state.db, actor, cluster_id, AccessLevel::Read)
             .await?;
+    if level < AccessLevel::Write {
+        // An agent that can read here is told that its level is the problem,
+        // so it asks its owner instead of looking for another database.
+        return Err(match actor.agent {
+            Some(_) => ApiError::new(
+                StatusCode::FORBIDDEN,
+                "insufficient_access",
+                "Your access level does not allow writes on this database",
+            ),
+            None => ApiError::forbidden(),
+        });
+    }
     if reason.trim().is_empty()
         || reason.len() > 10000
         || sql.trim().is_empty()
@@ -178,6 +190,15 @@ fn unsupported_write(message: &str) -> ApiError {
         message.to_owned(),
     )
 }
+/// The task recorded for an agent's read check: the agent's own task after a
+/// prefix, cut on a character boundary so that the whole stays within the
+/// 500 characters a task may have.
+fn read_check_task(task: &str) -> String {
+    const PREFIX: &str = "Read check for a proposed write: ";
+    let room = 500usize.saturating_sub(PREFIX.chars().count());
+    let task: String = task.trim().chars().take(room).collect();
+    format!("{PREFIX}{}", task.trim_end())
+}
 /// Before an agent's write is tried, the agent must be allowed to run, as a
 /// read, everything the write reads and computes. The dry run runs on the
 /// cluster's own login, so without this an agent could learn, from the count
@@ -213,7 +234,7 @@ async fn check_agent_reads(
         QueryInput {
             sql: read,
             query_id: None,
-            task: Some(format!("Read check for a proposed write: {task}")),
+            task: Some(read_check_task(task)),
         },
         ip,
         false,
@@ -813,10 +834,12 @@ impl Execution {
             }
             Err(error) => {
                 sqlx::query(
-                    "UPDATE approvals SET status='failed',error=$2,executed_at=now() WHERE id=$1 AND status='executing'",
+                    "UPDATE approvals SET status='failed',error=$2,error_code=$3,executed_at=now()
+                     WHERE id=$1 AND status='executing'",
                 )
                 .bind(id)
                 .bind(&error.message)
+                .bind(error.code)
                 .execute(&mut *tx)
                 .await?;
                 state
@@ -1006,41 +1029,101 @@ pub(crate) async fn propose_for_agent(
             "too_many_open_requests",
             "You have too many writes waiting for a person; wait for them or withdraw one",
         )
-        .details(json!({"limit": OPEN_REQUESTS_PER_AGENT})));
+        .details(json!({
+            "limit": OPEN_REQUESTS_PER_AGENT,
+            "requests": open_for_agent(state, identity).await?,
+        })));
     }
     let id = open(state, &identity.actor, cluster, sql, task, ip).await?;
     status_for_agent(state, identity, id).await
 }
+/// The agent's requests that wait for a person or are running, newest
+/// first: the same requests that count toward `OPEN_REQUESTS_PER_AGENT`.
+pub(crate) async fn open_for_agent(
+    state: &AppState,
+    identity: &AgentIdentity,
+) -> Result<Vec<Value>, ApiError> {
+    sqlx::query(
+        "UPDATE approvals SET status='expired' WHERE agent_id=$1 AND status IN ('pending','approved')
+           AND expires_at<=now()",
+    )
+    .bind(identity.agent_id)
+    .execute(&state.db)
+    .await?;
+    Ok(sqlx::query_scalar(
+        "SELECT jsonb_build_object('approval_id',a.id,'database',a.cluster_id,'status',a.status,
+           'task',a.reason,'created_at',a.created_at,'expires_at',a.expires_at)
+         FROM approvals a WHERE a.agent_id=$1 AND a.status IN ('pending','approved','executing')
+           AND a.expires_at>now()
+         ORDER BY a.created_at DESC,a.id DESC LIMIT $2",
+    )
+    .bind(identity.agent_id)
+    .bind(OPEN_REQUESTS_LISTED)
+    .fetch_all(&state.db)
+    .await?)
+}
+/// How many open requests `open_for_agent` lists at most.
+const OPEN_REQUESTS_LISTED: i64 = 20;
+/// What an agent reads about a write that failed when it ran. The text in
+/// `error` is for people: it can hold counts from the dry run and database
+/// messages.
+const FAILED_CHANGED: &str = "The data changed after the approval, so the write was not run.";
+const FAILED_UNKNOWN: &str = "Nobody knows whether the write ran. Your owner can see more.";
+const FAILED_OTHER: &str = "The write failed when it ran. Your owner can see why.";
+/// What an agent is told about a failed write, from the code stored for
+/// people: one of three codes, a fixed sentence and a fix. The data changed
+/// (ask again), nobody knows whether it ran (stop), and any other failure,
+/// or none stored (ask the owner). A failed write is never told to retry, to
+/// pick another database or to rewrite its SQL.
+fn failure(stored: Option<&str>) -> (&'static str, &'static str, vda_core::teach::Fix) {
+    let (code, text) = match stored {
+        Some("effect_changed") => ("effect_changed", FAILED_CHANGED),
+        Some("outcome_unknown") => ("outcome_unknown", FAILED_UNKNOWN),
+        _ => ("write_failed", FAILED_OTHER),
+    };
+    let fix = vda_core::teach::for_error(&ApiError::new(StatusCode::CONFLICT, code, text));
+    (code, text, fix)
+}
 /// What an agent may know about its request: the state, whether a person
 /// has previewed it, the reviewer's note, and after it ran the count of
-/// changed rows. Never rows, never counts before a person approved it.
+/// changed rows. When it failed: one of three codes, a fixed sentence and a
+/// fix. Never rows, never counts before a person approved it.
 pub(crate) async fn status_for_agent(
     state: &AppState,
     identity: &AgentIdentity,
     id: Uuid,
 ) -> Result<Value, ApiError> {
     expire(state, id).await?;
-    let row: Option<Value> = sqlx::query_scalar(
+    type Row = (Value, Option<String>);
+    let row: Option<Row> = sqlx::query_as(
         "SELECT jsonb_build_object('approval_id',a.id,'database',a.cluster_id,'status',a.status,
            'previewed',coalesce((a.preview->>'supported')::boolean,false),'review_note',a.review_note,
-           'executed_rows',a.result->'affected_rows',
-           'error',CASE WHEN a.error IS NULL THEN NULL
-             WHEN a.error LIKE 'The data changed after the approval%' THEN a.error
-             ELSE 'The write failed when it ran. Your owner can see why.' END,
-           'created_at',a.created_at,'expires_at',a.expires_at,'executed_at',a.executed_at)
+           'executed_rows',a.result->'affected_rows','error_code',NULL,'error',NULL,
+           'created_at',a.created_at,'expires_at',a.expires_at,'executed_at',a.executed_at),
+           a.error_code
          FROM approvals a WHERE a.id=$1 AND a.agent_id=$2",
     )
     .bind(id)
     .bind(identity.agent_id)
     .fetch_optional(&state.db)
     .await?;
-    row.ok_or_else(|| {
+    let (mut view, stored) = row.ok_or_else(|| {
         ApiError::new(
             StatusCode::NOT_FOUND,
             "approval_not_found",
             "No request of this agent has this id",
         )
-    })
+    })?;
+    // The stored code is for people; the agent reads one of three.
+    if view.get("status").and_then(Value::as_str) == Some("failed") {
+        let (code, text, fix) = failure(stored.as_deref());
+        if let Some(object) = view.as_object_mut() {
+            object.insert("error_code".into(), json!(code));
+            object.insert("error".into(), json!(text));
+            object.insert("fix".into(), json!(fix));
+        }
+    }
+    Ok(view)
 }
 /// An agent withdraws a request that it made and that has not run.
 pub(crate) async fn withdraw_for_agent(
@@ -1058,7 +1141,38 @@ pub(crate) async fn withdraw_for_agent(
 
 #[cfg(test)]
 mod tests {
-    use super::canonical;
+    use super::{canonical, failure, read_check_task};
+
+    #[test]
+    fn an_agent_reads_one_of_three_outcomes_of_a_failed_write() {
+        for (stored, code, action) in [
+            (Some("effect_changed"), "effect_changed", "propose_write"),
+            (Some("outcome_unknown"), "outcome_unknown", "stop"),
+            (Some("upstream"), "write_failed", "ask_owner"),
+            (Some("busy"), "write_failed", "ask_owner"),
+            (None, "write_failed", "ask_owner"),
+        ] {
+            let (shown, text, fix) = failure(stored);
+            assert_eq!((shown, fix.action), (code, action), "{stored:?}");
+            assert!(!text.chars().any(|c| c.is_ascii_digit()));
+            assert_eq!(fix.retry_after_seconds, None);
+        }
+        assert!(failure(Some("outcome_unknown"))
+            .1
+            .starts_with("Nobody knows"));
+    }
+
+    #[test]
+    fn a_read_check_task_stays_within_the_task_limit() {
+        let long = "é".repeat(500);
+        let task = read_check_task(&long);
+        assert_eq!(task.chars().count(), 500);
+        assert!(vda_core::query::validate_task(&task).is_ok());
+        assert_eq!(
+            read_check_task("Fix note 2"),
+            "Read check for a proposed write: Fix note 2"
+        );
+    }
     use serde_json::{json, Map, Value};
 
     #[test]

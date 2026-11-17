@@ -1,0 +1,241 @@
+{
+  "tools": [
+    {
+      "description": "List the databases you can reach right now, with your access level on each.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "description": "One sentence: what you are doing and why. It is kept in the audit record.",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      },
+      "name": "list_databases"
+    },
+    {
+      "description": "Find tables and columns whose name contains a word.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "database": {
+            "description": "A database id from list_databases.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "description": "Part of a table or column name.",
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "task": {
+            "description": "One sentence: what you are doing and why. It is kept in the audit record.",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "database",
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "search_schema"
+    },
+    {
+      "description": "Show the columns of one table: name, type, nullable, primary key, and whether the value is protected.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "database": {
+            "description": "A database id from list_databases.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "table": {
+            "description": "A table name, as `schema.table` or `table`.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "task": {
+            "description": "One sentence: what you are doing and why. It is kept in the audit record.",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "database",
+          "table"
+        ],
+        "type": "object"
+      },
+      "name": "describe_table"
+    },
+    {
+      "description": "Ask the guard what it would do with a statement, without running it.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "database": {
+            "description": "A database id from list_databases.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "sql": {
+            "description": "One SQL statement.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "task": {
+            "description": "One sentence: what you are doing and why. It is kept in the audit record.",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "database",
+          "sql"
+        ],
+        "type": "object"
+      },
+      "name": "check_sql"
+    },
+    {
+      "description": "Run one guarded read-only statement and return its rows. Protected values come back masked.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "database": {
+            "description": "A database id from list_databases.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "max_rows": {
+            "default": 100,
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "sql": {
+            "description": "One SQL statement.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "task": {
+            "description": "One sentence: what you are doing and why. It is kept in the audit record.",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "database",
+          "sql"
+        ],
+        "type": "object"
+      },
+      "name": "run_query"
+    },
+    {
+      "description": "Ask for a write: one plain INSERT, UPDATE or DELETE. No write runs now, and you never see rows. Your `task` is the reason the approver reads. A person who is not your owner approves it, and a person runs it. Use only built-in functions: a statement that calls a function defined in the database cannot be approved. On PostgreSQL: WITH, ONLY, ON CONFLICT, RETURNING, parameters, joins in the target and tuple assignments such as SET (a, b) = (...) are refused; the statement is first checked as your own read; a person then tries the write and rolls it back, and later it runs only on the rows that trial changed. When those rows cannot be named (INSERT, a view, some other targets), only the number of changed rows must match. On MySQL there is no trial run and nothing is bound. Five refused requests in a row stop this tool for 10 minutes. Keep the approval_id and follow it with get_approval.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "database": {
+            "description": "A database id from list_databases.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "sql": {
+            "description": "One INSERT, UPDATE or DELETE statement.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "task": {
+            "description": "One sentence: what you are doing and why. It is kept in the audit record.",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "database",
+          "sql"
+        ],
+        "type": "object"
+      },
+      "name": "propose_write"
+    },
+    {
+      "description": "Read the state of a write you asked for. Without approval_id, list your open requests (newest 20). States: pending (waits for a person to try it and decide), approved (waits for a person to run it), executing, executed (executed_rows says how many rows changed), rejected (read review_note), failed (read error_code and fix), expired (24 hours after you asked), withdrawn. previewed is true once a person has tried the write; on MySQL it stays false. Poll no more than about once a minute.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_id": {
+            "description": "The approval_id that propose_write gave. Leave it out to list your open requests.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "task": {
+            "description": "One sentence: what you are doing and why. It is kept in the audit record.",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      },
+      "name": "get_approval"
+    },
+    {
+      "description": "Withdraw a write you asked for while it is pending or approved. One that is executing or done cannot be withdrawn.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_id": {
+            "description": "The approval_id that propose_write gave.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "task": {
+            "description": "One sentence: what you are doing and why. It is kept in the audit record.",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "approval_id"
+        ],
+        "type": "object"
+      },
+      "name": "withdraw"
+    }
+  ]
+}

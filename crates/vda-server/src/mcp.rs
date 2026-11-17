@@ -13,14 +13,18 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::sync::atomic::Ordering;
+use std::{
+    sync::atomic::Ordering,
+    time::{Duration, Instant},
+};
 use uuid::Uuid;
 use vda_core::{agents::AgentIdentity, query::QueryInput, records::ClusterRecord};
 use vda_guard::AccessLevel;
 
 /// Protocol revisions this endpoint speaks, newest first.
 const VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
-/// Refused queries in a row before the agent is told to stop.
+/// Refused queries (or refused write requests) in a row before the agent is
+/// told to stop.
 const DENIAL_LIMIT: u32 = 5;
 /// How long the stop lasts; also the window in which refusals are counted.
 pub(crate) const DENIAL_WINDOW_SECONDS: u64 = 600;
@@ -38,6 +42,7 @@ Call list_databases first. Use search_schema and describe_table to learn the str
 Call check_sql before run_query when you are not sure a statement is accepted. \
 Every call needs a `task`: one sentence that says what you are doing and why. \
 You can read data; you cannot change it on your own. \
+To change data, call propose_write: people check, approve and run the write, and you follow it with get_approval. \
 When a call is refused, read `error.fix` and do what it says. Do not retry a refused statement unchanged.";
 
 fn rpc_result(id: &Value, result: Value) -> Response {
@@ -141,14 +146,19 @@ fn tool_result(outcome: Result<Value, ApiError>) -> Value {
             } else {
                 error.message.clone()
             };
-            (
-                json!({"error": {
-                    "code": error.code,
-                    "message": message,
-                    "fix": vda_core::teach::for_error(&error),
-                }}),
-                true,
-            )
+            let mut shown = json!({
+                "code": error.code,
+                "message": message,
+                "fix": vda_core::teach::for_error(&error),
+            });
+            // Only details written for the agent are shown: the open requests
+            // that keep it from asking for another write.
+            if error.code == "too_many_open_requests" {
+                if let Some(object) = shown.as_object_mut() {
+                    object.insert("details".into(), error.details.clone());
+                }
+            }
+            (json!({ "error": shown }), true)
         }
     };
     json!({
@@ -176,6 +186,8 @@ fn tools() -> Value {
         "description":"A database id from list_databases."});
     let approval_id = json!({"type":"string","format":"uuid",
         "description":"The approval_id that propose_write gave."});
+    let listed_id = json!({"type":"string","format":"uuid",
+        "description":"The approval_id that propose_write gave. Leave it out to list your open requests."});
     let tool = |name: &str, description: &str, properties: Value, required: &[&str]| {
         json!({
             "name": name,
@@ -229,23 +241,34 @@ fn tools() -> Value {
         ),
         tool(
             "propose_write",
-            "Ask for a write (one INSERT, UPDATE or DELETE, without RETURNING). Nothing runs now. \
-             A person tries it and rolls it back to see its effect, a person who is not your owner approves it, and a person runs it. \
-             It runs only if it still changes the same rows. Your `task` is the reason the approver reads. \
-             Call get_approval later to see the outcome.",
+            "Ask for a write: one plain INSERT, UPDATE or DELETE. No write runs now, and you never see rows. \
+             Your `task` is the reason the approver reads. A person who is not your owner approves it, and a person runs it. \
+             Use only built-in functions: a statement that calls a function defined in the database cannot be approved. \
+             On PostgreSQL: WITH, ONLY, ON CONFLICT, RETURNING, parameters, joins in the target and tuple assignments \
+             such as SET (a, b) = (...) are refused; the statement is first checked as your own read; a person then tries \
+             the write and rolls it back, and later it runs only on the rows that trial changed. \
+             When those rows cannot be named (INSERT, a view, some other targets), only the number of changed rows must match. \
+             On MySQL there is no trial run and nothing is bound. \
+             Five refused requests in a row stop this tool for 10 minutes. \
+             Keep the approval_id and follow it with get_approval.",
             json!({"task": task, "database": database,
                 "sql": {"type":"string","minLength":1,"description":"One INSERT, UPDATE or DELETE statement."}}),
             &["task", "database", "sql"],
         ),
         tool(
             "get_approval",
-            "Read the state of a write you asked for: pending, approved, rejected, executed, failed, expired or withdrawn.",
-            json!({"task": task, "approval_id": approval_id}),
-            &["task", "approval_id"],
+            "Read the state of a write you asked for. Without approval_id, list your open requests (newest 20). \
+             States: pending (waits for a person to try it and decide), approved (waits for a person to run it), executing, \
+             executed (executed_rows says how many rows changed), rejected (read review_note), \
+             failed (read error_code and fix), expired (24 hours after you asked), withdrawn. \
+             previewed is true once a person has tried the write; on MySQL it stays false. \
+             Poll no more than about once a minute.",
+            json!({"task": task, "approval_id": listed_id}),
+            &["task"],
         ),
         tool(
             "withdraw",
-            "Withdraw a write you asked for, if it has not run.",
+            "Withdraw a write you asked for while it is pending or approved. One that is executing or done cannot be withdrawn.",
             json!({"task": task, "approval_id": approval_id}),
             &["task", "approval_id"],
         ),
@@ -361,8 +384,12 @@ async fn run_tool(
             return Ok(json!({"databases": crate::agents::reachable_now(state, actor, ip).await?}));
         }
         "get_approval" => {
-            let id = required(arguments.approval_id, "approval_id")?;
-            return crate::approvals::status_for_agent(state, identity, id).await;
+            return match arguments.approval_id {
+                Some(id) => crate::approvals::status_for_agent(state, identity, id).await,
+                None => Ok(
+                    json!({"requests": crate::approvals::open_for_agent(state, identity).await?}),
+                ),
+            };
         }
         "withdraw" => {
             let id = required(arguments.approval_id, "approval_id")?;
@@ -471,14 +498,12 @@ async fn run_tool(
                 query_id: None,
                 task: Some(arguments.task.clone()),
             };
+            // `approval_required` is not counted: it sends the agent to
+            // propose_write, and an agent that follows it is not probing.
             let counted = |code: &str| {
                 matches!(
                     code,
-                    "query_denied"
-                        | "approval_required"
-                        | "forbidden"
-                        | "not_found"
-                        | "cost_exceeded"
+                    "query_denied" | "forbidden" | "not_found" | "cost_exceeded"
                 )
             };
             // The streak of refusals is kept under a lock per agent. The guard's
@@ -563,22 +588,22 @@ async fn run_tool(
         }
         "propose_write" => {
             let sql = required(arguments.sql, "sql")?;
-            // One proposal of an agent at a time, under the same lock and
-            // streak as run_query: each one costs a dry run, and a refused or
-            // failed one counts toward the loop breaker.
-            // Its own streak: a successful read does not reset it.
-            let streak = state
+            // One proposal of an agent at a time: the lock is held until it
+            // is decided, since each one runs a read check and costs a
+            // person's time. Refused proposals have their own streak, apart
+            // from run_query's, so a successful read does not reset it.
+            let entry = state
                 .agent_proposals
                 .get_with(identity.agent_id, async { Default::default() })
                 .await;
-            let mut refused = streak.lock().await;
-            if *refused >= DENIAL_LIMIT {
+            let mut streak = entry.lock().await;
+            if let Some(wait) = streak.stopped_for(Instant::now()) {
                 return Err(ApiError::new(
                     StatusCode::TOO_MANY_REQUESTS,
                     "too_many_denials",
-                    "Too many refused or failed write requests in a row",
+                    "Too many refused write requests in a row",
                 )
-                .details(json!({"retry_after_seconds": DENIAL_WINDOW_SECONDS})));
+                .details(json!({"retry_after_seconds": wait, "tool": "propose_write"})));
             }
             let result = match visible(state, identity, database, ip).await {
                 Ok(_) => {
@@ -595,20 +620,65 @@ async fn run_tool(
                 Err(error) => Err(error),
             };
             match &result {
-                Ok(_) => *refused = 0,
-                Err(error)
-                    if !matches!(
-                        error.code,
-                        "rate_limited" | "too_many_open_requests" | "busy" | "internal"
-                    ) =>
-                {
-                    *refused += 1;
-                }
+                Ok(_) => *streak = ProposalStreak::default(),
+                Err(error) if refuses_proposal(error) => streak.refuse(Instant::now()),
                 Err(_) => {}
             }
             result
         }
         _ => Err(ApiError::internal()),
+    }
+}
+
+/// Whether an error refuses the proposal itself, and so counts toward the
+/// stop. Waiting, a full queue, a busy gateway and a bad argument do not.
+/// From the database, only an error about the statement counts (its own
+/// error, a timeout, too many rows), not a database that cannot be reached:
+/// that one's fix is to try again later.
+fn refuses_proposal(error: &ApiError) -> bool {
+    match error.code {
+        "query_denied"
+        | "unsupported_write"
+        | "forbidden"
+        | "not_found"
+        | "insufficient_access"
+        | "cost_exceeded" => true,
+        "upstream" => {
+            error.kind == crate::error::ErrorKind::Database
+                || matches!(
+                    error.message.as_str(),
+                    "Query timed out" | "Affected row limit exceeded; transaction rolled back"
+                )
+        }
+        _ => false,
+    }
+}
+
+/// Refused proposals of one agent in a row, and when they reached the limit.
+/// The stop lasts `DENIAL_WINDOW_SECONDS` from that refusal; calls during the
+/// stop do not make it longer.
+#[derive(Debug, Default)]
+pub(crate) struct ProposalStreak {
+    refused: u32,
+    stopped_at: Option<Instant>,
+}
+impl ProposalStreak {
+    /// Whole seconds the stop still lasts at `now`, or `None` when the agent
+    /// may propose. A stop whose time has passed ends here, with its streak.
+    fn stopped_for(&mut self, now: Instant) -> Option<u64> {
+        let since = now.saturating_duration_since(self.stopped_at?);
+        let left = Duration::from_secs(DENIAL_WINDOW_SECONDS).saturating_sub(since);
+        if left.is_zero() {
+            *self = Self::default();
+            return None;
+        }
+        Some(left.as_secs() + u64::from(left.subsec_nanos() > 0))
+    }
+    fn refuse(&mut self, now: Instant) {
+        self.refused = self.refused.saturating_add(1);
+        if self.refused >= DENIAL_LIMIT && self.stopped_at.is_none() {
+            self.stopped_at = Some(now);
+        }
     }
 }
 
@@ -653,4 +723,128 @@ fn tables<'a>(
             (!hidden).then_some((qualified, table))
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_proposal_stop_lasts_the_window_from_the_refusal_that_reached_the_limit() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut streak = ProposalStreak::default();
+        for second in 0..u64::from(DENIAL_LIMIT - 1) {
+            streak.refuse(at(second));
+            assert_eq!(streak.stopped_for(at(second)), None);
+        }
+        streak.refuse(at(100));
+        assert_eq!(streak.stopped_for(at(100)), Some(DENIAL_WINDOW_SECONDS));
+        // Calls during the stop do not make it longer; the wait counts down.
+        assert_eq!(
+            streak.stopped_for(at(400)),
+            Some(DENIAL_WINDOW_SECONDS - 300)
+        );
+        assert_eq!(streak.stopped_for(at(99 + DENIAL_WINDOW_SECONDS)), Some(1));
+        // A part of a second left is a whole second to wait.
+        assert_eq!(
+            streak.stopped_for(at(99 + DENIAL_WINDOW_SECONDS) + Duration::from_millis(500)),
+            Some(1)
+        );
+        // The stop ends after the window, and its streak with it.
+        assert_eq!(streak.stopped_for(at(100 + DENIAL_WINDOW_SECONDS)), None);
+        let later = 101 + DENIAL_WINDOW_SECONDS;
+        streak.refuse(at(later));
+        assert_eq!(streak.stopped_for(at(later)), None);
+        assert_eq!(streak.refused, 1);
+    }
+
+    #[test]
+    fn only_refusals_of_the_proposal_count_toward_the_stop() {
+        let error = |code, message: &str| ApiError::new(StatusCode::BAD_REQUEST, code, message);
+        for code in [
+            "query_denied",
+            "unsupported_write",
+            "forbidden",
+            "not_found",
+            "insufficient_access",
+            "cost_exceeded",
+        ] {
+            assert!(refuses_proposal(&error(code, "x")), "{code}");
+        }
+        for code in [
+            "validation",
+            "budget_exceeded",
+            "rate_limited",
+            "too_many_open_requests",
+            "busy",
+            "internal",
+            "network_denied",
+        ] {
+            assert!(!refuses_proposal(&error(code, "x")), "{code}");
+        }
+        // From the database: the statement's own error, a timeout or too many
+        // rows count; a database that cannot be reached does not, nor a cancel.
+        let mut database = error("upstream", "column x does not exist");
+        database.kind = crate::error::ErrorKind::Database;
+        assert!(refuses_proposal(&database));
+        assert!(refuses_proposal(&error("upstream", "Query timed out")));
+        assert!(refuses_proposal(&error(
+            "upstream",
+            "Affected row limit exceeded; transaction rolled back"
+        )));
+        let unreachable = error("upstream", "Target database unavailable");
+        assert!(!refuses_proposal(&unreachable));
+        assert_eq!(
+            vda_core::teach::for_error(&unreachable).action,
+            "retry_later"
+        );
+        let mut cancelled = error("upstream", "Query cancelled");
+        cancelled.kind = crate::error::ErrorKind::Cancelled;
+        assert!(!refuses_proposal(&cancelled));
+        // Five unreachable answers in a row do not stop the agent.
+        let mut streak = ProposalStreak::default();
+        for _ in 0..DENIAL_LIMIT {
+            if refuses_proposal(&unreachable) {
+                streak.refuse(Instant::now());
+            }
+        }
+        assert_eq!(streak.stopped_for(Instant::now()), None);
+    }
+
+    /// Compare a text with a checked-in golden file, or rewrite the file
+    /// when `VDA_UPDATE_GOLDEN=1`. JSON is compared as values: the order of
+    /// keys depends on how serde_json was built, not on what an agent reads.
+    fn golden(name: &str, actual: &str) {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden")
+            .join(name);
+        if std::env::var("VDA_UPDATE_GOLDEN").as_deref() == Ok("1") {
+            assert!(std::fs::write(&path, actual).is_ok(), "{}", path.display());
+            return;
+        }
+        let expected = std::fs::read_to_string(&path).unwrap_or_default();
+        let same = if name.ends_with(".json") {
+            let parse = |text: &str| serde_json::from_str::<Value>(text).ok();
+            parse(&expected).is_some() && parse(&expected) == parse(actual)
+        } else {
+            expected == actual
+        };
+        assert!(
+            same,
+            "{} does not match what the agent door sends. Agents read this text: \
+             if the change is intended, regenerate the file with \
+             `VDA_UPDATE_GOLDEN=1 cargo test -p vda-server --lib golden`, \
+             then review the diff.\n--- golden\n{expected}\n--- actual\n{actual}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn the_tools_and_instructions_match_the_golden_files() {
+        let listed = json!({ "tools": tools() });
+        let text = serde_json::to_string_pretty(&listed).unwrap_or_default() + "\n";
+        golden("mcp_tools.json", &text);
+        golden("mcp_instructions.txt", &format!("{INSTRUCTIONS}\n"));
+    }
 }
