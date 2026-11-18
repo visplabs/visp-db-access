@@ -205,6 +205,7 @@ interface Approval {
     | "expired"
     | "withdrawn";
   error: string | null;
+  error_code: string | null; // the stored code of the error that stopped the write, e.g. "effect_changed"
   sql_truncated: boolean;
   agent: { id: string | null; name: string } | null; // the agent that asked, for its owner
   preview: Preview | null; // null in lists
@@ -216,6 +217,53 @@ interface Approval {
   reviewed_at: string | null;
   executed_at: string | null;
   expires_at: string;
+}
+
+// What a write would do, seen in a dry run. Fields that have no value are
+// left out, not null: `reason` only when `supported` is false; `kind`,
+// `target`, `before`, `after` and `bound_to` only when known.
+interface Preview {
+  supported: boolean; // false for MySQL
+  reason?: string;
+  kind?: StatementKind;
+  target?: string; // the table it writes
+  affected_rows?: number;
+  before?: RowSample; // the rows it changes, as they are now (UPDATE, DELETE)
+  after?: RowSample; // the rows as it leaves them (INSERT, UPDATE)
+  bound_to?: "rows" | "count";
+  written?: string[]; // the columns it writes, named as PostgreSQL names them (UPDATE, INSERT with a column list of values); left out when not known
+  notes: string[]; // what the preview could not show
+}
+
+interface RowSample {
+  columns: string[];
+  hidden: string[]; // columns whose values are not shown
+  masked: string[]; // the hidden columns that the policy protects (absent on previews stored before it existed)
+  rows: unknown[][]; // at most 20
+  total: number; // how many rows there were in all
+}
+
+// The signed record of a write that ran. The people in it are `{id, email}`.
+interface Receipt {
+  version: number;
+  approval_id: string;
+  cluster: { id: string; name: string; engine: "postgres" | "mysql" };
+  sql: string;
+  reason: string;
+  requested_by: { id: string; email: string };
+  agent: { id: string | null; name: string } | null;
+  approved_by: { id: string; email: string };
+  review_note: string | null;
+  executed_by: { id: string; email: string };
+  requested_at: string;
+  approved_at: string;
+  executed_at: string;
+  previewed_rows: number | null; // null without a preview
+  affected_rows: number | null;
+  bound_to: "rows" | "count" | null; // null when nothing was bound
+  key_id: string;
+  digest: string;
+  signature: string;
 }
 
 interface Grant {
@@ -409,20 +457,25 @@ database, username, password, tls_mode, replica_host?, replica_port?, tags?}` �
 - `POST /approvals/:id/execute` → `Approval` with `result` (requester or approver; once; approval valid 24h)
 - `POST /approvals/:id/withdraw` → `Approval` (requester only; `pending` or `approved` →
   `withdrawn`; else 409)
-- `GET /approvals/:id/receipt` → `{receipt, valid, signed_with_current_key}` (same
-  visibility as the request; 404 until the write has run)
+- `GET /approvals/:id/receipt` → `{receipt, valid, digest_matches, signed_with_current_key}`
+  (same visibility as the request; 404 until the write has run)
 
 `Approval` also has `agent: {id, name} | null` (the agent that asked, for its owner, who is
-the `requester`), `preview: Preview | null` and `receipt: Receipt | null`. Status is one of
+the `requester`; `id` is null once the agent is deleted), `preview: Preview | null`,
+`receipt: Receipt | null` and `error_code: string | null`, the code of the error that
+stopped the write as it was stored (for example `effect_changed`, `outcome_unknown` or
+`upstream`; null for a request that has not failed). People see the stored code; an agent
+reads one of three normalized codes from `get_approval`. Status is one of
 `pending`, `approved`, `rejected`, `executing`, `executed`, `failed`, `expired`, `withdrawn`.
 
 **Dry run and preview (PostgreSQL).** When a person makes a request (for an agent's
 request: when a person calls `preview`), the write runs in a
 read-write transaction on the primary that is always rolled back. First the rows that the
 write targets are read with `SELECT … FOR UPDATE OF <table>`, then the write runs with
-`RETURNING <table>.*` (`RETURNING *` for an `INSERT`). `Preview` is
-`{supported, reason, kind, target, affected_rows, before, after, bound_to, notes}`.
-`before` and `after` are `{columns, hidden, rows, total}` with at most 20 rows. Protected
+`RETURNING <table>.*` (`RETURNING *` for an `INSERT`). `Preview` (see Shared types)
+is `{supported, reason, kind, target, affected_rows, before, after, bound_to, notes}`,
+without the fields that have no value. `before` and `after` are `RowSample`s,
+`{columns, hidden, rows, total}`, with at most 20 rows. Protected
 columns are masked by name, and a new value that is computed from a protected column or
 from a subquery is hidden. So is a new value computed from any name that is not a column
 of the target, or from a whole row (`t::text`, `concat(t.*)`, `(t.*)::text`). For an `UPDATE`,
@@ -452,17 +505,22 @@ locked while it runs. A person who can request writes can learn whether rows mat
 condition from the count. An agent's write is never tried until a person starts its
 preview (see `propose_write`).
 
-**Receipt.** A write that runs leaves a receipt:
+**Receipt.** A write that runs leaves a receipt (`Receipt` in Shared types):
 `{version, approval_id, cluster: {id, name, engine}, sql, reason, requested_by, agent,
 approved_by, review_note, executed_by, requested_at, approved_at, executed_at,
-previewed_rows, affected_rows, bound_to, key_id, digest, signature}`. `digest` is the SHA-256 of the
+previewed_rows, affected_rows, bound_to, key_id, digest, signature}`, where
+`requested_by`, `approved_by` and `executed_by` are `{id, email}`. `digest` is the SHA-256 of the
 receipt without `digest` and `signature`, as compact JSON with the keys of every object
 sorted. `signature` is an
 HMAC-SHA256 of the digest with a key derived from the master key; `key_id` names that
 key without revealing it. `valid` is true when the digest and the signature match and the
 receipt belongs to this request (same `approval_id`, `sql` and cluster, status
-`executed`). `signed_with_current_key` is false for a receipt signed before the master
-key changed; such a receipt cannot be checked any more. The receipt proves who asked, who approved and what ran; it is not a
+`executed`). `digest_matches` is true when the receipt's content matches its own digest;
+that needs no key, so a changed record shows also when it claims another key.
+`signed_with_current_key` is false when the receipt names another key. That
+may be a receipt signed before the master key changed, or one that was changed
+and given another key id: a key id proves nothing, so such a receipt is not
+verified and must be treated as unproven. The receipt proves who asked, who approved and what ran; it is not a
 backup and has no undo script.
 
 ### Agents

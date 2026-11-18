@@ -337,5 +337,10 @@ export function createAgents(context: {
         needs_password: true,
       });
   };
-  return { route, login, policyChanged, endpointChanged };
+  /** Whether a listed agent may act now; undefined for an unknown agent. */
+  const active = (id: string) => {
+    const agent = agents.find((a) => a.id === id);
+    return agent ? !agent.paused : undefined;
+  };
+  return { route, login, policyChanged, endpointChanged, active };
 }

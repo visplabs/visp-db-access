@@ -179,13 +179,18 @@ export interface Approval {
     | 'expired'
     | 'withdrawn';
   error: string | null;
+  /** The code of the error that stopped the write, such as `effect_changed`;
+   * null until a write fails. */
+  error_code: string | null;
   sql_truncated: boolean;
-  /** The agent that asked, for its owner (the requester). */
-  agent?: { id: string | null; name: string } | null;
-  /** What the dry run showed; null in lists and for old requests. */
-  preview?: Record<string, unknown> | null;
-  /** The signed record of a write that ran. */
-  receipt?: Record<string, unknown> | null;
+  /** The agent that asked, for its owner (the requester). The id is null
+   * once the agent is deleted; the name stays. */
+  agent: { id: string | null; name: string } | null;
+  /** What the dry run showed. Null in lists, for an agent's request until a
+   * person previews it, and for requests from before previews existed. */
+  preview: Preview | null;
+  /** The signed record of a write that ran. Null in lists and until it ran. */
+  receipt: Receipt | null;
   reviewer: { id: string; email: string; name: string } | null;
   review_note: string | null;
   result: QueryResult | null;
@@ -193,6 +198,81 @@ export interface Approval {
   reviewed_at: string | null;
   executed_at: string | null;
   expires_at: string;
+}
+
+/** A few rows of a preview, already masked. */
+export interface RowSample {
+  columns: string[];
+  /** Columns whose values are not shown (masked, or computed from something
+   * that may not be shown). */
+  hidden: string[];
+  /** The hidden columns that the policy protects (a subset of `hidden`).
+   * Absent on previews stored before the server sent it. */
+  masked?: string[];
+  /** At most 20 rows. */
+  rows: unknown[][];
+  /** How many rows there were in all. */
+  total: number;
+}
+/** What a write would do, seen by running it and rolling it back. The server
+ * leaves out the fields that have no value. */
+export interface Preview {
+  /** False when the write is not previewed (MySQL); `reason` says why. */
+  supported: boolean;
+  reason?: string;
+  kind?: StatementKind;
+  target?: string;
+  affected_rows?: number;
+  /** The rows it changes, as they are now (UPDATE, DELETE). */
+  before?: RowSample;
+  /** The rows as the write leaves them (INSERT, UPDATE). */
+  after?: RowSample;
+  /** The approval runs only on these exact rows, or only if it changes the
+   * same number of rows. */
+  bound_to?: 'rows' | 'count';
+  /** The columns the statement writes (UPDATE, and INSERT with a column list
+   * of written-out values); left out when not known. */
+  written?: string[];
+  /** What the preview could not show. */
+  notes: string[];
+}
+export interface ReceiptPerson {
+  id: string;
+  email: string;
+}
+/** The signed record of a write that ran. */
+export interface Receipt {
+  version: number;
+  approval_id: string;
+  cluster: { id: string; name: string; engine: Engine };
+  sql: string;
+  reason: string;
+  requested_by: ReceiptPerson;
+  agent: { id: string | null; name: string } | null;
+  approved_by: ReceiptPerson;
+  review_note: string | null;
+  executed_by: ReceiptPerson;
+  requested_at: string;
+  approved_at: string;
+  executed_at: string;
+  /** Null when there was no preview (MySQL, or an old request). */
+  previewed_rows: number | null;
+  affected_rows: number | null;
+  /** Null when nothing was bound (MySQL, or an old request). */
+  bound_to: 'rows' | 'count' | null;
+  key_id: string;
+  digest: string;
+  signature: string;
+}
+/** `GET /approvals/:id/receipt` */
+export interface ReceiptCheck {
+  receipt: Receipt;
+  /** The digest and signature match, and the receipt is this request's. */
+  valid: boolean;
+  /** The content matches its own digest; needs no key. */
+  digest_matches: boolean;
+  /** False for a receipt signed before the master key changed. */
+  signed_with_current_key: boolean;
 }
 
 export interface Grant {

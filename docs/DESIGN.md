@@ -161,7 +161,17 @@ view.
   _Reset to default_; a save bar appears only with unsaved changes.
 - **Approvals** is a two-pane inbox on desktop with segmented filters and counts;
   phones open the request as a full-screen sheet with sticky actions. Counts
-  cover loaded requests, and the page says so.
+  cover loaded requests, and the page says so. A request an agent asked for
+  shows a robot outline instead of initials and says "Asked by agent _name_ for
+  _owner_". _What changes_ shows the dry run: the count, how the approval is
+  bound in plain words, the notes, and before/after rows (see below). A
+  request that ran shows its _Receipt_ (who asked, approved and ran it, rows
+  previewed and changed, the binding, the digest with a copy button) with one
+  badge for its signature: "Signature valid" (neutral), "Not verified"
+  (amber, with a sentence that says to treat it as unproven: a key id proves
+  nothing) and "Not valid: this record was changed" (coral). Withdrawn and
+  expired requests have neutral badges: they are not a risk, they just will
+  not run.
 - **History and Audit** group rows under day headings; each row shows the verb,
   tables and a syntax-tinted SQL preview. A denied query shows _Blocked_ once.
   The date-range popover offers Today, Last 7 days, Last 30 days and Custom.
@@ -244,6 +254,36 @@ download; the console never runs it.
 
 Neither screen uses risk colour for anything but a real risk state (Too open,
 Could not check, Password needed, a paused agent).
+
+## Changed values
+
+Preview tables (before and after a write) follow the result tables: no
+vertical rules, and a column says in its header what is special about it:
+`· written` when the statement writes it, `· masked` when it is protected,
+`· hidden` for a new value that may not be shown for another reason (computed
+from something protected, or an `INSERT` without a column list). A written
+column is marked even when its values are hidden, so two tables that look the
+same still say what changes.
+
+A changed value in the after table is **bold and underlined** on a subtle
+fill, and screen readers hear "Changed:" before it, so the change never
+depends on colour. Cells are marked only when the rows can be paired for
+certain: by a column in both samples that is shown, not written, and unique,
+with no row cut from either sample. Otherwise no cell is marked and one line
+says "Rows cannot be matched one to one here; written columns are marked." A
+guessed mark would be worse than none.
+
+The key column and the written columns come first, so a phone shows the change
+without scrolling; long values are cut in the middle on a phone
+(`0000…00002041`) and stay whole on hover and for screen readers. "showing 20
+of 47" says when the server cut the sample. The binding sentence follows the
+request: "It will run only on these exact rows" while it can run, "It was
+bound to these exact rows" after.
+
+Dialogs give focus back to the control that opened them. When the action
+removed or disabled that control, focus goes to a stable place in the same
+area (`data-focus-return` on the area, `data-focus-target` with
+`tabIndex={-1}` on the element), never to the page itself.
 
 ## Known gaps
 

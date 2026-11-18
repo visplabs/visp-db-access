@@ -5,15 +5,9 @@ import { createMockDiscovery } from './mock-discovery';
 import { endpointChanged } from '../lib/connection';
 import { isCidr } from '../lib/utils';
 import { isLoopbackHost } from '../lib/tls';
-import type {
-  Approval,
-  Cluster,
-  HistoryEntry,
-  Policy,
-  QueryResult,
-  User,
-} from './types';
+import type { Cluster, HistoryEntry, Policy, QueryResult, User } from './types';
 import { createAgents } from './mock-agents';
+import { createApprovals } from './mock-approvals';
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const fail = (
   code: string,
@@ -204,47 +198,7 @@ export function createMockTransport({
       analysis,
     };
   }
-  // One colleague's pending request and one approved request make the review flow demoable.
   const sampleCluster = required(state.clusters[0]);
-  for (let i = 0; i < 4; i++) {
-    const requester = required(state.users[i === 0 ? 2 : 0]);
-    const sql = "UPDATE users SET name = 'Maya Patel' WHERE id = 42";
-    state.approvals.push({
-      id: uuid(800 + i),
-      cluster_id: sampleCluster.id,
-      cluster_name: sampleCluster.name,
-      requester: {
-        id: requester.id,
-        email: requester.email,
-        name: requester.name,
-      },
-      sql,
-      reason:
-        i === 0
-          ? 'Correct a customer name after a verified support request.'
-          : 'Repair an incorrect display name.',
-      analysis: analyzeDemo(sql, required(policies.get(sampleCluster.id))),
-      status:
-        (['pending', 'approved', 'executing', 'failed'] as const)[i] ??
-        'pending',
-      error: i === 3 ? 'Target database unavailable' : null,
-      sql_truncated: false,
-      reviewer:
-        i === 0
-          ? null
-          : {
-              id: required(state.users[1]).id,
-              email: required(state.users[1]).email,
-              name: required(state.users[1]).name,
-            },
-      review_note: i === 0 ? null : 'Verified the target record.',
-      result: null,
-      created_at: now(),
-      reviewed_at: i === 0 ? null : now(),
-      executed_at: i === 3 ? now() : null,
-      expires_at: new Date(Date.now() + 86400000).toISOString(),
-    });
-  }
   function page<T extends { id: string; created_at: string }>(
     items: T[],
     query: URLSearchParams,
@@ -320,6 +274,20 @@ export function createMockTransport({
     access: (cluster) => clusterAccess(cluster) ?? undefined,
     fail,
     audit: (action, type, id, details) => audit(action, type, id, details),
+    now,
+  });
+  const approvals = createApprovals({
+    state,
+    policies,
+    access: clusterAccess,
+    fail,
+    audit,
+    history,
+    result,
+    agentActive: (id) => agents.active(id),
+    wait: async () => {
+      await wait(delay);
+    },
     now,
   });
   async function route(path: string, init: RequestInit = {}): Promise<unknown> {
@@ -818,24 +786,11 @@ export function createMockTransport({
     if (resource === 'approvals') {
       if (!id && method === 'GET') {
         const listed = page(
-          state.approvals.filter(
-            (a) =>
-              state.clusters.some(
-                (c) =>
-                  c.id === a.cluster_id &&
-                  (a.requester.id === session?.id ||
-                    clusterAccess(c) === 'admin'),
-              ) &&
-              (!url.searchParams.get('status') ||
-                a.status === url.searchParams.get('status')) &&
-              (!url.searchParams.get('cluster_id') ||
-                a.cluster_id === url.searchParams.get('cluster_id')) &&
-              (url.searchParams.get('mine') !== 'true' ||
-                a.requester.id === session?.id),
-          ),
+          await approvals.list(actor, url.searchParams),
           url.searchParams,
           100,
         );
+        // Lists are light: the preview, the receipt and the result stay on the request.
         return {
           ...listed,
           items: listed.items.map((approval) => ({
@@ -843,144 +798,12 @@ export function createMockTransport({
             sql: [...approval.sql].slice(0, 2000).join(''),
             sql_truncated: [...approval.sql].length > 2000,
             result: null,
+            preview: null,
+            receipt: null,
           })),
         };
       }
-      if (!id) {
-        const cluster = required(
-          state.clusters.find((c) => c.id === body.cluster_id),
-        );
-        const level = clusterAccess(cluster);
-        if (level !== 'write' && level !== 'admin')
-          fail('forbidden', 'Write access is required.', 403);
-        const analysis = analyzeDemo(
-          String(body.sql),
-          required(policies.get(cluster.id)),
-        );
-        if (analysis.verdict === 'deny')
-          fail('query_denied', 'This SQL is blocked.', 422, analysis);
-        if (!String(body.reason ?? '').trim())
-          fail('validation', 'A reason is required.');
-        const approval: Approval = {
-          id: crypto.randomUUID(),
-          cluster_id: cluster.id,
-          cluster_name: cluster.name,
-          requester: { id: actor.id, email: actor.email, name: actor.name },
-          sql: String(body.sql),
-          reason: String(body.reason),
-          analysis,
-          status: 'pending',
-          error: null,
-          sql_truncated: false,
-          reviewer: null,
-          review_note: null,
-          result: null,
-          created_at: new Date(
-            Math.max(
-              Date.now(),
-              ...state.approvals.map((a) => Date.parse(a.created_at) + 1),
-            ),
-          ).toISOString(),
-          reviewed_at: null,
-          executed_at: null,
-          expires_at: new Date(Date.now() + 86400000).toISOString(),
-        };
-        state.approvals.unshift(approval);
-        audit('approval.create', 'approval', approval.id, {});
-        return approval;
-      }
-      const approval = required(state.approvals.find((a) => a.id === id));
-      const cluster = required(
-        state.clusters.find((c) => c.id === approval.cluster_id),
-      );
-      if (
-        !clusterAccess(cluster) ||
-        (approval.requester.id !== actor.id &&
-          clusterAccess(cluster) !== 'admin')
-      )
-        fail('forbidden', 'No access to this request.', 403);
-      if (!action) return approval;
-      if (
-        ['pending', 'approved'].includes(approval.status) &&
-        Date.parse(approval.expires_at) < Date.now()
-      ) {
-        approval.status = 'expired';
-        fail('conflict', 'This approval has expired.', 409);
-      }
-      if (action === 'approve' || action === 'reject') {
-        clusterAdmin(cluster);
-        if (approval.requester.id === actor.id)
-          fail('forbidden', 'You cannot review your own request.', 403);
-        if (approval.status !== 'pending')
-          fail('conflict', 'This request has already been reviewed.', 409);
-        if (action === 'reject' && !String(body.note ?? '').trim())
-          fail('validation', 'A rejection note is required.');
-        approval.status = action === 'approve' ? 'approved' : 'rejected';
-        approval.reviewer = {
-          id: actor.id,
-          email: actor.email,
-          name: actor.name,
-        };
-        approval.review_note = String(body.note ?? '');
-        approval.reviewed_at = now();
-      }
-      if (action === 'execute') {
-        if (
-          approval.requester.id !== actor.id &&
-          approval.reviewer?.id !== actor.id
-        )
-          fail('forbidden', 'Only the requester or reviewer may execute.', 403);
-        if (approval.status !== 'approved')
-          fail('conflict', 'Only an approved request can execute once.', 409);
-        const analysis = analyzeDemo(
-          approval.sql,
-          required(policies.get(cluster.id)),
-        );
-        if (analysis.verdict === 'deny')
-          fail(
-            'query_denied',
-            'Current policy blocks this SQL.',
-            422,
-            analysis,
-          );
-        approval.status = 'executing';
-        await wait(delay);
-        if (cluster.health.status === 'down') {
-          approval.status = 'failed';
-          approval.error = 'Target database unavailable';
-          approval.executed_at = now();
-          history(
-            actor,
-            cluster,
-            approval.sql,
-            'error',
-            analysis,
-            undefined,
-            approval.error,
-          );
-          fail('upstream', approval.error, 502);
-        }
-        approval.result = result(cluster, approval.sql, crypto.randomUUID());
-        approval.status = 'executed';
-        approval.executed_at = now();
-        history(
-          actor,
-          cluster,
-          approval.sql,
-          'ok',
-          approval.analysis,
-          approval.result,
-        );
-      }
-      audit(
-        `approval.${action === 'execute' ? 'executed' : action}`,
-        'approval',
-        approval.id,
-        {
-          note: approval.review_note,
-        },
-      );
-      return approval;
+      return approvals.route(id, action, method, body, actor);
     }
     if (resource === 'audit') {
       admin();

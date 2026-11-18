@@ -14,7 +14,9 @@ import {
 } from 'lucide-react';
 import {
   Component,
+  useEffect,
   useId,
+  useRef,
   isValidElement,
   cloneElement,
   type ReactNode,
@@ -202,6 +204,20 @@ export function Modal({
   drawer?: boolean;
   className?: string;
 }) {
+  const opener = useRef<{
+    element: HTMLElement | null;
+    fallback: HTMLElement | null;
+  }>({ element: null, fallback: null });
+  // Remember what had focus when the dialog opened: focus goes back there.
+  // Recorded during render, before the dialog moves focus into itself.
+  if (open && !opener.current.element) {
+    const element =
+      document.activeElement instanceof HTMLElement &&
+      document.activeElement !== document.body
+        ? document.activeElement
+        : null;
+    opener.current = { element, fallback: focusFallback(element) };
+  }
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -213,6 +229,12 @@ export function Modal({
             // tooltip, which then swallows the first Escape.
             event.preventDefault();
             (event.currentTarget as HTMLElement).focus();
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            const { element, fallback } = opener.current;
+            opener.current = { element: null, fallback: null };
+            returnFocus(element, fallback);
           }}
         >
           <div className="dialog-heading">
@@ -233,6 +255,79 @@ export function Modal({
       </Dialog.Portal>
     </Dialog.Root>
   );
+}
+const usable = (element: HTMLElement | null): element is HTMLElement =>
+  !!element &&
+  element.isConnected &&
+  !element.matches(':disabled, [aria-disabled="true"]') &&
+  element.getClientRects().length > 0;
+/**
+ * Give focus back to the control that opened a dialog. The action the dialog
+ * confirmed may then remove or disable that control (a request that was
+ * withdrawn has no Withdraw button); for a few seconds, focus that would be
+ * lost moves to a stable place nearby instead of to the page itself.
+ */
+/** The stable place near `element` that focus falls back to. */
+function focusFallback(element: HTMLElement | null) {
+  const area = element?.closest<HTMLElement>('[data-focus-return]');
+  return (
+    area?.querySelector<HTMLElement>('[data-focus-target]') ?? area ?? null
+  );
+}
+/**
+ * Keep focus near `element` (the control a person just used) while the screen
+ * changes under it: when an action removes or disables the control, focus
+ * moves to the stable place nearby instead of to the page itself.
+ */
+export function keepFocus(element: Element | null) {
+  const control = element instanceof HTMLElement ? element : null;
+  returnFocus(control, focusFallback(control));
+}
+function returnFocus(
+  element: HTMLElement | null,
+  fallback: HTMLElement | null,
+) {
+  const area = fallback?.closest<HTMLElement>('[data-focus-return]') ?? null;
+  // Focus waits on the fallback while the control is only disabled for a
+  // moment (busy), and goes back to it when it is enabled again.
+  let parked = false;
+  const rescue = () => {
+    const active = document.activeElement;
+    if (parked && active === fallback && usable(element)) {
+      parked = false;
+      focusQuietly(element);
+      return;
+    }
+    // Focus is lost when it is on the page, on the control that can no
+    // longer take it, or on a container around this area: a click on a
+    // control that just became disabled moves focus to its nearest
+    // focusable ancestor.
+    const lost =
+      !active ||
+      active === document.body ||
+      (active === element && !usable(element)) ||
+      (!!area && active !== area && active.contains(area));
+    // Focus the person moved elsewhere themselves is left alone.
+    if (!lost || usable(element)) return;
+    if (fallback?.isConnected) {
+      focusQuietly(fallback);
+      parked = true;
+    }
+  };
+  if (usable(element)) focusQuietly(element);
+  else rescue();
+  const watch = new MutationObserver(rescue);
+  watch.observe(document.body, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['disabled', 'aria-disabled'],
+  });
+  document.addEventListener('focusin', rescue);
+  setTimeout(() => {
+    watch.disconnect();
+    document.removeEventListener('focusin', rescue);
+  }, 4000);
 }
 export function Confirm({
   open,
@@ -256,6 +351,27 @@ export function Confirm({
   children?: ReactNode;
   danger?: boolean;
 }) {
+  // One confirmation per click: a double click cannot confirm twice before
+  // the caller has re-rendered with `busy`. The guard opens again when the
+  // dialog opens again, when `busy` ends, or shortly after a confirmation
+  // that never became busy.
+  const fired = useRef(false);
+  const busyNow = useRef(busy);
+  useEffect(() => {
+    if (busyNow.current && !busy) fired.current = false;
+    busyNow.current = busy;
+  }, [busy]);
+  useEffect(() => {
+    if (open) fired.current = false;
+  }, [open]);
+  const confirm = () => {
+    if (fired.current || busy) return;
+    fired.current = true;
+    setTimeout(() => {
+      if (!busyNow.current) fired.current = false;
+    }, 600);
+    onConfirm();
+  };
   return (
     <Modal
       open={open}
@@ -269,7 +385,7 @@ export function Confirm({
         <Button
           disabled={busy}
           variant={danger ? 'danger' : 'primary'}
-          onClick={onConfirm}
+          onClick={confirm}
         >
           {busy ? busyLabel : 'Confirm'}
         </Button>
@@ -321,10 +437,26 @@ export function Picker({
     </Select.Root>
   );
 }
+/** The element being given focus back by a closing dialog: its tooltip stays
+ * closed, so it does not cover the controls next to it. */
+let quietFocus: HTMLElement | null = null;
+function focusQuietly(element: HTMLElement) {
+  quietFocus = element;
+  element.focus();
+  quietFocus = null;
+}
 export function Tip({ text, children }: { text: string; children: ReactNode }) {
   return (
     <Tooltip.Root>
-      <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
+      <Tooltip.Trigger
+        asChild
+        onFocus={(event) => {
+          // Radix skips opening when the event is already handled.
+          if (event.currentTarget === quietFocus) event.preventDefault();
+        }}
+      >
+        {children}
+      </Tooltip.Trigger>
       <Tooltip.Portal>
         <Tooltip.Content className="tooltip" sideOffset={5}>
           {text}

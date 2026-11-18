@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowUpRight, CheckCheck, Clock3 } from 'lucide-react';
+import { agentLabel } from '../../lib/approval-presentation';
 import type { Approval, Cluster, HistoryEntry, Page } from '../../api/types';
 import { useResource } from '../../lib/query';
 import { useUser } from '../auth/session';
@@ -33,8 +34,8 @@ function RequestRow({ approval, mine }: { approval: Approval; mine: boolean }) {
           {approval.cluster_name}
         </strong>
         <small>
-          {approval.reason} · {approval.requester.name} ·{' '}
-          <RelativeTime value={approval.created_at} />
+          {approval.reason} · {agentLabel(approval) ?? approval.requester.name}{' '}
+          · <RelativeTime value={approval.created_at} />
         </small>
       </div>
       <ExpiryTime value={approval.expires_at} />

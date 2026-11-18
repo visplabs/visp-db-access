@@ -9,16 +9,16 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 
 // Each exception names the advisory, why it is accepted, and when it was
-// added. Remove an entry as soon as a fixed release is available.
-const ALLOWED = [
-  {
-    // Remove when a fixed picomatch is released (latest is 4.0.7, affected).
-    id: 'GHSA-fc5q-39xc-vjpf',
-    reason:
-      'picomatch ReDoS with no fixed release; reaches us only through dev tooling (vite, vitest, tinyglobby, fdir, typescript-eslint) on trusted glob patterns',
-    added: '2026-11-18',
-  },
-];
+// added. Remove an entry as soon as a fixed release is available. There are
+// none now. An entry looks like this:
+//
+//   {
+//     // Remove when a fixed <package> is released.
+//     id: 'GHSA-xxxx-xxxx-xxxx',
+//     reason: 'what it is, and why it cannot reach the console',
+//     added: 'YYYY-MM-DD',
+//   },
+const ALLOWED = [];
 
 const GATED = new Set(['high', 'critical']);
 
@@ -132,5 +132,7 @@ for (const entry of stale) {
 
 if (refused.length > 0 || stale.length > 0) process.exit(1);
 console.log(
-  `audit:dev: ok (${accepted.length} finding(s) allowed by ${ALLOWED.length} exception(s))`,
+  ALLOWED.length === 0
+    ? 'audit:dev: ok (no high or critical finding; no exceptions listed)'
+    : `audit:dev: ok (${accepted.length} finding(s) allowed by ${ALLOWED.length} exception(s))`,
 );

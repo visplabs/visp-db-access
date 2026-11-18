@@ -516,10 +516,14 @@ test('hardened history and approval states show their badges and execution error
     .click();
   await page.getByRole('tab', { name: /^All/ }).click();
   await expect(page.locator('.badge.info')).toHaveText('Executing');
-  const failed = page.getByRole('listitem').filter({
+  // Three requests failed: one could not reach its database, one found
+  // that its data had changed after the approval, and one lost its node.
+  const failures = page.getByRole('listitem').filter({
     has: page.locator('.badge.danger').filter({ hasText: 'failed' }),
   });
-  await expect(failed).toContainText('Target database unavailable');
+  await expect(failures).toHaveCount(3);
+  const failed = failures.filter({ hasText: 'Target database unavailable' });
+  await expect(failed).toHaveCount(1);
   await failed.getByRole('button', { name: 'Review', exact: true }).click();
   await expect(
     page.getByRole('region', { name: 'Query approval' }).getByRole('alert'),

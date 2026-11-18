@@ -31,6 +31,9 @@ const tools = [
   ['describe_table', 'see the columns of one table'],
   ['check_sql', 'ask the guard before a run'],
   ['run_query', 'run a guarded read'],
+  ['propose_write', 'ask its owner for a write; nothing runs yet'],
+  ['get_approval', 'see where its requests stand'],
+  ['withdraw', 'take back a request that has not run'],
 ] as const;
 const tokenState = (token: Agent['tokens'][number]) =>
   token.revoked_at
@@ -276,8 +279,9 @@ function AgentDetail({
       <h3>Guardrails</h3>
       <dl className="agent-guardrails">
         <Guardrail title="Writes need a person" state="Always on">
-          The agent cannot change data on its own. A statement that writes is
-          refused, and the agent is told to ask its owner.
+          The agent cannot change data on its own. It can ask for a write, which
+          opens a request for its owner. A person previews it, a person who is
+          not the owner approves it, and a person runs it.
         </Guardrail>
         <Guardrail title="Protected columns" state="Always on">
           The gateway masks protected columns in every result. On a database

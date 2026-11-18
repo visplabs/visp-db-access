@@ -1399,3 +1399,135 @@ body {
     column-gap: 12px;
   }
 }
+
+/* Approvals: who asked, what a write changes, and the receipt of a write that ran. */
+.approval-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  color: var(--label-secondary);
+}
+.approval-preview,
+.approval-receipt {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px 0;
+  border-top: var(--stroke) solid var(--rule);
+  font-size: 13px;
+}
+.approval-preview h3,
+.approval-receipt h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.approval-preview p,
+.approval-receipt p {
+  margin: 0;
+}
+.approval-receipt .section-heading {
+  margin: 0;
+}
+.preview-notes {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--label-secondary);
+}
+.preview-sample {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.preview-sample-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  font-size: 12px;
+}
+.preview-sample .table-wrap {
+  max-height: 280px;
+  overflow: auto;
+}
+.preview-sample td {
+  height: 32px;
+  padding: 4px 12px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* A changed value is bold and underlined, so it reads without colour. */
+.preview-sample td.cell-changed {
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  background: var(--subtle);
+}
+.receipt-list {
+  display: grid;
+  margin: 0;
+}
+.receipt-list > div {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: var(--stroke) solid var(--rule);
+}
+.receipt-list dt {
+  color: var(--label-secondary);
+}
+.receipt-list dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.receipt-list .icon-button {
+  min-height: 28px;
+  height: 28px;
+  min-width: 28px;
+}
+.approval-blocked {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--label-secondary);
+  text-align: right;
+}
+.approval-actions .dialog-actions + .dialog-actions {
+  margin-top: 12px;
+}
+.sql-preview-block.confirm-sql {
+  max-height: 200px;
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.preview-sample .cell-short {
+  display: none;
+}
+@media (max-width: 600px) {
+  .preview-sample .cell-short {
+    display: inline;
+  }
+  .preview-sample .cell-full {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .receipt-list > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .approval-blocked {
+    text-align: left;
+  }
+}

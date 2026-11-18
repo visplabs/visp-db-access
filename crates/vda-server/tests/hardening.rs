@@ -3736,6 +3736,13 @@ async fn a_write_is_previewed_bound_to_its_effect_and_leaves_a_signed_receipt() 
         "{text}"
     );
     assert_eq!(note_and_n(&target, &table, 1).await.0, "first");
+    // The written columns are named as PostgreSQL names them, however the
+    // statement spells them; a protected column is masked, not just hidden.
+    let (s, v) = request_write(&f, &format!("UPDATE {table} SET NOTE='spelled' WHERE id=2")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["preview"]["written"], json!(["note"]), "{v}");
+    assert_eq!(v["preview"]["before"]["masked"], json!(["email"]), "{v}");
+    assert_eq!(v["preview"]["after"]["masked"], json!(["email"]), "{v}");
     // A new value made from a protected column is hidden too.
     let (s, v) = request_write(&f, &format!("UPDATE {table} SET note=email WHERE id=3")).await;
     if s == StatusCode::OK {
@@ -3817,6 +3824,7 @@ async fn a_write_is_previewed_bound_to_its_effect_and_leaves_a_signed_receipt() 
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["valid"], true, "{v}");
+    assert_eq!(v["digest_matches"], true, "{v}");
     let (s, _) = f
         .request(
             "GET",
@@ -3840,6 +3848,26 @@ async fn a_write_is_previewed_bound_to_its_effect_and_leaves_a_signed_receipt() 
         )
         .await;
     assert_eq!(v["valid"], false, "{v}");
+    assert_eq!(v["digest_matches"], false, "{v}");
+    // A forged receipt that claims an earlier key still shows that its
+    // content does not match its digest.
+    sqlx::query("UPDATE approvals SET receipt=jsonb_set(jsonb_set(receipt,'{reason}','\"forged\"'),'{key_id}','\"0000000000000000\"') WHERE id=$1::uuid")
+        .bind(&id)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let (_, v) = f
+        .request(
+            "GET",
+            &format!("/approvals/{id}/receipt"),
+            &f.grantor_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(v["receipt"]["reason"], "forged", "{v}");
+    assert_eq!(v["valid"], false, "{v}");
+    assert_eq!(v["digest_matches"], false, "{v}");
+    assert_eq!(v["signed_with_current_key"], false, "{v}");
     // Bound to the rows: a change to a target row after approval stops the write.
     let (s, v) = request_write(&f, &format!("UPDATE {table} SET n=n+1 WHERE id=3")).await;
     assert_eq!(s, StatusCode::OK, "{v}");
@@ -3875,6 +3903,23 @@ async fn a_write_is_previewed_bound_to_its_effect_and_leaves_a_signed_receipt() 
         .await;
     assert_eq!(v["status"], "failed");
     assert_eq!(v["receipt"], Value::Null);
+    // People read the stored code, in the detail and in the list.
+    assert_eq!(v["error_code"], "effect_changed", "{v}");
+    let (_, v) = f
+        .request(
+            "GET",
+            "/approvals?status=failed&limit=100",
+            &f.admin_cookie,
+            None,
+        )
+        .await;
+    let listed = v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"].as_str() == Some(bound.as_str()))
+        .unwrap();
+    assert_eq!(listed["error_code"], "effect_changed", "{v}");
     // Bound to the count only: other columns may change, the count may not.
     let (s, v) = request_write(
         &f,
@@ -4118,6 +4163,11 @@ async fn an_agent_proposes_a_write_sees_no_rows_and_a_person_decides() {
         )
         .await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(
+        v["error"]["message"],
+        format!("Preview the write before you approve it (POST /approvals/{id}/preview)"),
+        "{v}"
+    );
     let other_cookie = Fixture::session(&f.db, f.recipient).await;
     let (s, _) = f
         .request(
@@ -4743,6 +4793,7 @@ async fn the_attacks_found_on_safe_writes_stay_closed() {
         )
         .await;
     assert_eq!(v["valid"], true, "{v}");
+    assert_eq!(v["digest_matches"], true, "{v}");
     assert_eq!(v["signed_with_current_key"], true, "{v}");
     // An agent's write is first checked as a read, in a read-only transaction:
     // a protected value in its condition or a function with side effects stops
@@ -4875,40 +4926,51 @@ async fn the_attacks_found_on_safe_writes_stay_closed() {
         format!("CREATE FUNCTION {cast_fn}(text) RETURNS {ty} LANGUAGE sql AS 'SELECT ROW(setval(''{seq}'', 8000)::integer)::{ty}'"),
         format!("CREATE CAST (text AS {ty}) WITH FUNCTION {cast_fn}(text) AS ASSIGNMENT"),
         format!("ALTER TABLE {table} ADD COLUMN p {ty}"),
+        // A quoted column name keeps its case; the check must still find it.
+        format!("ALTER TABLE {table} ADD COLUMN \"MixedCol\" {ty}"),
     ] {
         sqlx::query(&sql).execute(&target).await.unwrap();
     }
-    let (failed, v) = tool(
-        &f,
-        &token,
-        "propose_write",
-        json!({"task":"Probe","database":db,
-        "sql":format!("UPDATE {table} SET p = note WHERE id=1")}),
-    )
-    .await;
-    assert!(!failed, "{v}");
-    let probe = v["approval_id"].as_str().unwrap().to_owned();
-    let (s, v) = f
-        .request(
-            "POST",
-            &format!("/approvals/{probe}/preview"),
-            &f.admin_cookie,
-            None,
+    for column in ["p", "\"MixedCol\""] {
+        let (failed, v) = tool(
+            &f,
+            &token,
+            "propose_write",
+            json!({"task":"Probe","database":db,
+            "sql":format!("UPDATE {table} SET {column} = note WHERE id=1")}),
         )
         .await;
-    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
-    assert!(
-        v["error"]["message"].as_str().unwrap().contains(&cast_fn),
-        "{v}"
-    );
-    tool(
-        &f,
-        &token,
-        "withdraw",
-        json!({"task":"Done","approval_id":probe}),
-    )
-    .await;
+        assert!(!failed, "{column}: {v}");
+        let probe = v["approval_id"].as_str().unwrap().to_owned();
+        let (s, v) = f
+            .request(
+                "POST",
+                &format!("/approvals/{probe}/preview"),
+                &f.admin_cookie,
+                None,
+            )
+            .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{column}: {v}");
+        assert_eq!(v["error"]["code"], "unsupported_write", "{column}: {v}");
+        assert!(
+            v["error"]["message"].as_str().unwrap().contains(&cast_fn),
+            "{column}: {v}"
+        );
+        let now: i64 = sqlx::query_scalar(&format!("SELECT last_value FROM {seq}"))
+            .fetch_one(&target)
+            .await
+            .unwrap();
+        assert_eq!(before, now, "{column}: a preview ran the cast function");
+        tool(
+            &f,
+            &token,
+            "withdraw",
+            json!({"task":"Done","approval_id":probe}),
+        )
+        .await;
+    }
     for sql in [
+        format!("ALTER TABLE {table} DROP COLUMN \"MixedCol\""),
         format!("ALTER TABLE {table} DROP COLUMN p"),
         format!("DROP CAST (text AS {ty})"),
         format!("DROP FUNCTION {cast_fn}(text)"),

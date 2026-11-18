@@ -86,18 +86,28 @@ fn is_default(expr: &Expr) -> bool {
     matches!(expr, Expr::Identifier(ident) if ident.quote_style.is_none() && ident.value.eq_ignore_ascii_case("default"))
 }
 
+/// A column name as PostgreSQL stores it: an unquoted identifier is folded
+/// to lower case, a quoted one is kept exactly. `SET NAME = …` writes `name`;
+/// `SET "Name" = …` writes `Name`.
+fn column_name(ident: &Ident) -> String {
+    if ident.quote_style.is_some() {
+        ident.value.clone()
+    } else {
+        ident.value.to_lowercase()
+    }
+}
 fn last(name: &ObjectName) -> Option<String> {
     name.0
         .last()
         .and_then(|part| part.as_ident())
-        .map(|ident| ident.value.clone())
+        .map(column_name)
 }
 /// The column that an assignment changes: `SET addr.street = …` changes `addr`.
 fn first(name: &ObjectName) -> Option<String> {
     name.0
         .first()
         .and_then(|part| part.as_ident())
-        .map(|ident| ident.value.clone())
+        .map(column_name)
 }
 /// The only plain table of a `FROM` item, with the name a query uses for it.
 fn plain(table: &TableWithJoins) -> Option<(String, Ident)> {
@@ -151,10 +161,10 @@ fn sources(expr: &Expr) -> Source {
     let mut columns = Vec::new();
     let opaque = visit_expressions(expr, |expr| {
         match expr {
-            Expr::Identifier(ident) => columns.push(ident.value.clone()),
+            Expr::Identifier(ident) => columns.push(column_name(ident)),
             Expr::CompoundIdentifier(parts) => {
                 if let Some(part) = parts.last() {
-                    columns.push(part.value.clone());
+                    columns.push(column_name(part));
                 }
             }
             // A subquery, or a whole row (`t.*`, `*`): could carry anything.
@@ -443,7 +453,7 @@ mod tests {
             p.assigned,
             Some(vec![
                 ("addr".into(), Source::Columns(vec!["email".into()])),
-                ("b".into(), Source::Columns(vec!["DEFAULT".into()])),
+                ("b".into(), Source::Columns(vec!["default".into()])),
             ])
         );
         assert_eq!(
@@ -523,5 +533,37 @@ mod tests {
             assert_eq!(write_plan(sql, Dialect::Postgres), None, "{sql}");
         }
         assert_eq!(write_plan("UPDATE t SET a = 1", Dialect::MySql), None);
+    }
+
+    #[test]
+    fn column_names_are_the_names_postgres_uses() {
+        let names = |sql: &str| {
+            plan(sql)
+                .assigned
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names("UPDATE t SET NAME = 1 WHERE id = 1"), ["name"]);
+        assert_eq!(names("UPDATE t SET \"Name\" = 1 WHERE id = 1"), ["Name"]);
+        assert_eq!(names("INSERT INTO t (A, \"B\") VALUES (1, 2)"), ["a", "B"]);
+        // A swap writes `code` however it is spelled, and reads `code`.
+        let p = plan("UPDATE swap_t SET CODE = 3 - code, qty = qty WHERE code IN (1, 2)");
+        assert_eq!(
+            p.assigned,
+            Some(vec![
+                ("code".into(), Source::Columns(vec!["code".into()])),
+                ("qty".into(), Source::Columns(vec!["qty".into()])),
+            ])
+        );
+        let p = plan("UPDATE t SET note = T.\"Secret\" || Email WHERE id = 1");
+        assert_eq!(
+            p.assigned,
+            Some(vec![(
+                "note".into(),
+                Source::Columns(vec!["Secret".into(), "email".into()])
+            )])
+        );
     }
 }
