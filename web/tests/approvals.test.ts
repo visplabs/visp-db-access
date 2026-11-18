@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { createMockTransport } from '../src/api/mock';
 import { TEXT } from '../src/api/mock-approvals';
-import { MYSQL_REASON, previewWrite } from '../src/api/mock-preview';
+import {
+  MYSQL_REASON,
+  databaseFunctions,
+  parseWrite,
+  previewWrite,
+  tokenize,
+} from '../src/api/mock-preview';
 import { defaultPolicy, fixtures, uuid } from '../src/api/fixtures';
 import type {
   Approval,
@@ -626,5 +632,93 @@ describe('approval presentation', () => {
       false,
     );
     expect(isEffectChanged({ status: 'failed', error_code: null })).toBe(false);
+  });
+});
+
+describe('the mock reads the SQL shapes it supports', () => {
+  const cluster = fixtures().clusters.find(
+    (c) => c.name === 'checkout-staging',
+  )!;
+  const policy = defaultPolicy('staging');
+  it('reads an UPDATE: table, alias, assignments, condition, RETURNING', () => {
+    expect(
+      parseWrite(
+        "UPDATE public.users u SET name = 'a, b', note = (1 + 2) WHERE id IN (1, 2) RETURNING id",
+      ),
+    ).toEqual({
+      kind: 'update',
+      table: 'users',
+      tuples: [],
+      set: "name = 'a, b', note = (1 + 2)",
+      where: 'id IN (1, 2)',
+      returning: true,
+      plain: true,
+    });
+    const aliased = parseWrite('UPDATE t AS x SET a = 1');
+    expect(aliased).toMatchObject({ table: 't', set: 'a = 1' });
+    expect(aliased?.where).toBeUndefined();
+    // A keyword inside parentheses or a string is not a clause.
+    expect(
+      parseWrite(
+        "UPDATE t SET a = (SELECT b FROM u WHERE c = 1), d = 'where' WHERE id = 3",
+      ),
+    ).toMatchObject({
+      set: "a = (SELECT b FROM u WHERE c = 1), d = 'where'",
+      where: 'id = 3',
+    });
+  });
+  it('reads an INSERT and a DELETE', () => {
+    expect(
+      parseWrite(
+        "INSERT INTO subscriptions (id, \"Status\") VALUES ('a', 'it''s'), ('b', (1))",
+      ),
+    ).toEqual({
+      kind: 'insert',
+      table: 'subscriptions',
+      columns: 'id, "Status"',
+      tuples: ["'a', 'it''s'", "'b', (1)"],
+      returning: false,
+      plain: true,
+    });
+    const bare = parseWrite('INSERT INTO t VALUES (1) RETURNING *');
+    expect(bare).toMatchObject({ tuples: ['1'], returning: true });
+    expect(bare?.columns).toBeUndefined();
+    expect(
+      parseWrite("DELETE FROM subscriptions -- old\n WHERE status = 'x';"),
+    ).toMatchObject({
+      kind: 'delete',
+      table: 'subscriptions',
+      where: "status = 'x'",
+      plain: true,
+    });
+  });
+  it('tells plain statements from others', () => {
+    expect(parseWrite('SELECT 1')).toBeNull();
+    expect(parseWrite('UPDATE ONLY t SET a = 1')?.plain).toBe(false);
+    expect(
+      parseWrite('INSERT INTO t (a) VALUES (1) ON CONFLICT DO NOTHING')?.plain,
+    ).toBe(false);
+    expect(parseWrite('DELETE FROM t WHERE a = 1; DELETE FROM u')?.plain).toBe(
+      false,
+    );
+    expect(databaseFunctions('UPDATE t SET a = f(b), c = upper(d)')).toEqual([
+      'f(numeric)',
+    ]);
+  });
+  it('reads hostile input in linear time', () => {
+    const hostile = [
+      "'".repeat(50_000),
+      '('.repeat(50_000),
+      `INSERT INTO t VALUES (${"'a''".repeat(50_000)}`,
+      `UPDATE t SET a = ${' '.repeat(50_000)}x WHERE`,
+      `INSERT INTO t (${'a,'.repeat(50_000)}) VALUES ${'(1),'.repeat(10_000)}`,
+    ];
+    const started = performance.now();
+    for (const sql of hostile) {
+      tokenize(sql);
+      parseWrite(sql);
+      previewWrite(sql, cluster, policy);
+    }
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 });

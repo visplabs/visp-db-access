@@ -58,13 +58,21 @@ const hex = (buffer: ArrayBuffer) =>
   Array.from(new Uint8Array(buffer), (byte) =>
     byte.toString(16).padStart(2, '0'),
   ).join('');
+function byCodeUnits(a: string, b: string) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
 const canonical = (value: unknown): unknown =>
   Array.isArray(value)
     ? value.map(canonical)
     : value && typeof value === 'object'
       ? Object.fromEntries(
+          // Sorted by UTF-16 code units, not by locale, so the order (and the
+          // digest) is the same everywhere. The server sorts by bytes; for
+          // the ASCII keys of a receipt both orders agree.
           Object.keys(value)
-            .sort()
+            .sort(byCodeUnits)
             .map((key) => [
               key,
               canonical((value as Record<string, unknown>)[key]),

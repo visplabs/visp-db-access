@@ -132,8 +132,10 @@ export function PreviewSection({
         busyLabel="Previewing…"
         onConfirm={start}
       >
+        {/* A scrolling region: keyboard users focus it to scroll long SQL. */}
         <pre
           className="sql-preview-block confirm-sql"
+          role="region"
           tabIndex={0}
           aria-label="SQL to preview"
         >
@@ -308,10 +310,11 @@ function SampleTable({
         )}
         {legend && <span className="muted">{legend}</span>}
       </p>
+      {/* A scrolling region: keyboard users focus it to scroll wide rows. */}
       <div
         className="table-wrap"
-        tabIndex={0}
         role="region"
+        tabIndex={0}
         aria-label={`${title}: rows`}
       >
         <table>
