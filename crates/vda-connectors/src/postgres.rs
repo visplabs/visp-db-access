@@ -353,6 +353,10 @@ pub(crate) async fn database_functions(
             .await
             .map_err(cancel::error)?;
         if let Some((table, columns)) = target {
+            // Deliberately blind to case on both sides: a column that differs
+            // only by case is checked too. Checking an extra column is
+            // harmless; missing one would let its cast function run in the
+            // preview.
             let columns =
                 columns.map(|columns| columns.iter().map(|c| c.to_lowercase()).collect::<Vec<_>>());
             let casts: Vec<String> = sqlx::query_scalar(CASTS)

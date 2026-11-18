@@ -136,6 +136,9 @@ test('an agent is connected, given a token once, paused, and deleted', async ({
   ).toHaveAttribute('aria-current', 'true');
   // The guardrail texts say only what is true for every database.
   await expect(detail.getByText('Writes need a person')).toBeVisible();
+  await expect(detail).toContainText(
+    'A person previews it, a person who is not the owner approves it, and a person runs it.',
+  );
   await expect(detail.getByText('300 queries / hour')).toBeVisible();
   await expect(detail).not.toContainText('never leave the gateway');
   await expect(detail).not.toContainText('hidden from the agent');
@@ -145,6 +148,9 @@ test('an agent is connected, given a token once, paused, and deleted', async ({
     'describe_table',
     'check_sql',
     'run_query',
+    'propose_write',
+    'get_approval',
+    'withdraw',
   ])
     await expect(detail.getByText(tool, { exact: true })).toBeVisible();
   await expect(detail.getByText('This agent has no token')).toBeVisible();

@@ -32,7 +32,7 @@ const APPROVAL_SQL: &str = "SELECT jsonb_build_object( 'id',a.id,'cluster_id',a.
            jsonb_build_object('id',a.agent_id,'name',a.agent_name) END,
          'sql',a.sql,'sql_truncated',false,'reason',a.reason,'analysis',a.analysis,
          'preview',a.preview,
-         'status',a.status,'error',a.error, 'reviewer',CASE WHEN r.id IS NULL THEN NULL ELSE
+         'status',a.status,'error',a.error,'error_code',a.error_code, 'reviewer',CASE WHEN r.id IS NULL THEN NULL ELSE
          jsonb_build_object('id',r.id,'email',r.email,'name',r.name) END,
          'review_note',a.review_note,'result',a.result,'receipt',a.receipt,'created_at',a.created_at,
          'reviewed_at',a.reviewed_at,'executed_at',a.executed_at,'expires_at',a.expires_at) FROM approvals a
@@ -546,9 +546,9 @@ async fn review(
         .fetch_one(&state.db)
         .await?;
         if !previewed {
-            return Err(ApiError::conflict(
-                "Preview the write before you approve it (POST /approvals/{id}/preview)",
-            ));
+            return Err(ApiError::conflict(format!(
+                "Preview the write before you approve it (POST /approvals/{id}/preview)"
+            )));
         }
     }
     let mut tx = state.db.begin().await?;
@@ -899,12 +899,7 @@ async fn receipt(
 }
 /// Add the digest and the signature to a receipt body.
 fn seal(state: &AppState, mut body: Value) -> Value {
-    use sha2::{Digest, Sha256};
-    let text = canonical(&body).to_string();
-    let digest: String = Sha256::digest(text.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+    let digest = digest_of(&body);
     let signature = state.core.crypto.sign(digest.as_bytes());
     if let Some(object) = body.as_object_mut() {
         object.insert("digest".into(), Value::String(digest));
@@ -953,9 +948,13 @@ pub async fn get_receipt(
         && receipt.get("sql") == Some(&json!(sql))
         && receipt.pointer("/cluster/id") == Some(&json!(cluster));
     let signed_here = receipt.get("key_id") == Some(&json!(key_id(&state)));
+    // The content matches its own digest. That needs no key, so it can be
+    // checked also for a receipt signed before the master key changed.
+    let content_matches = digest_matches(&receipt);
     Ok(Json(json!({
         "receipt": receipt,
-        "valid": belongs && intact(&state, &receipt),
+        "valid": belongs && content_matches && intact(&state, &receipt),
+        "digest_matches": content_matches,
         "signed_with_current_key": signed_here,
     })))
 }
@@ -970,20 +969,35 @@ fn key_id(state: &AppState) -> String {
         .take(16)
         .collect()
 }
-fn intact(state: &AppState, receipt: &Value) -> bool {
+/// The SHA-256 of a receipt body, as `seal` computes it.
+fn digest_of(body: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(canonical(body).to_string().as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+/// The receipt's content is what its digest says, whoever signed it.
+fn digest_matches(receipt: &Value) -> bool {
     let mut body = receipt.clone();
     let Some(object) = body.as_object_mut() else {
         return false;
     };
-    let (Some(Value::String(digest)), Some(Value::String(signature))) =
-        (object.remove("digest"), object.remove("signature"))
-    else {
+    object.remove("signature");
+    let Some(Value::String(digest)) = object.remove("digest") else {
         return false;
     };
     // Keys may come back from `jsonb` in any order; the digest does not care.
-    let resealed = seal(state, body);
-    resealed.get("digest") == Some(&Value::String(digest.clone()))
-        && state.core.crypto.verify(digest.as_bytes(), &signature)
+    digest_of(&body) == digest
+}
+/// The digest matches the content and was signed with this master key.
+fn intact(state: &AppState, receipt: &Value) -> bool {
+    let (Some(Value::String(digest)), Some(Value::String(signature))) =
+        (receipt.get("digest"), receipt.get("signature"))
+    else {
+        return false;
+    };
+    digest_matches(receipt) && state.core.crypto.verify(digest.as_bytes(), signature)
 }
 
 /// How many requests one agent may have waiting at once.
