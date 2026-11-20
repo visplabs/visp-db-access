@@ -8,6 +8,7 @@ import { isLoopbackHost } from '../lib/tls';
 import type { Cluster, HistoryEntry, Policy, QueryResult, User } from './types';
 import { createAgents } from './mock-agents';
 import { createApprovals } from './mock-approvals';
+import { createNotices } from './mock-notices';
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const fail = (
   code: string,
@@ -102,7 +103,7 @@ export function createMockTransport({
         validateText(value);
       });
   };
-  const audit = (
+  const record = (
     action: string,
     target_type: string,
     target_id: string,
@@ -118,6 +119,17 @@ export function createMockTransport({
       details,
       created_at: now(),
     });
+  const notices = createNotices({ fail, audit: record, now });
+  // A state change of a request writes its audit row and its notice together.
+  const audit = (
+    action: string,
+    target_type: string,
+    target_id: string,
+    details: unknown,
+  ) => {
+    notices.observe(action);
+    return record(action, target_type, target_id, details);
+  };
   function history(
     user: User,
     cluster: Cluster,
@@ -818,6 +830,10 @@ export function createMockTransport({
         url.searchParams,
       );
     }
+    if (resource === 'settings' && id === 'notices') {
+      admin();
+      return notices.route(action, method, body);
+    }
     if (resource === 'settings' && id === 'network') {
       admin();
       if (method === 'PUT') {
@@ -842,7 +858,7 @@ export function createMockTransport({
           allowed_cidrs: cidrs,
           trust_proxy_headers: body.trust_proxy_headers === true,
         };
-        audit('network.updated', 'settings', 'network', network);
+        audit('settings.network', 'settings', 'network', {});
       }
       return network;
     }

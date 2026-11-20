@@ -42,6 +42,10 @@ pub struct AppState {
     pub password_workers: Arc<Semaphore>,
     pub dummy_password_hash: String,
     network_cache: Cache<(), NetworkSettings>,
+    /// Test notices sent in the current minute, by anyone, on this node.
+    notice_tests: Cache<(), Arc<AtomicU32>>,
+    /// Sends notices to the webhook; see `notices::send` for what it refuses.
+    pub notices: crate::notices::send::Sender,
     account_failures: Cache<String, Arc<AtomicU32>>,
     /// Refused queries in a row, per agent, for the loop breaker in `mcp`.
     pub(crate) agent_denials: Cache<Uuid, Arc<tokio::sync::Mutex<u32>>>,
@@ -87,6 +91,11 @@ impl AppState {
         let dummy_password_hash =
             crate::auth::hash_password("dummy-password-never-used".into()).await?;
         let writer = tokio::spawn(crate::audit::writer(db.clone(), receiver, stop.clone()));
+        let notices =
+            crate::notices::send::Sender::new(config.allow_private_targets).map_err(|error| {
+                tracing::error!(%error, "cannot set up TLS for notices");
+                ApiError::internal()
+            })?;
         Ok((
             Self {
                 discovery,
@@ -109,6 +118,11 @@ impl AppState {
                     .max_capacity(1)
                     .time_to_live(Duration::from_secs(30))
                     .build(),
+                notice_tests: Cache::builder()
+                    .max_capacity(1)
+                    .time_to_live(Duration::from_secs(60))
+                    .build(),
+                notices,
                 agent_calls: Cache::builder()
                     .max_capacity(20000)
                     .time_to_live(Duration::from_secs(60))
@@ -154,6 +168,25 @@ impl AppState {
     /// Immediately invalidate a local settings cache after an update.
     pub async fn invalidate_network(&self) {
         self.network_cache.invalidate(&()).await;
+    }
+    /// Count one test notice against the limit of this node. A test notice
+    /// makes the gateway call an outside host and report how it answered, so
+    /// it is bounded for the whole organization, not per administrator.
+    pub async fn check_notice_test_rate(&self) -> Result<(), ApiError> {
+        let sent = self
+            .notice_tests
+            .get_with((), async { Arc::new(AtomicU32::new(0)) })
+            .await
+            .fetch_add(1, Ordering::Relaxed);
+        if sent >= crate::notices::TESTS_PER_MINUTE {
+            return Err(ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "Too many test notices in one minute",
+            )
+            .details(serde_json::json!({"retry_after_seconds": 60})));
+        }
+        Ok(())
     }
     /// Fixed-window, bounded per-IP and per-IP/email login throttling.
     pub async fn check_login_rate(&self, ip: IpAddr, email: &str) -> Result<(), ApiError> {
@@ -206,6 +239,31 @@ impl AppState {
     ) -> Result<(), ApiError> {
         self.audit_details(tx, user, action, id, ip, serde_json::json!({}))
             .await
+    }
+    /// Append an event that no person caused, such as a request that ran
+    /// out of time, inside the transaction that makes the change.
+    pub async fn audit_system(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        action: &str,
+        id: Uuid,
+        details: serde_json::Value,
+    ) -> Result<(), ApiError> {
+        crate::audit::persist_on(
+            tx,
+            &Event {
+                id: Uuid::new_v4(),
+                actor_id: None,
+                action: action.into(),
+                target_type: action.split('.').next().map(str::to_owned),
+                target_id: Some(id),
+                ip: None,
+                details,
+                created_at: chrono::Utc::now(),
+            },
+        )
+        .await?;
+        Ok(())
     }
     /// Like [`Self::audit_change`], with what changed. Never put a secret in `details`.
     pub async fn audit_details(
@@ -338,6 +396,15 @@ pub fn router(state: AppState) -> Router {
             "/settings/network",
             get(crate::admin::network).put(crate::admin::set_network),
         )
+        .route(
+            "/settings/notices",
+            get(crate::notices::api::get).put(crate::notices::api::put),
+        )
+        .route(
+            "/settings/notices/secret",
+            post(crate::notices::api::rotate_secret),
+        )
+        .route("/settings/notices/test", post(crate::notices::api::test))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             audit_mutation,

@@ -65,6 +65,14 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
 dashmap = "6"
 moka = { version = "0.12", features = ["future"] }
+# Outbound notices: one HTTP/1.1 request on a connection the sender opens
+# itself, to an address it has checked. No client pool, redirects or proxy.
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = "0.1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
+url = "2"
 
 vda-discovery = { path = "crates/vda-discovery" }
 async-trait = "0.1"

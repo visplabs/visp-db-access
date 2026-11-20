@@ -20,6 +20,9 @@ config:
   trustedProxyCidrs: ''
   allowPrivateTargets: false
   metadataPoolSize: 20
+  # The address people open the console at, such as https://gate.example.com.
+  # Notices to approvers link to a request only when it is set.
+  publicUrl: ''
 resources:
   requests: {cpu: 100m, memory: 128Mi}
   limits: {cpu: '2', memory: 512Mi}

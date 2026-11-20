@@ -2,11 +2,17 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { request, json } from '../api/client';
 import { useToast } from '../components/ui/toast';
 import { message } from './utils';
-export const useResource = <T>(path: string, enabled = true) =>
+export const useResource = <T>(
+  path: string,
+  enabled = true,
+  /** Read again this often, in milliseconds, while the page is visible. */
+  refetchInterval?: number,
+) =>
   useQuery({
     queryKey: ['api', path],
     queryFn: ({ signal }) => request<T>(path, { signal }),
     enabled,
+    refetchInterval,
   });
 /** A keyset-paged list, read to its end. For lists that a person must see
  * whole, such as the agents an administrator can stop. */
@@ -30,7 +36,11 @@ export const useAllPages = <T>(path: string) =>
       return { items };
     },
   });
-export function useAction<T = unknown>(success = 'Saved') {
+export function useAction<T = unknown>(
+  success = 'Saved',
+  /** `quietErrors`: the caller shows the error in place, so no toast. */
+  { quietErrors = false }: { quietErrors?: boolean } = {},
+) {
   const cache = useQueryClient(),
     toast = useToast();
   return useMutation({
@@ -50,6 +60,8 @@ export function useAction<T = unknown>(success = 'Saved') {
       void cache.invalidateQueries();
       if (success) toast(success);
     },
-    onError: (error) => toast(message(error), 'error'),
+    onError: (error) => {
+      if (!quietErrors) toast(message(error), 'error');
+    },
   });
 }

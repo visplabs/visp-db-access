@@ -878,9 +878,17 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
   `action` is an exact match; `limit` must be 1–200. `query.execute` durably records
   every authorized query attempt before target I/O, including blocked attempts;
   details contain `{query_id, history_id, status}` with initial `running`/`blocked`
-  status. Final outcome is in history. Approval actions include `approval.create`,
-  `approval.approve`, `approval.reject`, `approval.execute` (claim), `approval.executed`,
-  and `approval.failed`. Administrative actions use `*.create`, `*.update`, `*.delete`. The agent login of a cluster writes `agent_login.set` (`{username}`) and
+  status. Final outcome is in history. Approval actions are `approval.create`,
+  `approval.preview` (`{affected_rows, bound_to}`), `approval.approve`, `approval.reject`,
+  `approval.withdraw` (`{agent_id}`), `approval.execute` (claim), `approval.executed`,
+  `approval.failed` (`{code}`) and `approval.expire`. Two of them have no actor and no
+  IP address, because no person caused them: `approval.expire`, written once when a
+  request runs out of time, and `approval.failed` with
+  `{code: "outcome_unknown", recovered: true}`, written once when a node that had claimed
+  a write is lost. Notice settings write `settings.notices` (the saved fields, the host
+  of the address, `url_changed` and `dropped_notices`), `settings.notices.secret` (`{rotated}`) and
+  `settings.notices.test` (`{delivered, status, error}`); the address and the secret are
+  never written to the audit log. Administrative actions use `*.create`, `*.update`, `*.delete`. The agent login of a cluster writes `agent_login.set` (`{username}`) and
   `agent_login.remove`. Agent actions are
   `agent.create` (`{owner_id, name, max_level, cluster_ids, hourly_query_budget}`), `agent.update` (each changed
   field as `{from, to}`, except `description`, which is only marked `"changed"`; a change of name, level or clusters is always its own event, also
@@ -892,6 +900,217 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
 
 - `GET /settings/network` → `{allowed_cidrs: string[], trust_proxy_headers: boolean}` (admin)
 - `PUT /settings/network` same → same. Server refuses a change that would lock out the caller's current IP (400 `validation`).
+
+#### Notices to approvers (org admin only)
+
+The gateway can tell approvers that a request waits, through one outbound webhook. A
+notice is written in the transaction that changes the request and is sent afterwards
+by a worker; no request handler waits for the receiver.
+
+```ts
+type NoticeEvent =
+  | "approval.created" // a person or an agent asked for a write
+  | "approval.previewed" // a person ran the dry run of an agent's request
+  | "approval.approved"
+  | "approval.rejected"
+  | "approval.withdrawn"
+  | "approval.executed" // the approved write ran
+  | "approval.failed" // it did not run, or nobody knows whether it ran
+  | "approval.expired";
+
+interface NoticeSettings {
+  enabled: boolean; // default false
+  format: "webhook" | "slack"; // default "webhook"
+  url_set: boolean; // the address itself is write-only
+  url_host: string | null; // its host, to recognize it by
+  secret_set: boolean;
+  events: NoticeEvent[]; // default ["approval.created"]
+  include_reason: boolean; // default false
+  include_row_count: boolean; // default false
+  links: boolean; // VDA_PUBLIC_URL is set, so notices link to the request
+  delivery: {
+    pending: number; // notices that wait or are being retried
+    dead: number; // notices that were given up
+    last_success_at: string | null;
+    last_error: string | null; // a failure class, see below
+    last_error_at: string | null;
+  };
+}
+```
+
+- `GET /settings/notices` → `NoticeSettings`.
+- `PUT /settings/notices` → `NoticeSettings`. The body has `enabled`, `format`,
+  `events`, `include_reason`, `include_row_count` and, to change the address, `url`.
+  Unknown fields are refused. `url` left out or `null` keeps the stored address; `""`
+  removes it. An address must be `https`, without a user name, password or fragment,
+  at most 2048 bytes, and must not be an address inside the network (see
+  [the security model](SECURITY-MODEL.md)). Plain `http` is accepted only to loopback,
+  and only with `VDA_ALLOW_PRIVATE_TARGETS`. A host name is not resolved when it is
+  saved; it is resolved and checked for every delivery. Turning notices on needs an
+  address, at least one event and, for the `webhook` format, a signing secret (400
+  `validation` otherwise).
+
+  A change applies to the next state change on every node: the settings are read in the
+  transaction that writes a notice. The notices that still wait are made to agree with
+  the change, in the same transaction:
+
+  | Change                                     | Notices that wait                         |
+  | ------------------------------------------ | ----------------------------------------- |
+  | notices turned off, or the address removed | dropped (`notices_off`)                   |
+  | another address                            | dropped (`address_changed`)               |
+  | another format                             | dropped (`format_changed`)                |
+  | an event deselected                        | those of that event dropped (`event_off`) |
+  | `include_reason` turned off                | `reason` removed from them                |
+  | `include_row_count` turned off             | `affected_rows` removed from them         |
+
+  A dropped notice is never sent: it was written for the settings of its moment. The
+  same address sent again is not a change. The audit event `settings.notices` has the
+  count as `dropped_notices`. A notice that was already on its way to the old receiver
+  when the settings changed is in that count; if that receiver takes it, it is then
+  recorded as delivered (and counted in `vda_notices_sent_total` as well), and if not,
+  it stays dropped and is not tried again.
+
+- `POST /settings/notices/secret` → `{secret, rotated}`. Makes a new signing secret
+  (`vda_whsec_` and 32 random bytes in URL-safe base64) and returns it this one time.
+  A secret that was set before stops working at once; notices that wait are signed
+  with the new one.
+- `POST /settings/notices/test` → `{delivered, status, error}`: a boolean, the HTTP
+  status or `null`, and the failure class or `null`. Sends a test notice now to the
+  stored address, in the stored format. It never returns a part of the receiver's
+  answer. 400 `validation` when there is no address, or no secret for the `webhook`
+  format. At most five test notices a minute are sent, for all administrators
+  together; after that the answer is 429 `rate_limited` with
+  `details.retry_after_seconds`. The count is kept per node. The test notice has
+  `event: "notice.test"` and is about no request.
+
+All four answer 409 `settings_unreadable` while the stored settings cannot be read by
+this version (a newer version wrote a value it does not know, for example during a
+rolling upgrade). In that state the gateway does not treat notices as off: it writes
+and sends none, drops none, and does not overwrite the stored value; approvals keep
+working.
+
+Failure classes, in `error` and `delivery.last_error`: `http_<status>` (any status
+that is not 2xx; a redirect is not followed), `connect`, `tls`, `timeout`,
+`not_deliverable` (the host name does not resolve, or resolves to an address a notice
+may not go to; one class for both, so the answer does not tell which names exist
+inside the network), `protocol`, `invalid_url`, `config` (the stored address or secret
+cannot be decrypted), and the four reasons a waiting notice is dropped (table above).
+
+**What is sent.** With `format: "webhook"`, a `POST` with this JSON body:
+
+```ts
+interface Notice {
+  version: 1;
+  event: NoticeEvent | "notice.test";
+  time: string; // RFC 3339 with milliseconds, UTC: when the state changed
+  // The place of this notice in the order they were written. For one request, a
+  // larger number is a later state. Not consecutive; absent from a test notice.
+  sequence?: number;
+  approval_id: string;
+  status: Approval["status"]; // after the change
+  cluster: string; // its name
+  environment: string;
+  engine: "postgres" | "mysql";
+  // The display name of the person who asked, which is an email address where
+  // names are emails. For an agent's request it is the agent's owner.
+  requester: string;
+  agent: string | null; // the agent's name when an agent asked
+  url?: string; // link to the request; only when VDA_PUBLIC_URL is set
+  error_code?: string | null; // only for approval.failed, e.g. "effect_changed"
+  reason?: string; // only with include_reason; one line, at most 500 characters
+  affected_rows?: number; // only with include_row_count, and when known
+}
+```
+
+A notice never holds the SQL, a row, a preview, a result or the text of a database
+error. `reason` is free text written by a person or an agent, and `affected_rows` is the
+count from the dry run (from the run itself after `approval.executed`); both are off
+unless switched on. An agent's request has no count until a person previews it. A test
+notice has only `version`, `event`, `time` and, when known, `url`.
+
+Names (`cluster`, `environment`, `engine`, `requester`, `agent`) and the reason are
+sent as one plain line each: control characters and line breaks become a space, runs
+of spaces collapse, characters that change the direction of text are removed, and a
+name is cut at 200 characters.
+
+| Header            | Value                                                      |
+| ----------------- | ---------------------------------------------------------- |
+| `X-VDA-Event`     | the event name                                             |
+| `X-VDA-Delivery`  | the notice's id; the same on every attempt                 |
+| `X-VDA-Timestamp` | Unix seconds when this attempt was signed                  |
+| `X-VDA-Signature` | `v1=` + hex HMAC-SHA256 of `<timestamp>.<delivery>.<body>` |
+| `Content-Type`    | `application/json`                                         |
+| `User-Agent`      | `vda-notices/1`                                            |
+
+The key of the HMAC is the secret exactly as it was shown, prefix included, as UTF-8
+bytes. The message is the `X-VDA-Timestamp` value, a dot, the `X-VDA-Delivery` value,
+a dot, and the raw bytes of the body. `v1` names this scheme; a later scheme will have
+another prefix. A receiver must: compute the signature over the bytes it received (not
+over re-encoded JSON), compare in constant time, refuse a timestamp that is more than
+five minutes from its own clock, and remember recent `X-VDA-Delivery` values to drop a
+repeat. Because the delivery id is signed, a captured notice cannot be replayed under
+another id.
+
+```python
+import hashlib, hmac, time
+
+seen = {}  # delivery id -> when it was seen; use a shared store in production
+
+
+def verify(secret: str, headers, body: bytes) -> bool:
+    """True for a notice that is genuine, recent and new. Never raises,
+    whatever the three headers hold.
+
+    `headers` is the request's header mapping (its `get` ignores case in the
+    usual web frameworks); `body` is the raw request body, as bytes."""
+    timestamp = headers.get("X-VDA-Timestamp") or ""
+    delivery = headers.get("X-VDA-Delivery") or ""
+    given = headers.get("X-VDA-Signature") or ""
+    # Unix seconds have 10 digits. A longer number is not a time, and a very
+    # long one cannot be compared with the clock at all.
+    if not (timestamp.isascii() and timestamp.isdigit() and len(timestamp) <= 12):
+        return False
+    # The real values are ASCII; anything else could fail to encode below.
+    if not (delivery and delivery.isascii() and given.isascii()):
+        return False
+    now = time.time()
+    if abs(now - int(timestamp)) > 300:
+        return False
+    signed = timestamp.encode() + b"." + delivery.encode() + b"." + body
+    expected = "v1=" + hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected.encode(), given.encode()):
+        return False
+    # Only a verified delivery is remembered, and only for the time window.
+    for old in [key for key, at in seen.items() if now - at > 600]:
+        del seen[old]
+    if delivery in seen:
+        return False
+    seen[delivery] = now
+    return True
+```
+
+With `format: "slack"`, the body is a Slack incoming-webhook message, `{text, blocks}`:
+one sentence about the event, the link when there is one, and, with the switches, the
+reason and the row count. Every value is one plain line (as above) and the characters
+`&`, `<` and `>` are escaped in it, so a name or a reason cannot make a mention, a
+link or a second line. The sentence is cut to stay under Slack's 3000-character limit
+for a section; the link is never cut. Slack does not check signatures, so no `X-VDA-*`
+header is sent; the address itself is the secret.
+
+**Delivery.** A 2xx answer is a delivery. Anything else is tried again: six attempts
+in about an hour (after 30 s, 90 s, 4.5 min, 13.5 min and 40.5 min, each moved by up
+to 20%), then the notice is given up. Delivered notices are removed after 7 days and
+given-up ones after 30. The gateway counts `vda_notices_sent_total`,
+`vda_notices_retried_total` and `vda_notices_dead_total`.
+
+**Order.** The notices of one request are delivered in the order they were written:
+a notice is not sent while an earlier notice of the same request still waits, also
+while that earlier one is being retried. If the earlier one is given up, the later
+ones go. Notices of different requests are sent side by side and can arrive in any
+order. Delivery is at least once: a receiver can get the same `X-VDA-Delivery` again
+after a later notice of the same request (a node that stopped before it recorded a
+delivery sends it again). A receiver that needs the latest state keeps the largest
+`sequence` it has seen for an `approval_id` and ignores smaller ones.
 
 ### Cloud discovery (org admin only)
 

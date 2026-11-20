@@ -24,6 +24,7 @@ services:
       VDA_BOOTSTRAP_ADMIN_PASSWORD: ${VDA_BOOTSTRAP_ADMIN_PASSWORD:?Choose an administrator password of at least 12 characters}
       VDA_COOKIE_SECURE: ${VDA_COOKIE_SECURE:-false}
       VDA_ALLOWED_CIDRS: ${VDA_ALLOWED_CIDRS:-}
+      VDA_PUBLIC_URL: ${VDA_PUBLIC_URL:-}
       VDA_LOG_FORMAT: json
     depends_on:
       metadata:

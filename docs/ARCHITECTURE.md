@@ -104,7 +104,7 @@ the target. The text guard stays as the fast first check.
 
 axum HTTP API + embedded SPA. Metadata in Postgres (sqlx migrations). Owns
 authn/z, pool cache, policies, approvals, audit, health and discovery
-schedulers, metrics.
+schedulers, notices to approvers, metrics.
 
 ### web/ (React + TypeScript + Vite)
 
@@ -131,7 +131,11 @@ Built to `web/dist`, embedded into the server binary with `rust-embed`.
 - `health_checks` (cluster_id, status, latency_ms, server_version, is_replica,
   details jsonb, checked_at) — retained 7 days
 - `audit_log` (id, actor_id, action, target_type, target_id, ip, details jsonb, created_at) — append-only
-- `settings` (key, value jsonb) — org network policy etc.
+- `settings` (key, value jsonb) — org network policy, notice settings
+- `notices` (id, seq, approval_id, event, payload jsonb,
+  status pending|sent|dead, attempts, next_attempt_at, last_error,
+  last_attempt_at, created_at, sent_at)
+  — the outbox of notices to approvers; sent rows kept 7 days, dead rows 30
 - `discovery_sources`, `discovery_runs`, `discovered_resources` — AWS sources,
   scan history and inventory (see below)
 
@@ -162,10 +166,67 @@ Built to `web/dist`, embedded into the server binary with `rust-embed`.
 7. Execute with limits; cancellable via `POST /api/v1/queries/:query_id/cancel`.
 8. Apply column masking; record history + audit; return result.
 
+## Notices to approvers (outbox and worker)
+
+Approvers learn that a request waits through one outbound webhook
+(`crates/vda-server/src/notices/`).
+
+- **Outbox.** Every state change of a request (`created`, `previewed`,
+  `approved`, `rejected`, `withdrawn`, `executed`, `failed`, `expired`) calls
+  `notices::enqueue` on the transaction that makes the change. It reads the
+  notice settings on that transaction (one row by its key, never a cache), so
+  a change of the settings on one node applies to the next state change on
+  every node. When notices are on and the event is selected, it builds the neutral payload from a
+  fixed list of columns (no SQL, preview, result or error text) and inserts a
+  `notices` row. The row commits or rolls back with the state change; nothing
+  is sent in a request handler.
+- **One place for expiry and recovery.** A request expires in
+  `approvals::expire_due`, and a write that a lost node left running is failed
+  in `approvals::fail_abandoned`. Lists, single reads, the agent door and the
+  scheduler all call these. Each locks the due rows in id order and writes one
+  audit row and one notice per request that it changed, so concurrent callers
+  never write twice.
+- **Worker.** Every node runs `notices::worker`. Every five seconds it claims
+  up to eight due rows with `FOR UPDATE SKIP LOCKED` and, in the same
+  statement, moves their next attempt one minute ahead. That lease keeps two
+  nodes from sending the same notice at once without holding a transaction
+  open during a request. It sends four at a time, then marks each row `sent`,
+  schedules the next attempt (30 s × 3ⁿ ± 20%, six attempts in about an hour)
+  or marks it `dead`. Delivery is at least once.
+- **Order.** Each row has a `seq` from one sequence. A row can be claimed only
+  when no row of the same request with a smaller `seq` is still `pending`, so
+  a notice that is on the wire or waiting for a retry holds back the later
+  notices of its request, and requests do not hold each other back. The
+  webhook body carries `seq` as `sequence`.
+- **Cost of a claim.** A claim reads the due rows in the order of the
+  partial index `notices_due(next_attempt_at, seq)` and asks for each, with
+  one probe of `notices_waiting(approval_id, seq)`, whether an earlier row of
+  its request still waits; it stops at eight. So that it reads about eight
+  rows however many wait, a row behind a waiting one is not left due: when
+  an attempt fails, the later rows of the request get the time of its next
+  attempt, and a row written behind one that waits longer than a lease
+  starts with that time. That time only saves reading; the rule above
+  decides what may be sent.
+- **Settings and the outbox agree.** A change of the settings locks the
+  `notices` settings row, stores the new value and, in the same transaction,
+  drops or edits the rows that still wait (`notices::api::clean_outbox`). A
+  state change that writes a row and a worker that claims rows hold that row
+  shared while they do, so each happens wholly before a change or wholly
+  after it. A value that this version cannot parse means "unknown": nothing
+  is written, sent or dropped, and the API answers 409.
+- **Sender.** `notices::send` makes one HTTP/1.1 request on a connection it
+  opens itself (hyper's connection API over tokio-rustls), to an address it
+  resolved and checked. There is no client pool, redirect handling or proxy
+  support to configure away. See [the security model](SECURITY-MODEL.md).
+- **Shutdown.** The worker stops after the HTTP server and the schedulers
+  (`main.rs`), gives requests on the wire five seconds, and leaves the rest in
+  the outbox.
+
 ## Scaling & deployment
 
 - Stateless nodes behind any L7 load balancer; sessions in Postgres.
 - Health scheduler runs on whichever node holds `pg_try_advisory_lock`.
+- The notice worker runs on every node; rows are claimed with `SKIP LOCKED`.
 - Per-node pool cache (moka, idle eviction); pool sizes are small by default
   (`max_connections=5` per cluster per node) to protect production.
 - Deploy: Docker image (distroless), docker-compose for single host, Helm chart

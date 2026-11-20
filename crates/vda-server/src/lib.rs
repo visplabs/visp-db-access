@@ -15,6 +15,7 @@ pub mod health;
 mod mcp;
 pub mod metrics;
 pub mod network;
+pub mod notices;
 pub mod query;
 pub mod rbac;
 mod web;

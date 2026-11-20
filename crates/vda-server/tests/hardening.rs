@@ -40,6 +40,10 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Option<Self> {
+        Self::with(|_| {}).await
+    }
+    /// A fixture whose configuration is changed before the state is built.
+    async fn with(configure: impl FnOnce(&mut vda_server::config::Config)) -> Option<Self> {
         let Ok(url) = std::env::var("VDA_TEST_DATABASE_URL") else {
             eprintln!("skipped: VDA_TEST_DATABASE_URL is not set");
             return None;
@@ -68,6 +72,7 @@ impl Fixture {
         let mut config = Cli::parse_from(["test"]).config;
         config.allow_private_targets = true;
         config.metrics_token = Some("metrics-secret".into());
+        configure(&mut config);
         let crypto = Crypto::new(&[4; 32]);
         let (state, writer) = AppState::new(db.clone(), config, crypto.clone(), None)
             .await
@@ -475,7 +480,9 @@ async fn approval_lists_recovery_cidrs_and_metrics_are_enforced() {
         .request("GET", "/approvals?status=executing", &f.admin_cookie, None)
         .await;
     assert_eq!(v["items"].as_array().unwrap().len(), 2);
-    vda_server::health::recover_executions(&f.db).await.unwrap();
+    vda_server::health::recover_executions(&f.state)
+        .await
+        .unwrap();
     let statuses: Vec<(Uuid, String, Option<String>)> = sqlx::query_as(
         "SELECT id,status,error FROM approvals WHERE status IN ('executing','failed')",
     )
@@ -761,7 +768,9 @@ async fn query_intent_is_durable_unique_fail_closed_and_masks_diagnostics() {
         .execute(&f.db)
         .await
         .unwrap();
-    vda_server::health::recover_executions(&f.db).await.unwrap();
+    vda_server::health::recover_executions(&f.state)
+        .await
+        .unwrap();
     let status: String = sqlx::query_scalar("SELECT status FROM query_history WHERE id=$1")
         .bind(history_id)
         .fetch_one(&f.db)
@@ -5044,5 +5053,2052 @@ async fn the_attacks_found_on_safe_writes_stay_closed() {
         sqlx::query(&sql).execute(&target).await.unwrap();
     }
     target.close().await;
+    f.close().await;
+}
+
+// ---- Notices to approvers ----
+
+/// One request that the local receiver got.
+#[derive(Clone)]
+struct Hit {
+    headers: axum::http::HeaderMap,
+    body: Vec<u8>,
+}
+impl Hit {
+    fn header(&self, name: &str) -> String {
+        self.headers
+            .get(name)
+            .map(|value| value.to_str().unwrap().to_owned())
+            .unwrap_or_default()
+    }
+    fn json(&self) -> Value {
+        serde_json::from_slice(&self.body).unwrap()
+    }
+    fn text(&self) -> String {
+        String::from_utf8(self.body.clone()).unwrap()
+    }
+}
+/// A webhook receiver on a loopback port. It answers every request with the
+/// status that is set, a `Location` when one is set, and a body that must
+/// never show up anywhere in the gateway.
+struct Receiver {
+    port: u16,
+    hits: std::sync::Arc<std::sync::Mutex<Vec<Hit>>>,
+    status: std::sync::Arc<std::sync::atomic::AtomicU16>,
+    location: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// How long each answer takes, in milliseconds.
+    delay: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// The most requests that were being answered at the same moment.
+    peak: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    task: tokio::task::JoinHandle<()>,
+}
+const RECEIVER_ANSWER: &str = "receiver-private-answer";
+impl Receiver {
+    async fn start() -> Self {
+        use std::sync::{
+            atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering},
+            Arc, Mutex,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let status = Arc::new(AtomicU16::new(200));
+        let location = Arc::new(Mutex::new(None::<String>));
+        let delay = Arc::new(AtomicU64::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let busy = Arc::new(AtomicUsize::new(0));
+        let (seen, answer, redirect) = (hits.clone(), status.clone(), location.clone());
+        let (wait, most) = (delay.clone(), peak.clone());
+        let app = Router::new().fallback(
+            move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                let (seen, answer, redirect) = (seen.clone(), answer.clone(), redirect.clone());
+                let (wait, most, busy) = (wait.clone(), most.clone(), busy.clone());
+                async move {
+                    seen.lock().unwrap().push(Hit {
+                        headers,
+                        body: body.to_vec(),
+                    });
+                    most.fetch_max(busy.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        wait.load(Ordering::SeqCst),
+                    ))
+                    .await;
+                    busy.fetch_sub(1, Ordering::SeqCst);
+                    let mut response =
+                        axum::http::Response::builder().status(answer.load(Ordering::SeqCst));
+                    if let Some(location) = redirect.lock().unwrap().clone() {
+                        response = response.header("location", location);
+                    }
+                    response.body(Body::from(RECEIVER_ANSWER)).unwrap()
+                }
+            },
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        Self {
+            port,
+            hits,
+            status,
+            location,
+            delay,
+            peak,
+            task,
+        }
+    }
+    fn url(&self, token: &str) -> String {
+        format!("http://127.0.0.1:{}/hook/{token}", self.port)
+    }
+    fn hits(&self) -> Vec<Hit> {
+        self.hits.lock().unwrap().clone()
+    }
+    fn answer(&self, status: u16) {
+        self.status
+            .store(status, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+impl Drop for Receiver {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+/// Everything the gateway logs while the guard lives, at every level.
+#[derive(Clone, Default)]
+struct Logs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+impl std::io::Write for Logs {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+    type Writer = Logs;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+impl Logs {
+    /// Capture what the calling test's thread logs from now on, at every
+    /// level. The subscriber is the process-wide one: a subscriber of one
+    /// thread misses a call site that another test's thread reached first.
+    /// Only one test in this file captures the logs.
+    fn capture() -> Self {
+        use tracing_subscriber::{layer::SubscriberExt, Layer};
+        let logs = Logs::default();
+        let thread = std::thread::current().id();
+        let layer = tracing_subscriber::fmt::layer()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            // Decided for each event: a plain filter's answer is kept per call
+            // site, and would be the answer for whichever thread got there first.
+            .with_filter(tracing_subscriber::filter::dynamic_filter_fn(
+                move |_, _| std::thread::current().id() == thread,
+            ));
+        tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer))
+            .expect("one test captures the logs");
+        logs
+    }
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+/// HMAC-SHA256 in hex, computed here and not by the code under test.
+fn hmac_hex(key: &str, message: &[u8]) -> String {
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<sha2::Sha256> as Mac>::new_from_slice(key.as_bytes()).unwrap();
+    mac.update(message);
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+/// What a receiver must check: the signature (scheme v1) covers the
+/// timestamp, the delivery id and the exact body, and the timestamp is recent.
+fn signed_with(hit: &Hit, secret: &str) -> bool {
+    let timestamp = hit.header("x-vda-timestamp");
+    let delivery = hit.header("x-vda-delivery");
+    let age = chrono::Utc::now().timestamp() - timestamp.parse::<i64>().unwrap();
+    assert!((0..60).contains(&age), "{age}");
+    let message = [
+        timestamp.as_bytes(),
+        b".",
+        delivery.as_bytes(),
+        b".",
+        hit.body.as_slice(),
+    ]
+    .concat();
+    hit.header("x-vda-signature") == format!("v1={}", hmac_hex(secret, &message))
+}
+/// Let every wait pass: all notices that wait are due now.
+async fn all_due(f: &Fixture) {
+    sqlx::query("UPDATE notices SET next_attempt_at=now() WHERE status='pending'")
+        .execute(&f.db)
+        .await
+        .unwrap();
+}
+fn notice_body(url: Option<&str>, enabled: bool, format: &str, events: &[&str]) -> Value {
+    let mut body = json!({
+        "enabled": enabled, "format": format, "events": events,
+        "include_reason": false, "include_row_count": false,
+    });
+    if let Some(url) = url {
+        body["url"] = json!(url);
+    }
+    body
+}
+async fn put_notices(f: &Fixture, body: Value) -> Value {
+    let (s, v) = f
+        .request("PUT", "/settings/notices", &f.admin_cookie, Some(body))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v
+}
+async fn new_secret(f: &Fixture) -> String {
+    let (s, v) = f
+        .request("POST", "/settings/notices/secret", &f.admin_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v["secret"].as_str().unwrap().to_owned()
+}
+/// The outbox: (id, event, status, attempts, last_error), oldest first.
+async fn outbox(f: &Fixture) -> Vec<(Uuid, String, String, i32, Option<String>)> {
+    sqlx::query_as("SELECT id,event,status,attempts,last_error FROM notices ORDER BY created_at,id")
+        .fetch_all(&f.db)
+        .await
+        .unwrap()
+}
+async fn deliver(f: &Fixture) -> usize {
+    vda_server::notices::worker::run_once(&f.state)
+        .await
+        .unwrap()
+}
+/// A pending request of the grantor, rejected by the administrator. It needs
+/// no target database, so it makes a notice in every environment.
+async fn rejected(f: &Fixture) -> Uuid {
+    let id = f.approval("UPDATE t SET private_column=1", "pending").await;
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/reject"),
+            &f.admin_cookie,
+            Some(json!({"note":"Not now"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    id
+}
+
+#[tokio::test]
+async fn a_new_request_sends_one_signed_notice_that_says_little() {
+    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let logs = Logs::capture();
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let target = sqlx::PgPool::connect(&target_url).await.unwrap();
+    let table = safe_table(&f, &target).await;
+    let receiver = Receiver::start().await;
+    let path_token = format!("tok-{}", Uuid::new_v4().simple());
+    let url = receiver.url(&path_token);
+
+    // Only organization administrators read or change the settings. The
+    // grantor administers the cluster, which is not enough.
+    let (s, v) = f
+        .request("GET", "/settings/notices", &f.admin_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["enabled"], false);
+    assert_eq!(v["format"], "webhook");
+    assert_eq!(v["events"], json!(["approval.created"]));
+    assert_eq!(v["url_set"], false);
+    assert_eq!(v["secret_set"], false);
+    assert_eq!(v["include_reason"], false);
+    assert_eq!(v["include_row_count"], false);
+    assert_eq!(v["links"], false);
+    assert_eq!(v["delivery"]["pending"], 0);
+    let on = notice_body(Some(&url), true, "webhook", &["approval.created"]);
+    for (method, path, body) in [
+        ("GET", "/settings/notices", None),
+        ("PUT", "/settings/notices", Some(on.clone())),
+        ("POST", "/settings/notices/secret", None),
+        ("POST", "/settings/notices/test", None),
+    ] {
+        let (s, v) = f.request(method, path, &f.grantor_cookie, body).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{method} {path}: {v}");
+        assert!(!v.to_string().contains("secret\":"), "{v}");
+    }
+    assert_eq!(receiver.hits().len(), 0);
+
+    // Notices cannot be turned on without an address, an event, or, for the
+    // signed format, a secret. A bad address is refused when it is saved.
+    for (body, why) in [
+        (
+            notice_body(None, true, "webhook", &["approval.created"]),
+            "no address",
+        ),
+        (on.clone(), "no secret"),
+        (notice_body(Some(&url), true, "slack", &[]), "no event"),
+        (
+            notice_body(Some(&url), false, "webhook", &["approval.execute"]),
+            "unknown event",
+        ),
+        (
+            notice_body(Some("http://169.254.169.254/latest"), false, "slack", &[]),
+            "metadata address",
+        ),
+        (
+            notice_body(Some("https://user:pw@hooks.example/x"), false, "slack", &[]),
+            "credentials",
+        ),
+        (
+            notice_body(Some("ftp://hooks.example/x"), false, "slack", &[]),
+            "scheme",
+        ),
+        (
+            json!({"enabled":false,"format":"webhook","events":[],"include_reason":false,
+                "include_row_count":false,"secret":"mine"}),
+            "unknown field",
+        ),
+    ] {
+        let (s, v) = f
+            .request("PUT", "/settings/notices", &f.admin_cookie, Some(body))
+            .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{why}: {v}");
+    }
+    let (s, v) = f
+        .request("POST", "/settings/notices/test", &f.admin_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+
+    // The secret is made by the server and shown once.
+    let secret = new_secret(&f).await;
+    assert!(
+        secret.starts_with("vda_whsec_") && secret.len() == 53,
+        "{}",
+        secret.len()
+    );
+    let saved = put_notices(&f, on.clone()).await;
+    assert_eq!(saved["enabled"], true);
+    assert_eq!(saved["url_set"], true);
+    assert_eq!(saved["url_host"], "127.0.0.1");
+    assert_eq!(saved["secret_set"], true);
+    assert!(saved.get("url").is_none() && saved.get("secret").is_none());
+
+    // One request, one notice, written with the request and sent later.
+    let sql = format!("UPDATE {table} SET note='fixed' WHERE id IN (1,2)");
+    let (s, v) = request_write(&f, &sql).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let approval = v["id"].as_str().unwrap().to_owned();
+    assert_eq!(receiver.hits().len(), 0, "nothing is sent by the handler");
+    let rows = outbox(&f).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].1.as_str(), rows[0].2.as_str()),
+        ("approval.created", "pending")
+    );
+    assert_eq!(deliver(&f).await, 1);
+    let hits = receiver.hits();
+    assert_eq!(hits.len(), 1);
+    let hit = &hits[0];
+    assert!(signed_with(hit, &secret));
+    assert!(!signed_with(hit, "vda_whsec_wrong"));
+    assert_eq!(hit.header("x-vda-event"), "approval.created");
+    assert_eq!(hit.header("x-vda-delivery"), rows[0].0.to_string());
+    assert_eq!(hit.header("content-type"), "application/json");
+    assert_eq!(hit.header("host"), format!("127.0.0.1:{}", receiver.port));
+    let body = hit.json();
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "agent",
+            "approval_id",
+            "cluster",
+            "engine",
+            "environment",
+            "event",
+            "requester",
+            "sequence",
+            "status",
+            "time",
+            "version"
+        ]
+    );
+    // The time has milliseconds, and the sequence is the notice's place in
+    // the order they were written.
+    let time = body["time"].as_str().unwrap();
+    assert!(time.len() == 24 && time.ends_with('Z'), "{time}");
+    assert!(chrono::DateTime::parse_from_rfc3339(time).is_ok(), "{time}");
+    let sequence: i64 = sqlx::query_scalar("SELECT seq FROM notices WHERE id=$1")
+        .bind(rows[0].0)
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(body["sequence"], sequence);
+    // The signature covers the delivery id: the same body under another id
+    // does not verify.
+    let mut moved = hit.clone();
+    moved.headers.insert(
+        "x-vda-delivery",
+        Uuid::new_v4().to_string().parse().unwrap(),
+    );
+    assert!(!signed_with(&moved, &secret));
+    assert!(hit.header("x-vda-signature").starts_with("v1="));
+    assert_eq!(body["version"], 1);
+    assert_eq!(body["event"], "approval.created");
+    assert_eq!(body["approval_id"], json!(approval));
+    assert_eq!(body["status"], "pending");
+    assert_eq!(body["cluster"], "Cluster");
+    assert_eq!(body["environment"], "development");
+    assert_eq!(body["engine"], "postgres");
+    assert_eq!(body["requester"], "grantor@harden.example");
+    assert_eq!(body["agent"], Value::Null);
+    // No SQL, no table, no values, no reason, no count, no rows of the preview.
+    let text = hit.text();
+    for private in [
+        table.as_str(),
+        "UPDATE",
+        "fixed",
+        "Fix the notes",
+        "secret.example",
+        "first",
+        "affected_rows",
+        "preview",
+    ] {
+        assert!(!text.contains(private), "{private}: {text}");
+    }
+    // It is sent once: nothing is due any more.
+    assert_eq!(deliver(&f).await, 0);
+    assert_eq!(receiver.hits().len(), 1);
+    let rows = outbox(&f).await;
+    assert_eq!(
+        (rows[0].2.as_str(), rows[0].3, rows[0].4.clone()),
+        ("sent", 1, None)
+    );
+    let (_, v) = f
+        .request("GET", "/settings/notices", &f.admin_cookie, None)
+        .await;
+    assert_eq!(v["delivery"]["pending"], 0);
+    assert_eq!(v["delivery"]["dead"], 0);
+    assert!(v["delivery"]["last_success_at"].is_string(), "{v}");
+    assert_eq!(v["delivery"]["last_error"], Value::Null);
+
+    // Each privacy switch adds its own field, for notices written after it.
+    let mut wide = on.clone();
+    wide["include_reason"] = json!(true);
+    put_notices(&f, wide.clone()).await;
+    let (s, v) = request_write(&f, &format!("UPDATE {table} SET note='again' WHERE id=3")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(deliver(&f).await, 1);
+    let body = receiver.hits()[1].json();
+    assert_eq!(body["reason"], "Fix the notes");
+    assert!(body.get("affected_rows").is_none(), "{body}");
+    wide["include_reason"] = json!(false);
+    wide["include_row_count"] = json!(true);
+    put_notices(&f, wide.clone()).await;
+    let (s, v) = request_write(
+        &f,
+        &format!("UPDATE {table} SET note='more' WHERE id IN (3,4,5)"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(deliver(&f).await, 1);
+    let hit = receiver.hits()[2].clone();
+    let body = hit.json();
+    assert_eq!(body["affected_rows"], 3);
+    assert!(body.get("reason").is_none(), "{body}");
+    assert!(!hit.text().contains(&table) && !hit.text().contains("more"));
+
+    // An agent's request names the agent, and its owner as the requester.
+    wide["include_reason"] = json!(true);
+    put_notices(&f, wide).await;
+    let agent = new_agent(&f, &f.grantor_cookie, "Fixer", "write").await;
+    let (_, token) = new_token(&f, &f.grantor_cookie, agent).await;
+    let (failed, v) = tool(
+        &f,
+        &token,
+        "propose_write",
+        json!({"task":"Fix note 2 for ticket 7","database":f.cluster,
+            "sql":format!("UPDATE {table} SET note='agent fix' WHERE id=2")}),
+    )
+    .await;
+    assert!(!failed, "{v}");
+    assert_eq!(deliver(&f).await, 1);
+    let hit = receiver.hits()[3].clone();
+    assert!(signed_with(&hit, &secret));
+    let body = hit.json();
+    assert_eq!(body["agent"], "Fixer");
+    assert_eq!(body["requester"], "grantor@harden.example");
+    assert_eq!(body["reason"], "Fix note 2 for ticket 7");
+    // Nobody previewed it, so there is no count to send.
+    assert!(body.get("affected_rows").is_none(), "{body}");
+    assert!(!hit.text().contains("agent fix") && !hit.text().contains(&token));
+
+    // A notice that waits is signed with the secret of the moment it is sent.
+    let (s, v) = request_write(&f, &format!("UPDATE {table} SET n=1 WHERE id=1")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = f
+        .request("POST", "/settings/notices/secret", &f.admin_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["rotated"], true);
+    let rotated = v["secret"].as_str().unwrap().to_owned();
+    assert_ne!(rotated, secret);
+    assert_eq!(deliver(&f).await, 1);
+    let hit = receiver.hits()[4].clone();
+    assert!(signed_with(&hit, &rotated) && !signed_with(&hit, &secret));
+
+    // Off: a new request writes no notice, and one that waited is dropped.
+    let (s, v) = request_write(&f, &format!("UPDATE {table} SET n=2 WHERE id=1")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let before = outbox(&f).await.len();
+    put_notices(
+        &f,
+        notice_body(None, false, "webhook", &["approval.created"]),
+    )
+    .await;
+    let (s, v) = request_write(&f, &format!("UPDATE {table} SET n=3 WHERE id=1")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        outbox(&f).await.len(),
+        before,
+        "no row while notices are off"
+    );
+    // Turning notices off dropped the one that waited, at once.
+    assert_eq!(deliver(&f).await, 0);
+    assert_eq!(
+        receiver.hits().len(),
+        5,
+        "a queued notice is not sent once notices are off"
+    );
+    let last = outbox(&f).await.pop().unwrap();
+    assert_eq!(
+        (last.2.as_str(), last.3, last.4.as_deref()),
+        ("dead", 0, Some("notices_off"))
+    );
+    // The address was kept: turning notices on again needs no new one.
+    let again = put_notices(
+        &f,
+        notice_body(None, true, "webhook", &["approval.created"]),
+    )
+    .await;
+    assert_eq!(again["url_host"], "127.0.0.1");
+    // An event that is not selected writes nothing either.
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{approval}/reject"),
+            &f.admin_cookie,
+            Some(json!({"note":"No"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(outbox(&f).await.len(), before);
+
+    // The secrets are nowhere: not in the settings, the store, the audit
+    // log or the logs. The address is stored encrypted and shown as a host.
+    let (_, shown) = f
+        .request("GET", "/settings/notices", &f.admin_cookie, None)
+        .await;
+    let stored: String = sqlx::query_scalar("SELECT value::text FROM settings WHERE key='notices'")
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert!(
+        stored.contains("\"url_enc\": \"v1:") && stored.contains("\"secret_enc\": \"v1:"),
+        "{stored}"
+    );
+    let audit: Vec<String> = sqlx::query_scalar("SELECT action||' '||details::text FROM audit_log")
+        .fetch_all(&f.db)
+        .await
+        .unwrap();
+    let audit = audit.join("\n");
+    for action in ["settings.notices ", "settings.notices.secret "] {
+        assert!(audit.contains(action), "{action}");
+    }
+    let payloads: Vec<String> = sqlx::query_scalar("SELECT payload::text FROM notices")
+        .fetch_all(&f.db)
+        .await
+        .unwrap();
+    let logged = logs.text();
+    assert!(
+        logged.contains("request completed"),
+        "the log capture works"
+    );
+    assert!(logged.contains("/settings/notices"), "{logged}");
+    for (place, text) in [
+        ("settings", shown.to_string()),
+        ("store", stored),
+        ("audit", audit),
+        ("outbox", payloads.join("\n")),
+        ("logs", logged),
+    ] {
+        for private in [
+            secret.as_str(),
+            rotated.as_str(),
+            path_token.as_str(),
+            RECEIVER_ANSWER,
+        ] {
+            assert!(!text.contains(private), "{place} holds {private}");
+        }
+    }
+    sqlx::query(&format!("DROP TABLE {table}"))
+        .execute(&target)
+        .await
+        .unwrap();
+    target.close().await;
+    f.close().await;
+}
+
+#[tokio::test]
+async fn a_failing_receiver_is_retried_then_given_up_and_a_redirect_is_not_followed() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let receiver = Receiver::start().await;
+    let elsewhere = Receiver::start().await;
+    let secret = new_secret(&f).await;
+    let on = notice_body(
+        Some(&receiver.url("a")),
+        true,
+        "webhook",
+        &["approval.rejected"],
+    );
+    put_notices(&f, on.clone()).await;
+
+    // Six attempts, each after a longer wait, then the notice is dead.
+    receiver.answer(500);
+    let approval = rejected(&f).await;
+    for (attempt, wait) in [30.0, 90.0, 270.0, 810.0, 2430.0, 0.0]
+        .into_iter()
+        .enumerate()
+    {
+        let attempt = attempt as i32 + 1;
+        assert_eq!(deliver(&f).await, 1, "attempt {attempt}");
+        assert_eq!(receiver.hits().len(), attempt as usize);
+        // A notice that is not due is left alone.
+        assert_eq!(deliver(&f).await, 0);
+        let (status, attempts, error, until): (String, i32, Option<String>, f64) = sqlx::query_as(
+            "SELECT status,attempts,last_error,
+             extract(epoch FROM next_attempt_at-now())::float8 FROM notices WHERE approval_id=$1",
+        )
+        .bind(approval)
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+        assert_eq!(attempts, attempt);
+        assert_eq!(error.as_deref(), Some("http_500"));
+        if attempt < 6 {
+            assert_eq!(status, "pending");
+            assert!(
+                (wait * 0.8 - 5.0..=wait * 1.2 + 1.0).contains(&until),
+                "attempt {attempt}: {until} s, expected about {wait} s"
+            );
+            // Let the wait pass.
+            sqlx::query("UPDATE notices SET next_attempt_at=now() WHERE approval_id=$1")
+                .bind(approval)
+                .execute(&f.db)
+                .await
+                .unwrap();
+        } else {
+            assert_eq!(status, "dead");
+        }
+    }
+    assert_eq!(deliver(&f).await, 0);
+    assert_eq!(receiver.hits().len(), 6);
+    // Every attempt had the same delivery id and its own valid signature.
+    let hits = receiver.hits();
+    assert!(hits.iter().all(|hit| signed_with(hit, &secret)));
+    assert!(hits
+        .iter()
+        .all(|hit| hit.header("x-vda-delivery") == hits[0].header("x-vda-delivery")));
+    let (_, v) = f
+        .request("GET", "/settings/notices", &f.admin_cookie, None)
+        .await;
+    assert_eq!(v["delivery"]["dead"], 1, "{v}");
+    assert_eq!(v["delivery"]["last_error"], "http_500");
+    assert!(v["delivery"]["last_error_at"].is_string());
+    assert!(!v.to_string().contains(RECEIVER_ANSWER));
+
+    // A redirect is an error. The place it points at gets nothing.
+    receiver.answer(307);
+    *receiver.location.lock().unwrap() = Some(elsewhere.url("b"));
+    let redirected = rejected(&f).await;
+    assert_eq!(deliver(&f).await, 1);
+    assert_eq!(receiver.hits().len(), 7);
+    assert_eq!(elsewhere.hits().len(), 0);
+    let error: Option<String> =
+        sqlx::query_scalar("SELECT last_error FROM notices WHERE approval_id=$1")
+            .bind(redirected)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    assert_eq!(error.as_deref(), Some("http_307"));
+    // The test notice reports the same, and nothing of the answer.
+    let (s, v) = f
+        .request("POST", "/settings/notices/test", &f.admin_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v,
+        json!({"delivered":false,"status":307,"error":"http_307"})
+    );
+    assert_eq!(elsewhere.hits().len(), 0);
+    *receiver.location.lock().unwrap() = None;
+    receiver.answer(204);
+    let (s, v) = f
+        .request("POST", "/settings/notices/test", &f.admin_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v, json!({"delivered":true,"status":204,"error":null}));
+    let test = receiver.hits().pop().unwrap();
+    assert!(signed_with(&test, &secret));
+    assert_eq!(test.header("x-vda-event"), "notice.test");
+    assert_eq!(test.json()["event"], "notice.test");
+    assert_eq!(test.json().as_object().unwrap().len(), 3, "{}", test.text());
+    // A test is not a notice: the outbox did not change, the audit log did.
+    assert_eq!(outbox(&f).await.len(), 2);
+    let tests: Vec<Value> = sqlx::query_scalar(
+        "SELECT details FROM audit_log WHERE action='settings.notices.test' ORDER BY created_at",
+    )
+    .fetch_all(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(tests.len(), 2);
+    assert_eq!(tests[1]["delivered"], true);
+
+    // The notice that was redirected is tried again, and now goes through.
+    sqlx::query("UPDATE notices SET next_attempt_at=now() WHERE status='pending'")
+        .execute(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(deliver(&f).await, 1);
+    let row: (String, i32, Option<String>) =
+        sqlx::query_as("SELECT status,attempts,last_error FROM notices WHERE approval_id=$1")
+            .bind(redirected)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    assert_eq!(row, ("sent".to_owned(), 2, None));
+
+    // Two workers at once send each notice once.
+    let before = receiver.hits().len();
+    for _ in 0..12 {
+        rejected(&f).await;
+    }
+    let (a, b, c) = tokio::join!(deliver(&f), deliver(&f), deliver(&f));
+    let mut handled = a + b + c;
+    while handled < 12 {
+        let more = deliver(&f).await;
+        assert!(more > 0, "handled {handled} of 12");
+        handled += more;
+    }
+    assert_eq!(handled, 12);
+    let new: Vec<String> = receiver.hits()[before..]
+        .iter()
+        .map(|hit| hit.header("x-vda-delivery"))
+        .collect();
+    assert_eq!(new.len(), 12);
+    assert_eq!(
+        new.iter().collect::<std::collections::HashSet<_>>().len(),
+        12
+    );
+
+    // Slack: the same notice in Slack's shape, without the signature headers.
+    let mut slack = notice_body(None, true, "slack", &["approval.rejected"]);
+    slack["include_reason"] = json!(true);
+    put_notices(&f, slack).await;
+    sqlx::query("UPDATE users SET name='<!channel> & <@U1>' WHERE id=$1")
+        .bind(f.grantor)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    rejected(&f).await;
+    assert_eq!(deliver(&f).await, 1);
+    let hit = receiver.hits().pop().unwrap();
+    assert_eq!(hit.header("x-vda-signature"), "");
+    let body = hit.json();
+    let text = body["text"].as_str().unwrap();
+    assert_eq!(
+        text,
+        "The request for a write on Cluster (development, postgres) from \
+         &lt;!channel&gt; &amp; &lt;@U1&gt; was rejected."
+    );
+    assert!(body["blocks"].is_array());
+    assert!(hit.text().contains("Reason: Test") && !hit.text().contains("private_column"));
+
+    // A receiver that is gone: the class of the failure, nothing more.
+    let gone = receiver.url("a");
+    drop(receiver);
+    tokio::task::yield_now().await;
+    let (s, v) = f
+        .request("POST", "/settings/notices/test", &f.admin_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["delivered"], false, "{gone}: {v}");
+    assert_eq!(v["status"], Value::Null);
+    assert_eq!(v["error"], "connect");
+
+    // The worker itself: it delivers what is due and ends when the gateway stops.
+    let last = Receiver::start().await;
+    put_notices(
+        &f,
+        notice_body(Some(&last.url("c")), true, "slack", &["approval.rejected"]),
+    )
+    .await;
+    rejected(&f).await;
+    let worker = tokio::spawn(vda_server::notices::worker::worker(f.state.clone()));
+    for _ in 0..100 {
+        if !last.hits().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(last.hits().len(), 1);
+    f.state.stop.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(10), worker)
+        .await
+        .expect("the worker ends at shutdown")
+        .unwrap();
+    f.close().await;
+}
+
+#[tokio::test]
+async fn expiry_recovery_and_rollback_each_leave_exactly_what_happened() {
+    let Some(f) =
+        Fixture::with(|config| config.public_url = Some("https://gate.example/".into())).await
+    else {
+        return;
+    };
+    let receiver = Receiver::start().await;
+    new_secret(&f).await;
+    let events = [
+        "approval.expired",
+        "approval.failed",
+        "approval.rejected",
+        "approval.withdrawn",
+    ];
+    let saved = put_notices(
+        &f,
+        notice_body(Some(&receiver.url("x")), true, "webhook", &events),
+    )
+    .await;
+    assert_eq!(saved["links"], true);
+    let count = |sql: &'static str, id: Uuid| {
+        let db = f.db.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(sql)
+                .bind(id)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+        }
+    };
+    const AUDIT: &str = "SELECT count(*) FROM audit_log WHERE target_id=$1 AND action IN
+        ('approval.expire','approval.failed')";
+    const NOTICES: &str = "SELECT count(*) FROM notices WHERE approval_id=$1";
+
+    // A request that ran out of time is expired once, whoever notices first:
+    // lists, single reads and the scheduler, all at the same moment.
+    let expiring = f.approval("UPDATE t SET a=1", "pending").await;
+    let approved = f.approval("UPDATE t SET a=2", "approved").await;
+    sqlx::query("UPDATE approvals SET expires_at=now()-interval '1 second' WHERE id=ANY($1)")
+        .bind(vec![expiring, approved])
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let path = format!("/approvals/{expiring}");
+    let mut calls = Vec::new();
+    for round in 0..8 {
+        calls.push(if round % 2 == 0 {
+            "/approvals"
+        } else {
+            path.as_str()
+        });
+    }
+    let reads = futures::future::join_all(
+        calls
+            .iter()
+            .map(|path| f.request("GET", path, &f.admin_cookie, None)),
+    );
+    let sweeps =
+        futures::future::join_all((0..4).map(|_| vda_server::health::recover_executions(&f.state)));
+    let (reads, sweeps) = tokio::join!(reads, sweeps);
+    assert!(reads.iter().all(|(status, _)| *status == StatusCode::OK));
+    assert!(sweeps.iter().all(Result::is_ok));
+    for id in [expiring, approved] {
+        let status: String = sqlx::query_scalar("SELECT status FROM approvals WHERE id=$1")
+            .bind(id)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+        assert_eq!(status, "expired");
+        assert_eq!(count(AUDIT, id).await, 1, "one audit row");
+        assert_eq!(count(NOTICES, id).await, 1, "one notice");
+    }
+    let (action, actor, details): (String, Option<Uuid>, Value) = sqlx::query_as(
+        "SELECT action,actor_id,details FROM audit_log WHERE target_id=$1 AND action LIKE 'approval.%'",
+    )
+    .bind(expiring)
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        (action.as_str(), actor, details),
+        ("approval.expire", None, json!({}))
+    );
+    // Later passes find nothing to do.
+    vda_server::health::recover_executions(&f.state)
+        .await
+        .unwrap();
+    assert_eq!(count(AUDIT, expiring).await, 1);
+    assert_eq!(count(NOTICES, expiring).await, 1);
+
+    // A write that a lost node left running is failed once, with its code.
+    let lost = f.approval("UPDATE t SET a=3", "executing").await;
+    let running = f.approval("UPDATE t SET a=4", "executing").await;
+    sqlx::query("UPDATE approvals SET execution_started_at=CASE WHEN id=$1 THEN now()-interval '20 minutes' ELSE now() END WHERE id=ANY($2)")
+        .bind(lost)
+        .bind(vec![lost, running])
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let sweeps =
+        futures::future::join_all((0..6).map(|_| vda_server::health::recover_executions(&f.state)))
+            .await;
+    assert!(sweeps.iter().all(Result::is_ok));
+    let (status, code): (String, Option<String>) =
+        sqlx::query_as("SELECT status,error_code FROM approvals WHERE id=$1")
+            .bind(lost)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        (status.as_str(), code.as_deref()),
+        ("failed", Some("outcome_unknown"))
+    );
+    assert_eq!(count(AUDIT, lost).await, 1);
+    assert_eq!(count(NOTICES, lost).await, 1);
+    let details: Value = sqlx::query_scalar(
+        "SELECT details FROM audit_log WHERE target_id=$1 AND action='approval.failed'",
+    )
+    .bind(lost)
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(details, json!({"code":"outcome_unknown","recovered":true}));
+    assert_eq!(count(AUDIT, running).await, 0);
+    assert_eq!(count(NOTICES, running).await, 0);
+
+    // What was sent: the event, the state, the code, and a link to the request.
+    while deliver(&f).await > 0 {}
+    let hits = receiver.hits();
+    assert_eq!(hits.len(), 3);
+    let of = |id: Uuid| {
+        hits.iter()
+            .map(Hit::json)
+            .find(|body| body["approval_id"] == json!(id))
+            .unwrap()
+    };
+    let body = of(expiring);
+    assert_eq!(body["event"], "approval.expired");
+    assert_eq!(body["status"], "expired");
+    assert_eq!(
+        body["url"],
+        format!("https://gate.example/approvals?id={expiring}&tab=all")
+    );
+    assert!(body.get("error_code").is_none());
+    let body = of(lost);
+    assert_eq!(body["event"], "approval.failed");
+    assert_eq!(body["status"], "failed");
+    assert_eq!(body["error_code"], "outcome_unknown");
+    // The text of the failure is for people who may see the request.
+    assert!(!hits.iter().any(|hit| hit.text().contains("node crashed")));
+
+    // A state change that is rolled back leaves no notice. Here the commit
+    // of a rejection fails, after its notice was written.
+    let kept = f.approval("UPDATE t SET a=5", "pending").await;
+    for sql in [
+        "CREATE FUNCTION refuse_commit() RETURNS trigger LANGUAGE plpgsql AS
+         $$ BEGIN RAISE EXCEPTION 'commit refused by the test'; END $$",
+        "CREATE CONSTRAINT TRIGGER refuse_commit AFTER INSERT ON notices
+         DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION refuse_commit()",
+    ] {
+        sqlx::query(sql).execute(&f.db).await.unwrap();
+    }
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{kept}/reject"),
+            &f.admin_cookie,
+            Some(json!({"note":"No"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR, "{v}");
+    sqlx::query("DROP TRIGGER refuse_commit ON notices")
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let status: String = sqlx::query_scalar("SELECT status FROM approvals WHERE id=$1")
+        .bind(kept)
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(status, "pending");
+    assert_eq!(count(NOTICES, kept).await, 0);
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE target_id=$1 AND action='approval.reject'",
+    )
+    .bind(kept)
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(audited, 0);
+    // The same on a transaction of the caller's own: the notice follows it.
+    for commit in [false, true] {
+        let mut tx = f.db.begin().await.unwrap();
+        sqlx::query("UPDATE approvals SET status='withdrawn' WHERE id=$1")
+            .bind(kept)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        vda_server::notices::enqueue(
+            &f.state,
+            &mut tx,
+            kept,
+            vda_server::notices::Event::Withdrawn,
+        )
+        .await
+        .unwrap();
+        if commit {
+            tx.commit().await.unwrap();
+        } else {
+            tx.rollback().await.unwrap();
+        }
+        assert_eq!(count(NOTICES, kept).await, i64::from(commit));
+    }
+    // A change that is refused writes nothing either.
+    let (s, _) = f
+        .request(
+            "POST",
+            &format!("/approvals/{kept}/reject"),
+            &f.admin_cookie,
+            Some(json!({"note":"No"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(count(NOTICES, kept).await, 1);
+
+    // Old notices are removed: delivered ones after a week, dead ones after a month.
+    sqlx::query("UPDATE notices SET sent_at=now()-interval '8 days' WHERE approval_id=$1")
+        .bind(expiring)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE notices SET status='dead',sent_at=NULL,last_attempt_at=now()-interval '31 days' WHERE approval_id=$1")
+        .bind(lost)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE notices SET status='dead',sent_at=NULL,last_attempt_at=now()-interval '29 days' WHERE approval_id=$1")
+        .bind(approved)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    vda_server::notices::worker::prune(&f.db).await.unwrap();
+    assert_eq!(count(NOTICES, expiring).await, 0);
+    assert_eq!(count(NOTICES, lost).await, 0);
+    assert_eq!(count(NOTICES, approved).await, 1);
+    assert_eq!(count(NOTICES, kept).await, 1);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn a_settings_change_on_one_node_is_seen_by_the_next_state_change_on_another() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    // A second node: its own state and caches, the same metadata store.
+    let (other, other_writer) = AppState::new(
+        f.db.clone(),
+        (*f.state.config).clone(),
+        f.state.core.crypto.clone(),
+        None,
+    )
+    .await
+    .unwrap();
+    let other_app = router(other.clone());
+    let put_on_other = |body: Value| {
+        let app = other_app.clone();
+        let cookie = f.admin_cookie.clone();
+        async move {
+            let (s, v) = call(
+                &app,
+                "PUT",
+                "/api/v1/settings/notices",
+                &cookie,
+                Some(body),
+                None,
+                "127.0.0.1:1234",
+            )
+            .await;
+            assert_eq!(s, StatusCode::OK, "{v}");
+        }
+    };
+    let last_payload = || async {
+        sqlx::query_scalar::<_, Value>(
+            "SELECT payload FROM notices ORDER BY created_at DESC,id DESC LIMIT 1",
+        )
+        .fetch_one(&f.db)
+        .await
+        .unwrap()
+    };
+    let receiver = Receiver::start().await;
+    new_secret(&f).await;
+    let mut with_reason = notice_body(
+        Some(&receiver.url("n")),
+        true,
+        "webhook",
+        &["approval.rejected"],
+    );
+    with_reason["include_reason"] = json!(true);
+    with_reason["include_row_count"] = json!(true);
+    put_notices(&f, with_reason.clone()).await;
+    // This node has seen the settings: whatever it keeps of them is warm.
+    let id = f.approval("UPDATE t SET a=1", "pending").await;
+    sqlx::query("UPDATE approvals SET preview='{\"affected_rows\":7}' WHERE id=$1")
+        .bind(id)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/reject"),
+            &f.admin_cookie,
+            Some(json!({"note":"No"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let payload = last_payload().await;
+    assert_eq!(payload["reason"], "Test");
+    assert_eq!(payload["affected_rows"], 7);
+
+    // The other node turns both private fields off. The very next state
+    // change here must not carry them.
+    let mut plain = with_reason.clone();
+    plain.as_object_mut().unwrap().remove("url");
+    plain["include_reason"] = json!(false);
+    plain["include_row_count"] = json!(false);
+    put_on_other(plain.clone()).await;
+    let id = f.approval("UPDATE t SET a=2", "pending").await;
+    sqlx::query("UPDATE approvals SET preview='{\"affected_rows\":7}' WHERE id=$1")
+        .bind(id)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/reject"),
+            &f.admin_cookie,
+            Some(json!({"note":"No"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let payload = last_payload().await;
+    assert_eq!(payload["approval_id"], json!(id));
+    assert!(payload.get("reason").is_none(), "{payload}");
+    assert!(payload.get("affected_rows").is_none(), "{payload}");
+
+    // Off on the other node: no row here. On again: the next change has one.
+    let mut off = plain.clone();
+    off["enabled"] = json!(false);
+    put_on_other(off).await;
+    let before = outbox(&f).await.len();
+    rejected(&f).await;
+    assert_eq!(outbox(&f).await.len(), before, "off is seen at once");
+    put_on_other(plain).await;
+    let id = rejected(&f).await;
+    assert_eq!(outbox(&f).await.len(), before + 1, "on is seen at once");
+    assert_eq!(last_payload().await["approval_id"], json!(id));
+    // A deselected event, the same way.
+    let mut other_event = with_reason;
+    other_event.as_object_mut().unwrap().remove("url");
+    other_event["events"] = json!(["approval.created"]);
+    put_on_other(other_event).await;
+    rejected(&f).await;
+    assert_eq!(outbox(&f).await.len(), before + 1);
+
+    // A test notice makes the gateway call an outside host, so a node sends
+    // only a few a minute, whoever asks.
+    let limit = vda_server::notices::TESTS_PER_MINUTE as usize;
+    assert_eq!(receiver.hits().len(), 0);
+    for sent in 1..=limit {
+        let (s, v) = f
+            .request("POST", "/settings/notices/test", &f.admin_cookie, None)
+            .await;
+        assert_eq!(s, StatusCode::OK, "{sent}: {v}");
+        assert_eq!(v["delivered"], true, "{v}");
+    }
+    for _ in 0..3 {
+        let (s, v) = f
+            .request("POST", "/settings/notices/test", &f.admin_cookie, None)
+            .await;
+        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{v}");
+        assert_eq!(v["error"]["code"], "rate_limited");
+        assert_eq!(v["error"]["details"]["retry_after_seconds"], 60);
+    }
+    assert_eq!(receiver.hits().len(), limit, "a refused test sends nothing");
+    assert!(receiver
+        .hits()
+        .iter()
+        .all(|hit| hit.header("x-vda-event") == "notice.test"));
+    // The limit is for everyone: another administrator is refused as well.
+    sqlx::query("UPDATE users SET org_role='admin' WHERE id=$1")
+        .bind(f.grantor)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let (s, _) = f
+        .request("POST", "/settings/notices/test", &f.grantor_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    // It is kept per node: the other node still has its own.
+    let (s, v) = call(
+        &other_app,
+        "POST",
+        "/api/v1/settings/notices/test",
+        &f.admin_cookie,
+        None,
+        None,
+        "127.0.0.1:1234",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(receiver.hits().len(), limit + 1);
+    // Notices themselves are not limited by it.
+    let mut rejected_again = notice_body(None, true, "webhook", &["approval.rejected"]);
+    rejected_again["include_reason"] = json!(false);
+    put_notices(&f, rejected_again).await;
+    rejected(&f).await;
+    assert!(deliver(&f).await >= 1);
+    assert!(receiver
+        .hits()
+        .iter()
+        .any(|hit| hit.header("x-vda-event") == "approval.rejected"));
+
+    other.stop.cancel();
+    other_writer.await.unwrap();
+    f.close().await;
+}
+
+/// A pending request of the grantor with a previewed count of seven rows.
+async fn counted(f: &Fixture) -> Uuid {
+    let id = f.approval("UPDATE t SET private_column=1", "pending").await;
+    sqlx::query("UPDATE approvals SET preview='{\"affected_rows\":7}' WHERE id=$1")
+        .bind(id)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    id
+}
+async fn reject(f: &Fixture, id: Uuid) {
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{id}/reject"),
+            &f.admin_cookie,
+            Some(json!({"note":"Not now"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+/// The notices of one request: (event, status, last_error, payload), in order.
+async fn notices_of(f: &Fixture, id: Uuid) -> Vec<(String, String, Option<String>, Value)> {
+    sqlx::query_as(
+        "SELECT event,status,last_error,payload FROM notices WHERE approval_id=$1 ORDER BY seq",
+    )
+    .bind(id)
+    .fetch_all(&f.db)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_settings_change_makes_the_notices_that_wait_agree_with_it() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let first = Receiver::start().await;
+    let second = Receiver::start().await;
+    new_secret(&f).await;
+    let settings = |url: Option<&str>, enabled: bool, format: &str, events: &[&str]| {
+        let mut body = notice_body(url, enabled, format, events);
+        body["include_reason"] = json!(true);
+        body["include_row_count"] = json!(true);
+        body
+    };
+    let both = ["approval.rejected", "approval.withdrawn"];
+    let (to_first, to_second) = (first.url("first"), second.url("second"));
+    put_notices(&f, settings(Some(&to_first), true, "webhook", &both)).await;
+
+    // A notice that failed once waits for its next attempt. Notices are
+    // turned off: it is dropped at once, not left for later.
+    first.answer(500);
+    let waiting = counted(&f).await;
+    reject(&f, waiting).await;
+    assert_eq!(deliver(&f).await, 1);
+    assert_eq!(first.hits().len(), 1);
+    assert_eq!(notices_of(&f, waiting).await[0].1, "pending");
+    let off = put_notices(&f, settings(None, false, "webhook", &both)).await;
+    assert_eq!(off["delivery"]["pending"], 0, "{off}");
+    assert_eq!(off["delivery"]["dead"], 1);
+    assert_eq!(off["delivery"]["last_error"], "notices_off");
+    let row = &notices_of(&f, waiting).await[0];
+    assert_eq!(
+        (row.1.as_str(), row.2.as_deref()),
+        ("dead", Some("notices_off"))
+    );
+    // Another address, and on again: the first receiver's notice, with its
+    // reason and its count, never reaches the second receiver.
+    put_notices(&f, settings(Some(&to_second), true, "webhook", &both)).await;
+    all_due(&f).await;
+    assert_eq!(deliver(&f).await, 0);
+    assert_eq!((first.hits().len(), second.hits().len()), (1, 0));
+    let dropped: Value = sqlx::query_scalar(
+        "SELECT details->'dropped_notices' FROM audit_log WHERE action='settings.notices'
+         ORDER BY created_at LIMIT 1 OFFSET 1",
+    )
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        dropped,
+        json!(1),
+        "the audit row says how many were dropped"
+    );
+
+    // The address changes while notices stay on: the same.
+    let moved = counted(&f).await;
+    reject(&f, moved).await;
+    put_notices(&f, settings(Some(&to_first), true, "webhook", &both)).await;
+    let row = &notices_of(&f, moved).await[0];
+    assert_eq!(
+        (row.1.as_str(), row.2.as_deref()),
+        ("dead", Some("address_changed"))
+    );
+    assert_eq!(deliver(&f).await, 0);
+    assert_eq!((first.hits().len(), second.hits().len()), (1, 0));
+    // The same address typed again is not a change, and neither is leaving it out.
+    let kept = counted(&f).await;
+    reject(&f, kept).await;
+    put_notices(&f, settings(Some(&to_first), true, "webhook", &both)).await;
+    put_notices(&f, settings(None, true, "webhook", &both)).await;
+    assert_eq!(notices_of(&f, kept).await[0].1, "pending");
+
+    // The format changes: a body built for one shape is not sent in another.
+    put_notices(&f, settings(None, true, "slack", &both)).await;
+    let row = &notices_of(&f, kept).await[0];
+    assert_eq!(
+        (row.1.as_str(), row.2.as_deref()),
+        ("dead", Some("format_changed"))
+    );
+    put_notices(&f, settings(None, true, "webhook", &both)).await;
+
+    // The address is removed: notices go off with it, and what waits is dropped.
+    let orphan = counted(&f).await;
+    reject(&f, orphan).await;
+    let mut removed = settings(Some(""), false, "webhook", &both);
+    let (s, v) = f
+        .request(
+            "PUT",
+            "/settings/notices",
+            &f.admin_cookie,
+            Some(removed.clone()),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["url_set"], false);
+    let row = &notices_of(&f, orphan).await[0];
+    assert_eq!(
+        (row.1.as_str(), row.2.as_deref()),
+        ("dead", Some("notices_off"))
+    );
+    removed["url"] = json!(to_first);
+    removed["enabled"] = json!(true);
+    put_notices(&f, removed).await;
+
+    // A private field that is switched off leaves the notices that wait.
+    first.answer(200);
+    let private = counted(&f).await;
+    reject(&f, private).await;
+    let body = notices_of(&f, private).await[0].3.clone();
+    assert_eq!(
+        (body["reason"].clone(), body["affected_rows"].clone()),
+        (json!("Test"), json!(7))
+    );
+    let mut plain = settings(None, true, "webhook", &both);
+    plain["include_reason"] = json!(false);
+    put_notices(&f, plain.clone()).await;
+    let row = notices_of(&f, private).await[0].clone();
+    assert_eq!(row.1, "pending");
+    assert!(row.3.get("reason").is_none(), "{}", row.3);
+    assert_eq!(row.3["affected_rows"], 7);
+    plain["include_row_count"] = json!(false);
+    put_notices(&f, plain.clone()).await;
+    let row = notices_of(&f, private).await[0].clone();
+    assert!(row.3.get("affected_rows").is_none() && row.3.get("reason").is_none());
+    assert_eq!(deliver(&f).await, 1);
+    let sent = first.hits().pop().unwrap();
+    assert_eq!(sent.json()["approval_id"], json!(private));
+    assert!(!sent.text().contains("reason") && !sent.text().contains("affected_rows"));
+    assert!(!sent.text().contains("Test"), "{}", sent.text());
+
+    // An event that is deselected: its notices are dropped, the others stay.
+    let rejected_one = counted(&f).await;
+    reject(&f, rejected_one).await;
+    let withdrawn_one = f.approval("UPDATE t SET a=1", "pending").await;
+    let (s, v) = f
+        .request(
+            "POST",
+            &format!("/approvals/{withdrawn_one}/withdraw"),
+            &f.grantor_cookie,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let mut one_event = plain.clone();
+    one_event["events"] = json!(["approval.withdrawn"]);
+    put_notices(&f, one_event).await;
+    let row = &notices_of(&f, rejected_one).await[0];
+    assert_eq!(
+        (row.1.as_str(), row.2.as_deref()),
+        ("dead", Some("event_off"))
+    );
+    assert_eq!(notices_of(&f, withdrawn_one).await[0].1, "pending");
+    let hits = first.hits().len();
+    assert_eq!(deliver(&f).await, 1);
+    assert_eq!(first.hits().len(), hits + 1);
+    assert_eq!(
+        first.hits().pop().unwrap().json()["event"],
+        "approval.withdrawn"
+    );
+    // What was delivered before any of this is not touched.
+    let sent: i64 = sqlx::query_scalar("SELECT count(*) FROM notices WHERE status='sent'")
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(sent, 2);
+    assert_eq!(
+        second.hits().len(),
+        0,
+        "nothing ever reached the other receiver"
+    );
+
+    // State changes that are under way while notices are turned off: none of
+    // them leaves a notice waiting behind the change.
+    put_notices(&f, settings(None, true, "webhook", &both)).await;
+    let mut ids = Vec::new();
+    for _ in 0..16 {
+        ids.push(counted(&f).await);
+    }
+    let rejects = futures::future::join_all(ids.iter().map(|id| reject(&f, *id)));
+    let turn_off = async {
+        tokio::task::yield_now().await;
+        put_notices(&f, settings(None, false, "webhook", &both)).await;
+    };
+    tokio::join!(rejects, turn_off);
+    let waiting: i64 = sqlx::query_scalar("SELECT count(*) FROM notices WHERE status='pending'")
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(waiting, 0, "no notice waits after notices were turned off");
+    let reasons: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT last_error FROM notices WHERE approval_id=ANY($1) AND status='dead'",
+    )
+    .bind(&ids)
+    .fetch_all(&f.db)
+    .await
+    .unwrap();
+    assert!(reasons.iter().all(|r| r.as_deref() == Some("notices_off")));
+    f.close().await;
+}
+
+/// A notice is on the wire, to a slow receiver, while the settings change.
+/// The change finds its row waiting and drops it; the record must still say
+/// what happened to the request that was already sent.
+#[tokio::test]
+async fn a_notice_on_the_wire_during_a_settings_change_is_recorded_as_it_went() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let slow = Receiver::start().await;
+    let other = Receiver::start().await;
+    new_secret(&f).await;
+    let events = ["approval.rejected"];
+    let (to_slow, to_other) = (slow.url("slow"), other.url("other"));
+    put_notices(&f, notice_body(Some(&to_slow), true, "webhook", &events)).await;
+    slow.delay.store(1500, std::sync::atomic::Ordering::SeqCst);
+    // (status, attempts, last_error, whether it has a time of delivery)
+    type Row = (String, i32, Option<String>, bool);
+    const ROW: &str =
+        "SELECT status,attempts,last_error,sent_at IS NOT NULL FROM notices WHERE approval_id=$1";
+    // The settings change as soon as the receiver holds `hits` requests.
+    let change_when = |hits: usize, body: Value| {
+        let (f, slow) = (&f, &slow);
+        async move {
+            for _ in 0..500 {
+                if slow.hits().len() >= hits {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            assert_eq!(slow.hits().len(), hits, "the notice is on the wire");
+            put_notices(f, body).await
+        }
+    };
+
+    // Delivered: the old receiver got it, so it is sent, with its attempt.
+    let delivered = rejected(&f).await;
+    let (claimed, changed) = tokio::join!(
+        deliver(&f),
+        change_when(1, notice_body(Some(&to_other), true, "webhook", &events))
+    );
+    assert_eq!(claimed, 1);
+    assert_eq!(
+        changed["delivery"]["dead"], 1,
+        "the change dropped the row while the request was on the wire: {changed}"
+    );
+    let row: Row = sqlx::query_as(ROW)
+        .bind(delivered)
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(row, ("sent".to_owned(), 1, None, true));
+    let (s, after) = f
+        .request("GET", "/settings/notices", &f.admin_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        (&after["delivery"]["pending"], &after["delivery"]["dead"]),
+        (&json!(0), &json!(0)),
+        "{after}"
+    );
+
+    // Failed: it stays as the change left it, and is not tried again.
+    put_notices(&f, notice_body(Some(&to_slow), true, "webhook", &events)).await;
+    slow.answer(500);
+    let failed = rejected(&f).await;
+    let (claimed, _) = tokio::join!(
+        deliver(&f),
+        change_when(2, notice_body(Some(&to_other), true, "webhook", &events))
+    );
+    assert_eq!(claimed, 1);
+    let row: Row = sqlx::query_as(ROW)
+        .bind(failed)
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            "dead".to_owned(),
+            0,
+            Some("address_changed".to_owned()),
+            false
+        )
+    );
+    let due: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM notices WHERE status='pending' OR next_attempt_at>now()+interval '70 seconds'",
+    )
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(due, 0, "no retry is scheduled");
+    all_due(&f).await;
+    assert_eq!(deliver(&f).await, 0);
+    assert_eq!((slow.hits().len(), other.hits().len()), (2, 0));
+    // The first row was not touched by any of this.
+    let row: Row = sqlx::query_as(ROW)
+        .bind(delivered)
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(row, ("sent".to_owned(), 1, None, true));
+    f.close().await;
+}
+
+/// A notice that waits behind an earlier one of its request is not left due:
+/// a worker would read it on every pass. It gets the time of the earlier
+/// one's next attempt, and is due again as soon as nothing is before it.
+#[tokio::test]
+async fn a_notice_held_back_by_an_earlier_one_is_not_due_until_that_one_is() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let receiver = Receiver::start().await;
+    new_secret(&f).await;
+    let both = ["approval.approved", "approval.withdrawn"];
+    let url = receiver.url("h");
+    put_notices(&f, notice_body(Some(&url), true, "webhook", &both)).await;
+    let act = |id: Uuid, action: &'static str| {
+        let f = &f;
+        async move {
+            let (cookie, body) = match action {
+                "approve" => (&f.admin_cookie, Some(json!({}))),
+                _ => (&f.grantor_cookie, None),
+            };
+            let path = format!("/approvals/{id}/{action}");
+            let (s, v) = f.request("POST", &path, cookie, body).await;
+            assert_eq!(s, StatusCode::OK, "{action}: {v}");
+        }
+    };
+    // For each notice of a request, in order: (status, seconds until it is
+    // due, whether it is due exactly when the first one is).
+    let waits = |id: Uuid| {
+        let db = f.db.clone();
+        async move {
+            sqlx::query_as::<_, (String, f64, bool)>(
+                "SELECT status,extract(epoch FROM next_attempt_at-now())::float8,
+                 next_attempt_at=first_value(next_attempt_at) OVER (ORDER BY seq)
+                 FROM notices WHERE approval_id=$1 ORDER BY seq",
+            )
+            .bind(id)
+            .fetch_all(&db)
+            .await
+            .unwrap()
+        }
+    };
+    let due_now = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM notices WHERE status='pending' AND next_attempt_at<=now()",
+        )
+        .fetch_one(&f.db)
+        .await
+        .unwrap()
+    };
+    let fail_first = |id: Uuid| {
+        let f = &f;
+        async move {
+            sqlx::query("UPDATE notices SET next_attempt_at=now() WHERE approval_id=$1 AND event='approval.approved'")
+                .bind(id)
+                .execute(&f.db)
+                .await
+                .unwrap();
+            assert_eq!(deliver(f).await, 1);
+        }
+    };
+
+    // The first notice fails once: it waits about 30 s, less than a lease,
+    // so a notice written behind it is due at once and only held back.
+    receiver.answer(500);
+    let one = f.approval("UPDATE t SET a=1", "pending").await;
+    act(one, "approve").await;
+    assert_eq!(deliver(&f).await, 1);
+    act(one, "withdraw").await;
+    let rows = waits(one).await;
+    assert!((20.0..40.0).contains(&rows[0].1), "{rows:?}");
+    assert!(rows[1].1 <= 0.0, "{rows:?}");
+    assert_eq!(deliver(&f).await, 0, "held back, as before");
+    // It fails again: the one behind it gets the time of the next attempt.
+    fail_first(one).await;
+    let rows = waits(one).await;
+    assert!((70.0..110.0).contains(&rows[0].1), "{rows:?}");
+    assert!(rows[1].2, "the second waits exactly as long: {rows:?}");
+    assert_eq!(due_now().await, 0, "nothing is left for a worker to read");
+    assert_eq!(deliver(&f).await, 0);
+
+    // A notice written behind one that waits that long starts with its time.
+    let two = f.approval("UPDATE t SET a=2", "pending").await;
+    act(two, "approve").await;
+    assert_eq!(deliver(&f).await, 1);
+    fail_first(two).await;
+    act(two, "withdraw").await;
+    let rows = waits(two).await;
+    assert!(rows[0].1 > 70.0 && rows[1].2, "{rows:?}");
+    assert_eq!(due_now().await, 0);
+
+    // The wait of the first request passes and the receiver is back: the
+    // first notice, and then the second with no further wait.
+    receiver.answer(200);
+    sqlx::query(
+        "UPDATE notices SET next_attempt_at=next_attempt_at-interval '10 minutes' WHERE approval_id=$1",
+    )
+    .bind(one)
+    .execute(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(deliver(&f).await, 1);
+    assert_eq!(deliver(&f).await, 1);
+    let rows = waits(one).await;
+    assert_eq!((rows[0].0.as_str(), rows[1].0.as_str()), ("sent", "sent"));
+
+    // The event of the notice that waits is deselected: it is dropped, and
+    // the one behind it is due at once, not when the dropped one would have been.
+    let before = receiver.hits().len();
+    put_notices(
+        &f,
+        notice_body(None, true, "webhook", &["approval.withdrawn"]),
+    )
+    .await;
+    let rows = waits(two).await;
+    assert_eq!(
+        (rows[0].0.as_str(), rows[1].0.as_str()),
+        ("dead", "pending")
+    );
+    assert!(rows[1].1 <= 0.0, "{rows:?}");
+    assert_eq!(deliver(&f).await, 1);
+    assert_eq!(waits(two).await[1].0, "sent");
+    assert_eq!(receiver.hits().len(), before + 1);
+    assert_eq!(
+        receiver.hits().pop().unwrap().json()["event"],
+        "approval.withdrawn"
+    );
+
+    // The first notice is dropped while its failing attempt is on the wire:
+    // the failure is not recorded, and the notice behind it is not given
+    // the time of a dead notice's next attempt. It is due.
+    put_notices(&f, notice_body(None, true, "webhook", &both)).await;
+    receiver.answer(500);
+    receiver
+        .delay
+        .store(1500, std::sync::atomic::Ordering::SeqCst);
+    let three = f.approval("UPDATE t SET a=3", "pending").await;
+    act(three, "approve").await;
+    act(three, "withdraw").await;
+    let before = receiver.hits().len();
+    let deselect = async {
+        for _ in 0..500 {
+            if receiver.hits().len() > before {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(receiver.hits().len(), before + 1, "on the wire");
+        put_notices(
+            &f,
+            notice_body(None, true, "webhook", &["approval.withdrawn"]),
+        )
+        .await;
+    };
+    let (claimed, ()) = tokio::join!(deliver(&f), deselect);
+    assert_eq!(claimed, 1);
+    let rows = waits(three).await;
+    assert_eq!(
+        (rows[0].0.as_str(), rows[1].0.as_str()),
+        ("dead", "pending")
+    );
+    assert!(rows[1].1 <= 0.0, "not held back by a dead notice: {rows:?}");
+    let error: Option<String> = sqlx::query_scalar(
+        "SELECT last_error FROM notices WHERE approval_id=$1 ORDER BY seq LIMIT 1",
+    )
+    .bind(three)
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(error.as_deref(), Some("event_off"));
+    receiver.delay.store(0, std::sync::atomic::Ordering::SeqCst);
+    receiver.answer(200);
+    assert_eq!(deliver(&f).await, 1);
+    assert_eq!(waits(three).await[1].0, "sent");
+    f.close().await;
+}
+
+#[tokio::test]
+async fn the_notices_of_one_request_arrive_in_order_and_requests_do_not_wait_for_each_other() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let receiver = Receiver::start().await;
+    new_secret(&f).await;
+    let events = [
+        "approval.approved",
+        "approval.withdrawn",
+        "approval.rejected",
+    ];
+    put_notices(
+        &f,
+        notice_body(Some(&receiver.url("o")), true, "webhook", &events),
+    )
+    .await;
+    // One request, two state changes: approved, then withdrawn by its owner.
+    let twice = |f: &Fixture| {
+        let (db, app) = (f.db.clone(), f.app.clone());
+        let (admin, grantor) = (f.admin_cookie.clone(), f.grantor_cookie.clone());
+        let (cluster, requester) = (f.cluster, f.grantor);
+        async move {
+            let id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO approvals(id,cluster_id,requester_id,sql,reason,analysis,status)
+                VALUES ($1,$2,$3,'UPDATE t SET a=1','Test','{}','pending')",
+            )
+            .bind(id)
+            .bind(cluster)
+            .bind(requester)
+            .execute(&db)
+            .await
+            .unwrap();
+            for (action, cookie, body) in [
+                ("approve", &admin, Some(json!({}))),
+                ("withdraw", &grantor, None),
+            ] {
+                let path = format!("/api/v1/approvals/{id}/{action}");
+                let (s, v) = call(&app, "POST", &path, cookie, body, None, "127.0.0.1:1234").await;
+                assert_eq!(s, StatusCode::OK, "{action}: {v}");
+            }
+            id
+        }
+    };
+    let events_for = |id: Uuid| {
+        receiver
+            .hits()
+            .iter()
+            .map(Hit::json)
+            .filter(|body| body["approval_id"] == json!(id))
+            .map(|body| {
+                (
+                    body["event"].as_str().unwrap().to_owned(),
+                    body["sequence"].as_i64().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // The receiver fails. Only the first notice is tried, again and again;
+    // the second waits behind it and is never sent ahead of it.
+    receiver.answer(500);
+    let held = twice(&f).await;
+    for attempt in 1..=3 {
+        all_due(&f).await;
+        let (a, b, c) = tokio::join!(deliver(&f), deliver(&f), deliver(&f));
+        assert_eq!(
+            a + b + c,
+            1,
+            "attempt {attempt}: one notice of the request at a time"
+        );
+        let rows = notices_of(&f, held).await;
+        assert_eq!(rows[0].2.as_deref(), Some("http_500"));
+        assert_eq!((rows[1].1.as_str(), rows[1].2.clone()), ("pending", None));
+    }
+    assert!(events_for(held)
+        .iter()
+        .all(|(event, _)| event == "approval.approved"));
+    assert_eq!(events_for(held).len(), 3);
+    // The receiver recovers: the first, then the second.
+    receiver.answer(200);
+    all_due(&f).await;
+    assert_eq!(deliver(&f).await, 1);
+    assert_eq!(deliver(&f).await, 1);
+    assert_eq!(deliver(&f).await, 0);
+    let seen = events_for(held);
+    let last: Vec<&str> = seen[seen.len() - 2..]
+        .iter()
+        .map(|(event, _)| event.as_str())
+        .collect();
+    assert_eq!(last, ["approval.approved", "approval.withdrawn"]);
+    assert!(seen[seen.len() - 1].1 > seen[seen.len() - 2].1, "{seen:?}");
+    // Every attempt of one notice has the same sequence.
+    assert!(seen[..4].iter().all(|(_, sequence)| *sequence == seen[0].1));
+
+    // A first notice that is given up lets the second one go.
+    receiver.answer(500);
+    let given_up = twice(&f).await;
+    sqlx::query("UPDATE notices SET attempts=5 WHERE approval_id=$1 AND event='approval.approved'")
+        .bind(given_up)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(deliver(&f).await, 1);
+    let rows = notices_of(&f, given_up).await;
+    assert_eq!(
+        (rows[0].1.as_str(), rows[1].1.as_str()),
+        ("dead", "pending")
+    );
+    receiver.answer(200);
+    assert_eq!(deliver(&f).await, 1);
+    assert_eq!(notices_of(&f, given_up).await[1].1, "sent");
+    assert_eq!(events_for(given_up).last().unwrap().0, "approval.withdrawn");
+
+    // A slow receiver and several workers: still first, then second.
+    receiver
+        .delay
+        .store(150, std::sync::atomic::Ordering::SeqCst);
+    let slow = twice(&f).await;
+    let mut handled = 0;
+    while handled < 2 {
+        let (a, b, c) = tokio::join!(deliver(&f), deliver(&f), deliver(&f));
+        assert!(
+            a + b + c <= 1,
+            "two notices of one request were sent at once"
+        );
+        handled += a + b + c;
+    }
+    let seen = events_for(slow);
+    assert_eq!(
+        seen.iter()
+            .map(|(event, _)| event.as_str())
+            .collect::<Vec<_>>(),
+        ["approval.approved", "approval.withdrawn"]
+    );
+    assert!(seen[0].1 < seen[1].1);
+
+    // Different requests do not wait for each other: eight notices to a
+    // receiver that takes 300 ms each go out several at a time.
+    receiver
+        .delay
+        .store(300, std::sync::atomic::Ordering::SeqCst);
+    receiver.peak.store(0, std::sync::atomic::Ordering::SeqCst);
+    let mut ids = Vec::new();
+    for _ in 0..8 {
+        ids.push(rejected(&f).await);
+    }
+    let before = receiver.hits().len();
+    let started = std::time::Instant::now();
+    assert_eq!(deliver(&f).await, 8);
+    let took = started.elapsed();
+    assert_eq!(receiver.hits().len(), before + 8);
+    let peak = receiver.peak.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        (2..=4).contains(&peak),
+        "at most four at once, and more than one: {peak}"
+    );
+    assert!(took < std::time::Duration::from_millis(2200), "{took:?}");
+    // One of them fails: only that request waits, the others are delivered.
+    receiver.delay.store(0, std::sync::atomic::Ordering::SeqCst);
+    receiver.answer(500);
+    let stuck = twice(&f).await;
+    assert_eq!(deliver(&f).await, 1);
+    receiver.answer(200);
+    let free = twice(&f).await;
+    assert_eq!(deliver(&f).await, 1);
+    assert_eq!(deliver(&f).await, 1);
+    assert_eq!(
+        events_for(free)
+            .iter()
+            .map(|(event, _)| event.as_str())
+            .collect::<Vec<_>>(),
+        ["approval.approved", "approval.withdrawn"]
+    );
+    let rows = notices_of(&f, stuck).await;
+    assert_eq!(
+        (rows[0].1.as_str(), rows[1].1.as_str()),
+        ("pending", "pending")
+    );
+    assert_eq!(events_for(stuck).len(), 1);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn settings_that_this_version_cannot_read_stop_notices_without_losing_any() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let receiver = Receiver::start().await;
+    new_secret(&f).await;
+    put_notices(
+        &f,
+        notice_body(
+            Some(&receiver.url("u")),
+            true,
+            "webhook",
+            &["approval.rejected"],
+        ),
+    )
+    .await;
+    rejected(&f).await;
+    rejected(&f).await;
+    // A newer version writes a format that this one does not know.
+    sqlx::query(
+        "UPDATE settings SET value=jsonb_set(value,'{format}','\"teams\"') WHERE key='notices'",
+    )
+    .execute(&f.db)
+    .await
+    .unwrap();
+    let stored = || async {
+        sqlx::query_scalar::<_, String>("SELECT value::text FROM settings WHERE key='notices'")
+            .fetch_one(&f.db)
+            .await
+            .unwrap()
+    };
+    let before = stored().await;
+    // The worker sends nothing and drops nothing.
+    for _ in 0..3 {
+        assert_eq!(deliver(&f).await, 0);
+    }
+    let rows = outbox(&f).await;
+    assert_eq!(rows.len(), 2);
+    assert!(rows
+        .iter()
+        .all(|row| (row.2.as_str(), row.3, row.4.as_deref()) == ("pending", 0, None)));
+    assert_eq!(receiver.hits().len(), 0);
+    // A request still changes state; it writes no notice.
+    let id = f.approval("UPDATE t SET a=1", "pending").await;
+    reject(&f, id).await;
+    assert_eq!(outbox(&f).await.len(), 2);
+    let expiring = f.approval("UPDATE t SET a=2", "pending").await;
+    sqlx::query("UPDATE approvals SET expires_at=now()-interval '1 second' WHERE id=$1")
+        .bind(expiring)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    vda_server::health::recover_executions(&f.state)
+        .await
+        .unwrap();
+    assert_eq!(outbox(&f).await.len(), 2);
+    // Nothing reads the settings as "off", and nothing overwrites them.
+    for (method, path, body) in [
+        ("GET", "/settings/notices", None),
+        (
+            "PUT",
+            "/settings/notices",
+            Some(notice_body(
+                Some("https://hooks.example/x"),
+                false,
+                "slack",
+                &[],
+            )),
+        ),
+        ("POST", "/settings/notices/secret", None),
+        ("POST", "/settings/notices/test", None),
+    ] {
+        let (s, v) = f.request(method, path, &f.admin_cookie, body).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{method} {path}: {v}");
+        assert_eq!(v["error"]["code"], "settings_unreadable", "{v}");
+        assert!(!v.to_string().contains("secret\":"), "{v}");
+    }
+    assert_eq!(
+        stored().await,
+        before,
+        "the stored settings were not touched"
+    );
+    assert_eq!(receiver.hits().len(), 0);
+    // Readable again: the notices that waited are delivered.
+    sqlx::query(
+        "UPDATE settings SET value=jsonb_set(value,'{format}','\"webhook\"') WHERE key='notices'",
+    )
+    .execute(&f.db)
+    .await
+    .unwrap();
+    let (s, v) = f
+        .request("GET", "/settings/notices", &f.admin_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["delivery"]["pending"], 2);
+    assert_eq!(deliver(&f).await, 2);
+    assert_eq!(receiver.hits().len(), 2);
     f.close().await;
 }

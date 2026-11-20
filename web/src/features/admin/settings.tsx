@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useUser } from '../auth/session';
 import { AboutConsole } from './about';
 import { PersonalSettings } from './preferences';
+import { NoticeSettingsPanel } from './notices';
 import { DiscoverySources } from '../discovery/sources';
 import { useAction, useResource } from '../../lib/query';
 import {
@@ -20,10 +21,11 @@ export function SettingsPage() {
   const [params, setParams] = useSearchParams();
   const user = useUser(),
     admin = user?.org_role === 'admin';
+  const asked = params.get('tab');
   const tab =
-    admin && params.get('tab') !== 'preferences'
-      ? params.get('tab') === 'discovery'
-        ? 'discovery'
+    admin && asked !== 'preferences'
+      ? asked === 'discovery' || asked === 'notices'
+        ? asked
         : 'general'
       : 'preferences';
   return (
@@ -34,6 +36,7 @@ export function SettingsPage() {
         ...(admin
           ? [
               { value: 'general', label: 'General' },
+              { value: 'notices', label: 'Notices' },
               { value: 'discovery', label: 'Cloud discovery' },
             ]
           : []),
@@ -44,6 +47,8 @@ export function SettingsPage() {
         <PersonalSettings />
       ) : tab === 'discovery' ? (
         <DiscoverySources />
+      ) : tab === 'notices' ? (
+        <NoticeSettingsPanel />
       ) : (
         <GeneralSettings />
       )}

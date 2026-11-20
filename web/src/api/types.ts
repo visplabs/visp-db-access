@@ -458,3 +458,53 @@ export type AgentLogin =
       stale: boolean;
       needs_password: boolean;
     };
+export type NoticeFormat = 'webhook' | 'slack';
+export type NoticeEvent =
+  | 'approval.created'
+  | 'approval.previewed'
+  | 'approval.approved'
+  | 'approval.rejected'
+  | 'approval.withdrawn'
+  | 'approval.executed'
+  | 'approval.failed'
+  | 'approval.expired';
+/** Notices to approvers, as an organization administrator reads them. The
+ * webhook address and the signing secret are never part of it. */
+export interface NoticeSettings {
+  enabled: boolean;
+  format: NoticeFormat;
+  url_set: boolean;
+  url_host: string | null;
+  secret_set: boolean;
+  events: NoticeEvent[];
+  include_reason: boolean;
+  include_row_count: boolean;
+  /** Whether a notice can link to its request (the public URL is set). */
+  links: boolean;
+  delivery: {
+    pending: number;
+    dead: number;
+    last_success_at: string | null;
+    last_error: string | null;
+    last_error_at: string | null;
+  };
+}
+/** The body of `PUT /settings/notices`. `url` left out keeps the stored
+ * address; an empty string removes it. */
+export interface NoticeUpdate {
+  enabled: boolean;
+  format: NoticeFormat;
+  url?: string;
+  events: NoticeEvent[];
+  include_reason: boolean;
+  include_row_count: boolean;
+}
+export interface NoticeSecret {
+  secret: string;
+  rotated: boolean;
+}
+export interface NoticeTest {
+  delivered: boolean;
+  status: number | null;
+  error: string | null;
+}

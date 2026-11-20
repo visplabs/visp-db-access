@@ -252,28 +252,16 @@ async fn cycle(state: &AppState) -> Result<(), ApiError> {
     sqlx::query("DELETE FROM sessions WHERE expires_at<=now() OR absolute_expires_at<=now()")
         .execute(&state.db)
         .await?;
-    recover_executions(&state.db).await?;
+    recover_executions(state).await?;
+    crate::notices::worker::prune(&state.db).await?;
     Ok(())
 }
 
 /// Recover abandoned executions without expiring in-flight approval claims.
-pub async fn recover_executions(db: &sqlx::PgPool) -> Result<(), ApiError> {
-    sqlx::query(
-        "UPDATE approvals SET status='expired'
-        WHERE status IN ('pending','approved') AND expires_at<=now()",
-    )
-    .execute(db)
-    .await?;
-    sqlx::query(
-        "UPDATE approvals a SET
-         status='failed',error='execution outcome unknown (node crashed or lost)',
-         error_code='outcome_unknown',executed_at=now()
-         WHERE a.status='executing' AND
-         COALESCE(a.execution_started_at,a.reviewed_at,a.created_at)< now() -
-         ((a.execution_timeout_ms+300000)*interval '1 millisecond')",
-    )
-    .execute(db)
-    .await?;
+pub async fn recover_executions(state: &AppState) -> Result<(), ApiError> {
+    crate::approvals::expire_due(state, crate::approvals::Due::All).await?;
+    crate::approvals::fail_abandoned(state).await?;
+    let db = &state.db;
     // Policies cap statements at ten minutes. Use that maximum plus five minutes
     // so configuration changes/deletions cannot prematurely retire live queries.
     sqlx::query(

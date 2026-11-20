@@ -7,6 +7,15 @@ change the API and storage schema; migrations run automatically at startup.
 
 ## [Unreleased]
 
+### Added
+
+- Notices to approvers: an outbound webhook, signed or in Slack's format, that
+  says a request waits. Off by default; set up under Settings → Notices. A
+  notice never holds SQL, rows or database errors. New optional setting
+  `VDA_PUBLIC_URL` adds a link to the request. Migration `0010_notices`.
+- Audit events `approval.expire` and, for a write that a lost node left
+  running, `approval.failed` with `outcome_unknown`.
+
 ## [0.1.0] - 2026-10-10
 
 First public release.

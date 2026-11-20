@@ -1242,6 +1242,45 @@ td.numeric {
   .tabs .tab {
     padding-inline: 8px;
   }
+  /* Equal columns clip and overlap long labels on a phone. The tabs take
+     their own width and wrap onto a second row; the selected one carries
+     the surface itself, because a sliding thumb needs equal columns. */
+  .tabs {
+    display: flex;
+    flex-wrap: wrap;
+    width: auto;
+    overflow: visible;
+  }
+  .tabs::before {
+    display: none;
+  }
+  .tabs .tab {
+    flex: 0 0 auto;
+    min-height: 28px;
+  }
+  .tabs .tab[data-state='active'] {
+    background: var(--surface);
+  }
+  /* A toast must not cover a dialog. While one is open, toasts sit in a band
+     at the very top, 8px from the edge and at most 76px high, and the
+     centred dialog leaves that band and 8px more free above and below
+     itself. The band holds whatever happens: only the newest toast shows
+     (the older ones come back when the dialog closes, if their time is not
+     up), and a long one scrolls inside its own box. */
+  body:has(.dialog:not(.drawer)) .toasts {
+    top: 8px;
+    bottom: auto;
+  }
+  body:has(.dialog:not(.drawer)) .toast:not(:last-child) {
+    display: none;
+  }
+  body:has(.dialog:not(.drawer)) .toast {
+    max-height: 76px;
+    overflow-y: auto;
+  }
+  .dialog:not(.drawer) {
+    max-height: calc(100dvh - 184px);
+  }
   .health-summary > div {
     grid-template-columns: 1fr 1fr;
   }

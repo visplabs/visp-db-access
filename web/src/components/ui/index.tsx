@@ -194,6 +194,7 @@ export function Modal({
   wide = false,
   drawer = false,
   className = '',
+  dismissible = true,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -203,7 +204,14 @@ export function Modal({
   wide?: boolean;
   drawer?: boolean;
   className?: string;
+  /** False while the dialog shows something that cannot be shown again:
+   * Escape, a click outside and the close button do nothing, so only a
+   * button inside the dialog can close it. */
+  dismissible?: boolean;
 }) {
+  const stay = (event: Event) => {
+    if (!dismissible) event.preventDefault();
+  };
   const opener = useRef<{
     element: HTMLElement | null;
     fallback: HTMLElement | null;
@@ -224,6 +232,9 @@ export function Modal({
         <Dialog.Overlay className="overlay" />
         <Dialog.Content
           className={`dialog ${wide ? 'wide' : ''} ${drawer ? 'drawer' : ''} ${className}`}
+          onEscapeKeyDown={stay}
+          onPointerDownOutside={stay}
+          onInteractOutside={stay}
           onOpenAutoFocus={(event) => {
             // Focus the dialog itself: auto-focusing the close button opens its
             // tooltip, which then swallows the first Escape.
@@ -244,11 +255,13 @@ export function Modal({
                 {description ?? title}
               </Dialog.Description>
             </div>
-            <Dialog.Close asChild>
-              <Button variant="ghost" aria-label="Close dialog">
-                <X size={18} />
-              </Button>
-            </Dialog.Close>
+            {dismissible && (
+              <Dialog.Close asChild>
+                <Button variant="ghost" aria-label="Close dialog">
+                  <X size={18} />
+                </Button>
+              </Dialog.Close>
+            )}
           </div>
           {children}
         </Dialog.Content>

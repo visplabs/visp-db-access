@@ -115,6 +115,7 @@ async fn serve(
     vda_server::auth::bootstrap(&state).await?;
     let discovery_scheduler = tokio::spawn(vda_server::discovery::scheduler(state.clone()));
     let scheduler = tokio::spawn(vda_server::health::scheduler(state.clone()));
+    let notices = tokio::spawn(vda_server::notices::worker::worker(state.clone()));
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind,"gateway listening");
     let shutdown_state = state.clone();
@@ -134,6 +135,9 @@ async fn serve(
     state.stop.cancel();
     scheduler.await?;
     discovery_scheduler.await?;
+    // The notice worker gives the sends on the wire a few seconds, then ends;
+    // what it did not send stays in the outbox for the next start.
+    notices.await?;
     // All HTTP handlers have drained; close the sender side through receiver.close.
     // Let bounded queued events finish before closing metadata storage.
     writer.await?;

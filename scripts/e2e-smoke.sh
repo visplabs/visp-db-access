@@ -122,6 +122,35 @@ check "(.items | length) == 1 and .items[0].id != \"$first_grant_id\" and .next_
 call GET /grants 403 "$member_jar"
 pass 'scoped grant pagination and minimal user lookup'
 
+# Notices to approvers. Notices stay off and nothing leaves this machine: when
+# the gateway runs on loopback, the test notice goes to the gateway's own
+# /healthz, which answers a POST with 405. That is a real round trip.
+notice_settings() {
+  jq -n --arg url "$1" --argjson enabled "$2" '{enabled:$enabled,format:"webhook",events:["approval.created"],include_reason:false,include_row_count:false} + (if $url == "keep" then {} else {url:$url} end)'
+}
+call GET /settings/notices 200 "$admin_jar"
+check '.enabled == false and .url_set == false and (has("url") or has("secret") | not)'
+call GET /settings/notices 403 "$reviewer_jar"
+call PUT /settings/notices 403 "$member_jar" "$(notice_settings keep false)"
+call PUT /settings/notices 400 "$admin_jar" "$(notice_settings keep true)"
+call PUT /settings/notices 400 "$admin_jar" "$(notice_settings 'https://169.254.169.254/latest/meta-data/' false)"
+call PUT /settings/notices 400 "$admin_jar" "$(notice_settings 'https://user:pw@hooks.example.com/x' false)"
+call POST /settings/notices/secret 200 "$admin_jar"
+check '(.secret | startswith("vda_whsec_")) and (.secret | length) == 53'
+if [[ $base_url =~ ^http://(127\.0\.0\.1|localhost)(:[0-9]+)?$ ]]; then
+  call PUT /settings/notices 200 "$admin_jar" "$(notice_settings "$base_url/healthz" false)"
+  check '.url_set == true and .secret_set == true and (has("url") or has("secret") | not)'
+  call POST /settings/notices/test 200 "$admin_jar"
+  check '.delivered == false and .status == 405 and .error == "http_405"'
+  pass 'notice settings, write-only address and secret, and a test round trip'
+else
+  call PUT /settings/notices 200 "$admin_jar" "$(notice_settings 'https://hooks.example.com/smoke' false)"
+  check '.url_set == true and .url_host == "hooks.example.com" and (has("url") or has("secret") | not)'
+  pass 'notice settings, write-only address and secret (no test notice: the gateway is not on loopback)'
+fi
+call PUT /settings/notices 200 "$admin_jar" "$(notice_settings '' false)"
+check '.enabled == false and .url_set == false'
+
 # A write that the SELECT-only role cannot run fails in its dry run, when it is
 # requested, and no request is stored.
 call GET "/approvals?cluster_id=$cluster_id&limit=100" 200 "$reviewer_jar"

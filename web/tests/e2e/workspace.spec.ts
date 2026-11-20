@@ -355,6 +355,7 @@ for (const width of [1440, 390])
         '/audit',
         '/settings',
         '/settings?tab=preferences',
+        '/settings?tab=notices',
         '/settings?tab=discovery',
         '/clusters?tab=discovered',
         '/ui?kitchen-sink',
