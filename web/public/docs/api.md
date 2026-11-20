@@ -287,6 +287,46 @@ interface AuditEvent {
   ip: string | null;
   details: unknown;
   created_at: string;
+  seq: number; // the event's number in the order it was written; gaps are normal
+  sealed: boolean; // whether the event is in the hash chain yet
+}
+
+interface AuditChainHead {
+  position: number; // the number of the last link; links are numbered 1, 2, 3 … with no gap
+  hash: string; // 64 lower-case hex characters
+  key_id: string; // names the key that made the link; it is not a secret
+  sealed_at: string;
+}
+
+interface AuditProblem {
+  kind:
+    | 'row_changed' // a sealed event, or its link, no longer has the sealed content
+    | 'row_missing' // a link's event is gone
+    | 'row_inserted' // an event sorts among sealed events and has no link
+    | 'chain_broken' // a link is missing, moved, put in or relabelled as another key's
+    | 'chain_truncated' // the chain ends before a head that was seen earlier
+    | 'checkpoint_mismatch'; // the link at a head seen earlier has another hash or names another key
+  position: number; // the link where the chain stops verifying
+  audit_id: string | null;
+  seq: number | null;
+  message: string;
+}
+
+interface AuditSegment {
+  key_id: string; // links in a row that were sealed with another master key
+  first_position: number;
+  last_position: number;
+}
+
+interface AuditVerification {
+  status: 'intact' | 'partial' | 'broken';
+  key_id: string; // the key the check was made with
+  from_position: number;
+  to_position: number; // the last link that was good; from_position - 1 when none
+  links: number; // links checked, up to the first problem
+  verified: number; // of those, links whose hash was made again with the current key
+  unverifiable: AuditSegment[];
+  problem: AuditProblem | null; // the first problem
 }
 
 interface SchemaTree {
@@ -875,7 +915,12 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
 ### Audit
 
 - `GET /audit?action=&actor_id=&limit=&cursor=` → `{items: AuditEvent[], next_cursor}` (org admin).
-  `action` is an exact match; `limit` must be 1–200. `query.execute` durably records
+  `action` is an exact match; `limit` must be 1–200. The list is ordered by `created_at`,
+  then `id`, newest first. Its cursor names the last event of a page and nothing else; the
+  time of that event is read in the database. So an event whose `created_at` is not a
+  finite time (the gateway writes none) is listed like any other, with `created_at` as
+  PostgreSQL prints it (`"infinity"`), and does not end the list. A cursor whose event no
+  longer exists is 400 `validation`. `query.execute` durably records
   every authorized query attempt before target I/O, including blocked attempts;
   details contain `{query_id, history_id, status}` with initial `running`/`blocked`
   status. Final outcome is in history. Approval actions are `approval.create`,
@@ -895,6 +940,169 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
   when the same request pauses or resumes), `agent.pause`, `agent.resume`, `agent.delete`
   (`{owner_id, name}`), `agent.token_create` (`{token_id, hint, expires_at}`) and
   `agent.token_revoke` (`{token_id}`). A token is never written to the audit log.
+  A change of the status of a cluster's agent login writes `agent_login.status`
+  (`{from, to}`, each one of `unchecked`, `ok`, `drift`, `error`) with no actor, no IP
+  address and the cluster as its target (`target_type: "cluster"`). It is written once
+  for each change, by the check that made it, however many nodes check the cluster; a
+  check that finds the same status as before writes nothing. `POST /audit/verify` writes
+  `audit.verify` (`{from_position, to_position, status, problem: {kind, position} | null}`).
+  A request that changes something and fails is recorded with its method and route as the
+  action, such as `POST /api/v1/audit/verify`, and `{status}`.
+
+  `details` is the JSON that was written. Should a row hold JSON that the gateway cannot
+  read (nested deeper than 128 levels, or a number beyond a 64-bit float; the gateway
+  writes neither), `details` is that JSON as a string.
+
+  Every event has `seq` and `sealed`. An event is written with `sealed: false` and is
+  sealed a few seconds later; see the hash chain below.
+
+- `GET /audit/integrity` (org admin) → the state of the hash chain:
+
+  ```ts
+  {
+    head: AuditChainHead | null; // null until the first event is sealed
+    key_id: string; // the key of this gateway
+    sealed: number; // events in the chain; equal to head.position
+    unsealed: number; // events written after the last sealed one
+    oldest_unsealed_at: string | null;
+    oldest_unsealed_seconds: number | null;
+    verification: {
+      status: "pending" | "intact" | "partial" | "broken"; // pending: no full pass has ended yet
+      checked_at: string | null; // when the last full pass of the background check ended
+      key_id: string | null; // the key that pass was made with
+      links: number;
+      verified: number;
+      unverifiable: AuditSegment[];
+      problem: AuditProblem | null;
+      running: { position: number; started_at: string | null } | null; // the pass in progress
+    }
+  }
+  ```
+
+  `head` is a checkpoint: save `position`, `hash` and `key_id` outside the database (the
+  gateway also logs them, see [Deployment](DEPLOYMENT.md#audit-hash-chain)) and a later
+  `verify-audit --expect-position … --expect-hash … --expect-key-id …` proves that the
+  chain still contains that link, under the key that sealed it. `partial` means that nothing is wrong, but some links were sealed
+  with another master key and only their structure could be checked; it is never
+  reported as `intact`. A node that saw a head which is later gone, or which later has
+  another hash or names another key, reports `chain_truncated` or `checkpoint_mismatch`
+  here until it restarts.
+
+- `POST /audit/verify` `{limit?: number, from_position?: number}` (org admin) →
+  `AuditVerification & {head: AuditChainHead | null}`. Checks a range of links and the
+  events they seal now, and reads only. `limit` is 1–10,000 (default 1,000). Without
+  `from_position` the newest `limit` links are checked; with it, `limit` links from that
+  position. A range past the head is empty and `intact`. 429 `rate_limited` with
+  `{retry_after_seconds: 60}` after six checks in a minute on one node, by anyone. The
+  check is recorded as `audit.verify`.
+
+#### The audit hash chain
+
+The audit log is append-only by a trigger, which stops the gateway's own database role.
+The hash chain is for someone who can remove the trigger: every sealed event has a link
+in the table `audit_chain`, and each link carries a keyed hash of the event and of the
+link before it. An event that is changed or deleted, a link that is removed or moved, and
+an event that is put in among sealed ones no longer match, and the chain cannot be made
+again without the master key. What it does not prove is in the
+[security model](SECURITY-MODEL.md#audit).
+
+Events are not sealed as they are written, because nothing serializes writers. A sealer
+on one node at a time appends links in the order `(txid, seq)`: the ID of the transaction
+that inserted the event (`audit_log.txid`, type `xid8`), then `audit_log.seq`. An event is
+sealed when its `txid` is below `pg_snapshot_xmin(pg_current_snapshot())`, that is when
+every transaction that could still commit an event before it has ended.
+
+An independent verifier needs the metadata database, the master key and this section.
+
+- **Key.** `chain_key = SHA-256("visp-db-access audit chain key v1" || 0x00 || master_key)`,
+  where `master_key` is the 32 bytes that `VDA_MASTER_KEY` encodes.
+  `key_id` is the first 8 bytes of `HMAC-SHA256(chain_key, "audit chain key id")` in hex.
+- **Row.** The bytes of an event are the label `vda-audit-row-v1` (16 bytes, ASCII)
+  followed by ten fields in this order: `id`, `actor_id`, `action`, `target_type`,
+  `target_id`, `ip`, `details`, `created_at`, `seq`, `txid`. A field that is NULL is the
+  byte `0x00`. Any other field is the byte `0x01`, the length of the value in bytes as an
+  unsigned 32-bit big-endian number, and the value. The values are text in UTF-8:
+
+  | Field                         | Value                                                                                           |
+  | ----------------------------- | ----------------------------------------------------------------------------------------------- |
+  | `id`, `actor_id`, `target_id` | The UUID in lower case with hyphens                                                             |
+  | `action`, `target_type`       | As stored                                                                                       |
+  | `ip`                          | `text(ip)`: the address and the length of its mask, such as `10.1.2.3/32` or `2001:db8::1/128`  |
+  | `details`                     | The canonical JSON of `details` (below)                                                         |
+  | `created_at`                  | Microseconds since 1970-01-01 00:00:00 UTC as a decimal number, the precision the column stores |
+  | `seq`, `txid`                 | The decimal number                                                                              |
+
+  A `created_at` that is not a finite time is the text `infinity` or `-infinity`.
+
+- **Canonical JSON.** No white space. The members of an object sorted by the UTF-8 bytes
+  of their keys. A string in UTF-8 with `"` as `\"`, `\` as `\\`, each character below
+  U+0020 as `\u00xx` with lower-case hex digits, and nothing else escaped. A number as a
+  plain decimal with no exponent, no leading zero, no trailing zero after the point, no
+  point without digits after it, and `0` for every zero; digits are kept exactly, never
+  read as floating point. `true`, `false`, `null` as they are. So the order of keys and
+  the spelling of a number, which `jsonb` does not keep, are not part of the hash. Should
+  `details` be nested deeper than 128 levels, the field is the byte `0x02`, the length,
+  and `details::text` exactly as PostgreSQL prints it.
+- **Link.**
+  `hash = HMAC-SHA256(chain_key, "vda-audit-link-v1" || position || segment_start || prev || row)`
+  in lower-case hex. `position` is the link's number and `segment_start` the position
+  where its run began (below), each as an unsigned 64-bit big-endian number; `prev` is the
+  32 bytes of the hash of the link before it. For position 1, `prev` is 32 zero bytes. A
+  link stores `position`, `audit_id`, `txid`, `seq`, `key_id`, `segment_start`, `prev_hash`
+  (the hex of `prev`) and `hash`.
+- **Segments.** After a change of the master key the next link is made with the new key
+  over the last hash of the old key's links, as any link is. Links of another `key_id`
+  can be verified only with that key. `key_id` is a label and is not inside the hash, so
+  each link says inside its hash where the unbroken run of links of its key began:
+  `segment_start` is the `segment_start` of the link before it when that link has the
+  same `key_id`, and the link's own `position` when that link has another `key_id` or
+  there is none. A sealed event cannot then be changed and its link passed off as
+  another key's: the next link of the real key still names the old start of the run, and
+  no longer follows a link of its key.
+
+To verify, read the links in order of `position` with their events and check for each:
+its position is the one after the last; its `prev_hash` is the `hash` of the link before
+(64 zeros for the first); its `(txid, seq)` is greater than that of the link before; its
+event exists and has the same `txid` and `seq`; its `hash` is the hash of the event as
+above; and its `segment_start` is that of the link before when the two have the same
+`key_id`, and its own `position` otherwise. A link that fails the last check after its
+hash was made again proves that a link before it was relabelled. For links of another
+`key_id` the hash cannot be made again; the other checks are made on the stored values.
+Then no event without a link may have a `(txid, seq)` at or below that of the last link.
+A check of a range takes the link before the range as the database has it. In Python,
+for one link:
+
+```python
+import hashlib, hmac, struct
+
+def field(value):
+    if value is None:
+        return b"\x00"
+    data = value.encode()
+    return b"\x01" + struct.pack(">I", len(data)) + data
+
+def link_hash(master_key, position, segment_start, prev_hash_hex, values):
+    # values: the ten texts in the order above, None for NULL
+    key = hashlib.sha256(b"visp-db-access audit chain key v1\0" + master_key).digest()
+    row = b"vda-audit-row-v1" + b"".join(field(value) for value in values)
+    message = (
+        b"vda-audit-link-v1"
+        + struct.pack(">Q", position)
+        + struct.pack(">Q", segment_start)
+        + bytes.fromhex(prev_hash_hex)
+        + row
+    )
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
+```
+
+With the master key of 32 bytes `0x03`, the event `id` `11111111-2222-4333-8444-555555555555`,
+`actor_id` `aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee`, `action` `query.execute`, `target_type`
+`cluster`, `target_id` `99999999-8888-4777-8666-555555555555`, `ip` `10.1.2.3/32`,
+`details` `{"agent_id":null,"query_id":"q","status":"running"}`, `created_at`
+`1795255200123456`, `seq` `7` and `txid` `4242` at position 1, with `segment_start` 1 and
+64 zeros as `prev_hash`, has the hash
+`a34e37a372f82349c4c347bb41689fe7c8374cfb725df9580d8a81f093a9ee04`, and the `key_id` is
+`4a1886b932e8ae81`. The command `visp-db-access verify-audit` does all of this.
 
 ### Settings
 

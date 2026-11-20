@@ -499,28 +499,83 @@ pub(crate) async fn delete_grant(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// The cursor of the audit list: the ID of the last event of a page, and
+/// nothing else. The list is ordered by time and ID, and the time of the
+/// boundary is read from that event in the database, not carried in the
+/// cursor: an audit row can be given a time that no cursor could carry
+/// (`infinity`, a year past what a date type holds), and such a row at the
+/// end of a page must not make the next page fail.
+fn audit_cursor(value: &str) -> Result<Uuid, ApiError> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let invalid = || ApiError::validation("Invalid cursor");
+    if value.len() > 256 {
+        return Err(invalid());
+    }
+    let bytes = URL_SAFE_NO_PAD.decode(value).map_err(|_| invalid())?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| invalid())?;
+    // A cursor from before this form is a time, `|`, and the ID.
+    text.rsplit('|')
+        .next()
+        .and_then(|id| id.parse().ok())
+        .ok_or_else(invalid)
+}
 pub(crate) async fn audit(
     State(state): State<AppState>,
     Extension(user): Extension<User>,
     Query(page): Query<db::Page>,
 ) -> Result<Json<Value>, ApiError> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     rbac::require_admin(&user)?;
-    let (limit, cursor) = page.bounds()?;
-    let items:Vec<Value>=sqlx::query_scalar(
-"SELECT jsonb_build_object('id',a.id,'actor',CASE WHEN u.id IS NULL THEN NULL ELSE
+    let limit = page.limit()?;
+    let after = page.cursor.as_deref().map(audit_cursor).transpose()?;
+    if let Some(after) = after {
+        let known: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM audit_log WHERE id=$1)")
+            .bind(after)
+            .fetch_one(&state.db)
+            .await?;
+        if !known {
+            return Err(ApiError::validation("Invalid cursor"));
+        }
+    }
+    // `sealed` says whether the event is in the hash chain yet. `details`
+    // comes as text: it is the one field that anyone who can write to the
+    // table can make unreadable for this server (nested too deep, a number
+    // too large), and one such row must not make the whole list fail.
+    let rows: Vec<(Value, String)> = sqlx::query_as(
+        "SELECT jsonb_build_object('id',a.id,'actor',CASE WHEN u.id IS NULL THEN NULL ELSE
          jsonb_build_object('id',u.id,'email',u.email)
-         END,'action',a.action,'target_type',a.target_type,'target_id',a.target_id,'ip',host(a.ip),'details',a.details,'created_at',a.created_at)
+         END,'action',a.action,'target_type',a.target_type,'target_id',a.target_id,'ip',host(a.ip),'created_at',a.created_at,
+         'seq',a.seq,'sealed',EXISTS(SELECT 1 FROM audit_chain k WHERE k.audit_id=a.id)),
+         a.details::text
          FROM audit_log a LEFT JOIN users u ON u.id=a.actor_id WHERE ($1::text IS NULL OR a.action=$1) AND
-         ($2::uuid IS NULL OR a.actor_id=$2) AND ($3::timestamptz IS NULL OR (a.created_at,a.id)<($3,$4))
-         ORDER BY a.created_at DESC,a.id DESC LIMIT $5",
-)
-        .bind(page.action)
-.bind(page.actor_id)
-.bind(cursor.as_ref().map(|c|c.created_at))
-.bind(cursor.as_ref().map(|c|c.id))
-.bind(limit+1)
-.fetch_all(&state.db).await?;
-    Ok(Json(db::page(items, limit)?))
+         ($2::uuid IS NULL OR a.actor_id=$2) AND ($3::uuid IS NULL OR
+          (a.created_at,a.id)<((SELECT b.created_at FROM audit_log b WHERE b.id=$3),$3))
+         ORDER BY a.created_at DESC,a.id DESC LIMIT $4",
+    )
+    .bind(page.action)
+    .bind(page.actor_id)
+    .bind(after)
+    .bind(limit + 1)
+    .fetch_all(&state.db)
+    .await?;
+    let more = rows.len() > limit as usize;
+    let items: Vec<Value> = rows
+        .into_iter()
+        .take(limit as usize)
+        .map(|(mut item, details)| {
+            let details = serde_json::from_str(&details).unwrap_or(Value::String(details));
+            if let Some(object) = item.as_object_mut() {
+                object.insert("details".into(), details);
+            }
+            item
+        })
+        .collect();
+    let next = items
+        .last()
+        .filter(|_| more)
+        .and_then(|last| last["id"].as_str())
+        .map(|id| URL_SAFE_NO_PAD.encode(id));
+    Ok(Json(json!({"items": items, "next_cursor": next})))
 }
 pub(crate) async fn network(
     State(state): State<AppState>,

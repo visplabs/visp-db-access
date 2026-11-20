@@ -1,4 +1,9 @@
 //! Durable query intent and bounded asynchronous delivery of auxiliary audit events.
+//!
+//! Every audit row is written here, by one statement ([`persist_on`]) or, for
+//! the queue, by its batched form ([`persist_many`]). Neither names `seq` or
+//! `txid`: the database gives both, and the hash chain (`crate::chain`)
+//! depends on that.
 use chrono::Utc;
 use serde_json::Value;
 use std::{net::IpAddr, time::Duration};
@@ -120,45 +125,112 @@ pub fn transient(error: &sqlx::Error) -> bool {
         _ => false,
     }
 }
-async fn deliver(db: &sqlx::PgPool, event: &Event) {
+/// Events the writer takes from the queue and inserts in one statement.
+pub const BATCH: usize = 256;
+/// Persist several events in one statement, which is one transaction: all
+/// of them are written or none is. An event that is already there is skipped.
+pub async fn persist_many(db: &sqlx::PgPool, events: &[Event]) -> Result<(), sqlx::Error> {
+    let ids: Vec<Uuid> = events.iter().map(|event| event.id).collect();
+    let actors: Vec<Option<Uuid>> = events.iter().map(|event| event.actor_id).collect();
+    let actions: Vec<&str> = events.iter().map(|event| event.action.as_str()).collect();
+    let target_types: Vec<Option<&str>> = events
+        .iter()
+        .map(|event| event.target_type.as_deref())
+        .collect();
+    let targets: Vec<Option<Uuid>> = events.iter().map(|event| event.target_id).collect();
+    let ips: Vec<Option<String>> = events
+        .iter()
+        .map(|event| event.ip.map(|ip| ip.to_string()))
+        .collect();
+    let details: Vec<&Value> = events.iter().map(|event| &event.details).collect();
+    let times: Vec<chrono::DateTime<Utc>> = events.iter().map(|event| event.created_at).collect();
+    sqlx::query(
+        "INSERT INTO audit_log(id,actor_id,action,target_type,target_id,ip,details,created_at)
+         SELECT u.id,u.actor_id,u.action,u.target_type,u.target_id,u.ip::inet,u.details,u.created_at
+         FROM UNNEST($1::uuid[],$2::uuid[],$3::text[],$4::text[],$5::uuid[],$6::text[],$7::jsonb[],
+                     $8::timestamptz[])
+           WITH ORDINALITY AS u(id,actor_id,action,target_type,target_id,ip,details,created_at,n)
+         ORDER BY u.n ON CONFLICT(id) DO NOTHING",
+    )
+    .bind(ids)
+    .bind(actors)
+    .bind(actions)
+    .bind(target_types)
+    .bind(targets)
+    .bind(ips)
+    .bind(details)
+    .bind(times)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+fn dead_letter(events: &[Event], reason: &str) {
+    for event in events {
+        tracing::error!(audit_dead_letter=?event, reason, "audit_dead_letter");
+    }
+}
+/// Write a batch, trying again after a failure that may pass. An event is
+/// given up, and logged in full as `audit_dead_letter`, after six attempts
+/// or when the database refuses it for good.
+async fn deliver(db: &sqlx::PgPool, events: &[Event]) {
     let mut backoff = Duration::from_millis(50);
     for attempt in 0..6 {
-        match persist(db, event).await {
+        let written = match events {
+            [event] => persist(db, event).await,
+            events => persist_many(db, events).await,
+        };
+        match written {
             Ok(()) => return,
             Err(error) if transient(&error) && attempt < 5 => {
-                tracing::warn!(event_id=%event.id, %error, attempt, "transient audit persistence failure");
+                tracing::warn!(events = events.len(), %error, attempt, "transient audit persistence failure");
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(1));
             }
+            Err(error) if transient(&error) || events.len() == 1 => {
+                dead_letter(events, &error.to_string());
+                return;
+            }
             Err(error) => {
-                tracing::error!(audit_dead_letter=?event, %error, "audit_dead_letter");
+                // The statement failed as a whole because of one event that
+                // the database will never take. Write the others one by one.
+                tracing::warn!(events = events.len(), %error, "audit batch refused; writing its events one by one");
+                for event in events {
+                    Box::pin(deliver(db, std::slice::from_ref(event))).await;
+                }
                 return;
             }
         }
     }
 }
-/// Close on shutdown and bound the entire drain, including in-flight retries, to five seconds.
+/// Take what waits in the queue, up to [`BATCH`] events, and write it in one
+/// statement. Close on shutdown and bound the entire drain, including
+/// in-flight retries, to five seconds.
 pub async fn writer(
     db: sqlx::PgPool,
     mut receiver: mpsc::Receiver<Event>,
     stop: CancellationToken,
 ) {
     let mut deadline = None;
+    let mut batch: Vec<Event> = Vec::with_capacity(BATCH);
     loop {
         if stop.is_cancelled() && deadline.is_none() {
             receiver.close();
             deadline = Some(tokio::time::Instant::now() + Duration::from_secs(5));
         }
-        let event = tokio::select! {
-            event = receiver.recv() => event,
+        batch.clear();
+        let received = tokio::select! {
+            received = receiver.recv_many(&mut batch, BATCH) => received,
             _ = stop.cancelled(), if deadline.is_none() => {
                 receiver.close();
                 deadline = Some(tokio::time::Instant::now() + Duration::from_secs(5));
-                receiver.recv().await
+                receiver.recv_many(&mut batch, BATCH).await
             }
         };
-        let Some(event) = event else { break };
-        let delivery = deliver(&db, &event);
+        if received == 0 {
+            break;
+        }
+        metrics::histogram!("vda_audit_writer_batch_events").record(received as f64);
+        let delivery = deliver(&db, &batch);
         tokio::pin!(delivery);
         let finished = if let Some(end) = deadline {
             tokio::time::timeout_at(end, &mut delivery).await.is_ok()
@@ -174,9 +246,9 @@ pub async fn writer(
             }
         };
         if !finished {
-            tracing::error!(audit_dead_letter=?event, "audit_dead_letter: shutdown deadline");
+            dead_letter(&batch, "shutdown deadline");
             while let Ok(event) = receiver.try_recv() {
-                tracing::error!(audit_dead_letter=?event, "audit_dead_letter: shutdown deadline");
+                dead_letter(std::slice::from_ref(&event), "shutdown deadline");
             }
             break;
         }

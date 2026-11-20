@@ -172,9 +172,23 @@ view.
   nothing) and "Not valid: this record was changed" (coral). Withdrawn and
   expired requests have neutral badges: they are not a risk, they just will
   not run.
-- **History and Audit** group rows under day headings; each row shows the verb,
-  tables and a syntax-tinted SQL preview. A denied query shows _Blocked_ once.
-  The date-range popover offers Today, Last 7 days, Last 30 days and Custom.
+- **History and Audit** group rows under day headings. A History row shows the
+  verb, tables and a syntax-tinted SQL preview. An Audit row shows the action
+  and one line made from the details the gateway records (a query event says
+  that the query was started or refused and that its SQL is in History; it
+  holds no SQL). A denied query shows _Blocked_ once. The date-range popover
+  offers Today, Last 7 days, Last 30 days and Custom.
+- **Audit integrity.** Above the filters, one quiet line states the hash
+  chain: "Chain intact up to _time_ · _N_ rows sealed · _M_ waiting". It is
+  read again every fifteen seconds and never from a cache. Rows that another
+  master key sealed get an amber _Partly verified_ badge and a sentence; the
+  line then never says "intact". A break is the only risk state: one alert
+  with a coral _Chain broken_ badge, what happened, what it means, the
+  position and the event, and what to do. A long wait for sealing is a
+  sentence, not an alert. Each row has a _Sealed_ column with a word and a
+  shape (lock: Sealed; clock: Waiting). _Verify now_ shows its answer next to
+  the button and keeps it there; a refusal for too many checks says how long
+  to wait.
 - **Users and Access** use list rows with quiet badges; destructive actions live
   in a row menu with confirmation; _Added by_ shows a person or "—".
 - **Settings, Preferences, Login, command palette, dialogs, toasts, empty states,

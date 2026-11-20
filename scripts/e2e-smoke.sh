@@ -218,6 +218,28 @@ if [[ -n ${VDA_DISCOVERY_FAKE_FIXTURE:-} ]]; then
 else
   printf 'SKIP discovery: VDA_DISCOVERY_FAKE_FIXTURE is unset.\n'
 fi
+# The audit hash chain. Everything this run wrote is sealed within a few ticks
+# of the sealer (it waits for transactions that are still open), every event
+# of this run is marked sealed, and a check of the newest links finds them
+# intact. The check is itself recorded, and only an administrator may ask.
+sealed=false
+for _ in $(seq 1 90); do
+  call GET /audit/integrity 200 "$admin_jar"
+  if jq --exit-status '.unsealed == 0 and .sealed > 0 and .head.position == .sealed and (.head.hash | test("^[0-9a-f]{64}$")) and .head.key_id == .key_id' "$response" >/dev/null; then sealed=true; break; fi
+  sleep 1
+done
+if [[ $sealed != true ]]; then printf 'FAIL audit rows were not sealed in 90 seconds\n' >&2; cat "$response" >&2; exit 1; fi
+check '.verification.status != "broken" and .verification.problem == null'
+sealed_rows=$(jq -er '.sealed' "$response")
+call GET "/audit?actor_id=$admin_id&limit=200" 200 "$admin_jar"
+check '(.items | length) > 0 and ([.items[] | select(.sealed != true or (.seq | type) != "number")] | length) == 0'
+call POST /audit/verify 200 "$admin_jar" '{"limit":10000}'
+check ".status == \"intact\" and .problem == null and .unverifiable == [] and .links > 0 and .verified == .links and .to_position == $sealed_rows and .head.position == $sealed_rows"
+call GET "/audit?action=audit.verify&actor_id=$admin_id&limit=5" 200 "$admin_jar"
+check "(.items | length) >= 1 and .items[0].details.status == \"intact\" and .items[0].details.to_position == $sealed_rows and .items[0].details.problem == null"
+call GET /audit/integrity 403 "$member_jar"
+call POST /audit/verify 403 "$member_jar" '{}'
+pass "audit chain intact: $sealed_rows rows sealed and verified"
 for jar in "$admin_jar" "$reviewer_jar" "$member_jar"; do call POST /auth/logout 204 "$jar"; done
-printf 'SMOKE OK: login → project → cluster → connection → health → schema → analyze → SELECT → blocked DELETE → approval → review → execute → history/audit\n'
+printf 'SMOKE OK: login → project → cluster → connection → health → schema → analyze → SELECT → blocked DELETE → approval → review → execute → history/audit → audit chain\n'
 printf 'Fixtures retained: project=%s cluster=%s approval=%s\n' "$project_id" "$cluster_id" "$approval_id"

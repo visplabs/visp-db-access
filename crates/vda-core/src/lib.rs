@@ -6,6 +6,7 @@
 pub mod access;
 pub mod agents;
 pub mod audit;
+pub mod chain;
 pub mod crypto;
 pub mod error;
 pub mod judge;

@@ -25,6 +25,8 @@ transaction, masked and audited. Engineers never see database credentials.
   rows a write will touch. Suggestions never change what is allowed.
 - **Column masking**, expiring project/cluster grants, organization and cluster
   network allowlists, and an append-only audit log with full query history.
+  The audit log is sealed into a keyed hash chain: a row that is changed or
+  deleted in the database shows, in the console and with an offline command.
 - **AWS discovery** of RDS and Aurora databases across accounts and regions,
   with explicit, credential-verified import and drift detection.
 - **One binary**: a Rust server with the React console embedded. Stateless nodes,

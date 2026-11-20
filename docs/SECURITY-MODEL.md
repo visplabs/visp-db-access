@@ -203,8 +203,94 @@ Security-relevant changes and their audit records share a metadata transaction.
 Query intent and final status are written synchronously. Auxiliary events go
 through a bounded 4,096-event queue that waits at most 250 ms per event and may
 lose events in a crash; permanent failures log structured `audit_dead_letter`
-records. Records left `running` after a crash become `unknown` after the
-maximum statement timeout plus five minutes.
+records. The queue is written in batches of up to 256 events, one statement
+each; a batch that the database refuses is written again event by event, so
+one bad event does not take the others with it. Records left `running` after
+a crash become `unknown` after the maximum statement timeout plus five minutes.
+
+### A tamper-evident audit log
+
+A trigger makes `audit_log` append-only for the gateway's own database role.
+It does not stop someone who owns the tables: they can drop the trigger and
+change, delete or reorder rows. The hash chain makes that visible.
+
+Every audit row gets a link in `audit_chain`, and each link holds
+`HMAC-SHA256` over the row's content, the link's number and the hash of the
+link before it, with a key derived from the master key
+([API](API.md#the-audit-hash-chain) has the exact bytes). The chain is checked
+in three ways: all the time in the background, on request from the Audit
+screen, and offline with `visp-db-access verify-audit`
+([Deployment](DEPLOYMENT.md#audit-hash-chain)).
+
+**What it detects.** Done by someone who has the metadata database but not
+the master key:
+
+- a change to any column of a sealed row, or to its link (`row_changed`);
+- a deleted row (`row_missing`), or a deleted, moved or added link
+  (`chain_broken`);
+- a link relabelled as another key's while a later link of the real key
+  remains (`chain_broken`);
+- a row put in among sealed rows, for example dated back (`row_inserted`);
+- the whole chain thrown away and made again: without the key no link
+  verifies.
+
+The check reports the first problem and its position. Rows before that
+position still match the chain.
+
+**What it does not detect.** These are limits of the design, not bugs:
+
+- **Someone who has the master key** can make a chain that verifies for any
+  content. The key is the root of trust; keep it away from the database.
+- **A row that is not sealed yet.** A row is sealed a few seconds after it is
+  written, and later when a transaction stays open (below). Until then it can
+  be changed or deleted without a trace.
+- **A false row that is written the normal way.** The chain proves that a
+  sealed row was not changed afterwards. It does not prove who wrote it:
+  someone who can insert into `audit_log` can add a row with any actor, and
+  it is sealed like any other.
+- **The end of the chain cut off.** A chain that lost its newest rows and
+  links is a shorter chain that verifies. Only something outside the database
+  knows that it was longer: each node remembers the last head it saw and
+  reports `chain_truncated` if that link is gone, and each node writes the
+  head to its log as `audit_checkpoint`. A log store that the database's
+  administrator cannot change is what proves the end. Without it, the newest
+  rows are protected only while a node that saw them keeps running.
+- **Rows sealed with another master key.** After a key change the old links
+  cannot be made again with the new key. Their structure is still checked (no
+  missing row, no missing or moved link, and the last old hash is bound by the
+  first new link), but a change inside an old row is found only with the old
+  key. Such links are reported as `partial`, never as `intact`.
+- **Every link of the current key relabelled, from a changed row to the
+  head.** The name of the key on a link (`key_id`) is a label outside the
+  hash, so someone could change a sealed row and write another key's name on
+  its link, to turn "changed" into "cannot be verified". Inside a run of
+  links this does not work: each link carries, inside its hash, the position
+  where the run of links of its key began, and the first link of the real
+  key after the relabelled ones still names the old start while the link
+  before it is no longer of its key. That is `chain_broken`, whether one link
+  was relabelled, a stretch in the middle, or the whole start of the run. It
+  fails only when no link of the current key is left after the relabelled
+  ones, that is when every link from the changed row to the head is
+  relabelled. This is the same class as cutting the end off, and the same
+  thing catches it: the checkpoint carries the `key_id` of the head, a node
+  remembers it, and a link that is at the checkpoint's position under
+  another key's name is `checkpoint_mismatch`. Without a checkpoint from
+  outside it shows only as `partial`. So a `partial` result that no key
+  change explains is an alarm, and `vda_audit_chain_unverifiable_links`
+  above zero is the metric for it.
+- **The stored result of the background check** is a row in the same
+  database, written for the console and the other nodes. It is not evidence.
+  The chain, the logs and a run of `verify-audit` are.
+
+**The sealing delay.** Rows are written from many connections and nodes with
+no lock, so they have no order until they are sealed. The order is the ID of
+the inserting transaction, then a sequence number, and a row is sealed only
+when every transaction with a lower ID has ended. A transaction that stays
+open with an ID assigned, in any database of the same PostgreSQL instance,
+therefore holds sealing back for every row written after it. The delay is
+shown on the Audit screen and exported as
+`vda_audit_chain_oldest_unsealed_seconds`. A row with a forged, far-off
+transaction ID is never sealed and shows as a row that waits for ever.
 
 ## Known limits
 
@@ -213,6 +299,9 @@ maximum statement timeout plus five minutes.
 - Approval execution claims stay consumed after a crash; a claim stuck in
   `executing` becomes `failed` with an unknown-outcome message rather than
   replaying.
+- The audit hash chain detects changes by someone without the master key,
+  and not before a row is sealed. Its end needs a checkpoint kept outside the
+  database. See [Audit](#a-tamper-evident-audit-log).
 - A notice travels to a third party (the webhook's host). Its names (cluster,
   requester, agent) are metadata that the receiver will hold. The notice
   sender trusts the public certificate authorities only, and a notice can

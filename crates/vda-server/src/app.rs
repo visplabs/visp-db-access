@@ -44,6 +44,10 @@ pub struct AppState {
     network_cache: Cache<(), NetworkSettings>,
     /// Test notices sent in the current minute, by anyone, on this node.
     notice_tests: Cache<(), Arc<AtomicU32>>,
+    /// Checks of the audit chain asked for in the current minute, likewise.
+    audit_verifies: Cache<(), Arc<AtomicU32>>,
+    /// What this node has seen of the audit chain; see `audit_chain`.
+    pub audit_chain: Arc<crate::audit_chain::Seen>,
     /// Sends notices to the webhook; see `notices::send` for what it refuses.
     pub notices: crate::notices::send::Sender,
     account_failures: Cache<String, Arc<AtomicU32>>,
@@ -123,6 +127,11 @@ impl AppState {
                     .time_to_live(Duration::from_secs(60))
                     .build(),
                 notices,
+                audit_verifies: Cache::builder()
+                    .max_capacity(1)
+                    .time_to_live(Duration::from_secs(60))
+                    .build(),
+                audit_chain: Arc::default(),
                 agent_calls: Cache::builder()
                     .max_capacity(20000)
                     .time_to_live(Duration::from_secs(60))
@@ -183,6 +192,25 @@ impl AppState {
                 StatusCode::TOO_MANY_REQUESTS,
                 "rate_limited",
                 "Too many test notices in one minute",
+            )
+            .details(serde_json::json!({"retry_after_seconds": 60})));
+        }
+        Ok(())
+    }
+    /// Count one check of the audit chain against the limit of this node.
+    /// A check reads up to ten thousand rows, so it is bounded for the whole
+    /// organization, not per administrator.
+    pub async fn check_audit_verify_rate(&self) -> Result<(), ApiError> {
+        let asked = self
+            .audit_verifies
+            .get_with((), async { Arc::new(AtomicU32::new(0)) })
+            .await
+            .fetch_add(1, Ordering::Relaxed);
+        if asked >= crate::audit_chain::VERIFIES_PER_MINUTE {
+            return Err(ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "Too many checks of the audit chain in one minute",
             )
             .details(serde_json::json!({"retry_after_seconds": 60})));
         }
@@ -392,6 +420,8 @@ pub fn router(state: AppState) -> Router {
             delete(crate::agents::revoke_token),
         )
         .route("/audit", get(crate::admin::audit))
+        .route("/audit/integrity", get(crate::audit_chain::integrity))
+        .route("/audit/verify", post(crate::audit_chain::verify))
         .route(
             "/settings/network",
             get(crate::admin::network).put(crate::admin::set_network),
@@ -506,6 +536,8 @@ async fn audit_mutation(State(state): State<AppState>, req: Request, next: Next)
             "/approvals",
             "/settings",
             "/discovery",
+            // `POST /audit/verify` writes its own `audit.verify` event.
+            "/audit",
         ]
         .iter()
         .any(|segment| path.contains(segment));

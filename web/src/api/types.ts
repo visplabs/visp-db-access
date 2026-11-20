@@ -296,6 +296,69 @@ export interface AuditEvent {
   ip: string | null;
   details: unknown;
   created_at: string;
+  /** The number of the event in the order it was written. Gaps are normal. */
+  seq: number;
+  /** Whether the event is in the hash chain yet. */
+  sealed: boolean;
+}
+/** The last link of the audit hash chain. */
+export interface AuditChainHead {
+  position: number;
+  hash: string;
+  key_id: string;
+  sealed_at: string;
+}
+export type AuditProblemKind =
+  | 'row_changed'
+  | 'row_missing'
+  | 'row_inserted'
+  | 'chain_broken'
+  | 'chain_truncated'
+  | 'checkpoint_mismatch';
+/** The first place where the audit log no longer matches its chain. */
+export interface AuditProblem {
+  kind: AuditProblemKind;
+  position: number;
+  audit_id: string | null;
+  seq: number | null;
+  message: string;
+}
+/** Links that were sealed with another master key than the current one. */
+export interface AuditSegment {
+  key_id: string;
+  first_position: number;
+  last_position: number;
+}
+/** `GET /audit/integrity`. */
+export interface AuditIntegrity {
+  head: AuditChainHead | null;
+  key_id: string;
+  sealed: number;
+  unsealed: number;
+  oldest_unsealed_at: string | null;
+  oldest_unsealed_seconds: number | null;
+  verification: {
+    status: 'pending' | 'intact' | 'partial' | 'broken';
+    checked_at: string | null;
+    key_id: string | null;
+    links: number;
+    verified: number;
+    unverifiable: AuditSegment[];
+    problem: AuditProblem | null;
+    running: { position: number; started_at: string | null } | null;
+  };
+}
+/** `POST /audit/verify`. */
+export interface AuditVerification {
+  status: 'intact' | 'partial' | 'broken';
+  key_id: string;
+  from_position: number;
+  to_position: number;
+  links: number;
+  verified: number;
+  unverifiable: AuditSegment[];
+  problem: AuditProblem | null;
+  head: AuditChainHead | null;
 }
 
 export interface SchemaTree {

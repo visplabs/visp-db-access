@@ -130,7 +130,13 @@ Built to `web/dist`, embedded into the server binary with `rust-embed`.
   row_count, elapsed_ms, error, created_at)
 - `health_checks` (cluster_id, status, latency_ms, server_version, is_replica,
   details jsonb, checked_at) — retained 7 days
-- `audit_log` (id, actor_id, action, target_type, target_id, ip, details jsonb, created_at) — append-only
+- `audit_log` (id, actor_id, action, target_type, target_id, ip, details jsonb, created_at,
+  seq, txid) — append-only; `txid` is the inserting transaction, `seq` a sequence number
+- `audit_chain` (position, audit_id, txid, seq, key_id, segment_start, prev_hash, hash,
+  sealed_at)
+  — append-only; one link per sealed audit row, in the order `(txid, seq)`
+- `audit_verification` (one row: where the background check is and what its last
+  pass found)
 - `settings` (key, value jsonb) — org network policy, notice settings
 - `notices` (id, seq, approval_id, event, payload jsonb,
   status pending|sent|dead, attempts, next_attempt_at, last_error,
@@ -165,6 +171,42 @@ Built to `web/dist`, embedded into the server binary with `rust-embed`.
 6. Route to replica if `route_reads_to_replica` and a replica is configured & healthy.
 7. Execute with limits; cancellable via `POST /api/v1/queries/:query_id/cancel`.
 8. Apply column masking; record history + audit; return result.
+
+## Audit hash chain (sealer and verifier)
+
+The audit log is written from many connections and nodes with no lock: inside
+the transaction of a change, and by the queue writer in batches. The chain is
+built afterwards, so writers never wait for it.
+
+- **Order.** `audit_log.txid` defaults to `pg_current_xact_id()` and `seq` to a
+  sequence. The chain order is `(txid, seq)`. A row may be sealed when
+  `txid < pg_snapshot_xmin(pg_current_snapshot())`: every transaction with a
+  lower ID has ended, so no row that sorts before it can still be committed.
+  The rows below that limit are read in the same statement that takes the
+  snapshot. The cost is a delay while any transaction on the PostgreSQL
+  instance stays open with an ID.
+- **Sealer** (`vda_core::chain::seal`). One transaction per batch: take an
+  advisory lock for the transaction, read the head, read the next rows in
+  order, compute `hash = HMAC(chain key, label ‖ position ‖ segment start ‖ prev hash ‖ row)`
+  and insert the links. The append is atomic with the head it read. Two
+  sealers cannot extend the same head: the lock keeps them apart, and the
+  primary key on `position` would refuse the second commit.
+- **Verifier** (`vda_core::chain::verify`). Walks links in order with their
+  rows and reports the first problem and its position: a changed row, a
+  missing row, a missing or moved link, or a row without a link among sealed
+  rows. Links of another key are checked for structure and reported as not
+  verified. The key's name on a link is a label outside the hash, so each
+  link carries inside its hash the position where the run of links of its
+  key began (`segment_start`): a link that verifies but does not follow a
+  link of its key, without being the start of its run, proves that a link
+  before it was relabelled. It only reads. The same function serves the background check, the
+  `POST /audit/verify` endpoint and the `verify-audit` command.
+- **Worker** (`vda-server/src/audit_chain.rs`). Every node ticks every two
+  seconds: seal, refresh the gauges, check that the head it remembers is still
+  in the chain, take the next slice of the background pass (progress and result
+  are stored in `audit_verification`, so any node continues it), and log the
+  head as `audit_checkpoint`. It stops with the gateway; a tick that fails is
+  logged and tried again.
 
 ## Notices to approvers (outbox and worker)
 
@@ -227,6 +269,8 @@ Approvers learn that a request waits through one outbound webhook
 - Stateless nodes behind any L7 load balancer; sessions in Postgres.
 - Health scheduler runs on whichever node holds `pg_try_advisory_lock`.
 - The notice worker runs on every node; rows are claimed with `SKIP LOCKED`.
+- The audit chain worker runs on every node; sealing and the background check
+  are each done by one node at a time, under an advisory lock.
 - Per-node pool cache (moka, idle eviction); pool sizes are small by default
   (`max_connections=5` per cluster per node) to protect production.
 - Deploy: Docker image (distroless), docker-compose for single host, Helm chart

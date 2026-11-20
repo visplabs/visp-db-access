@@ -306,8 +306,16 @@ export function fixtures() {
       target_type: 'cluster',
       target_id: row?.cluster_id ?? uuid(100),
       ip: '10.12.0.24',
-      details: { sql: row?.sql, row_count: row?.row_count },
+      // What the gateway writes for a query: where to find it, not its SQL.
+      details: {
+        query_id: uuid(900 + i),
+        history_id: row?.id ?? uuid(300),
+        status: row?.status === 'blocked' ? 'blocked' : 'running',
+        agent_id: null,
+      },
       created_at: new Date(Date.now() - i * 300000).toISOString(),
+      seq: 120 - i,
+      sealed: true,
     };
   });
   const approvals: Approval[] = [];
