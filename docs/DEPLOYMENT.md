@@ -10,23 +10,24 @@ All settings are environment variables (each also has a matching CLI flag).
 The binary does not load `.env` files itself; see [.env.example](../.env.example)
 and [deploy/config.env.example](../deploy/config.env.example).
 
-| Variable                       | Default        | Purpose                                                                                                                                                    |
-| ------------------------------ | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VDA_DATABASE_URL`             | required       | PostgreSQL metadata URL. Migration privileges are needed on first start.                                                                                   |
-| `VDA_MASTER_KEY`               | required       | Standard-base64 32-byte key that encrypts stored credentials. Generate with `openssl rand -base64 32` or `visp-db-access gen-key`.                         |
-| `VDA_BIND`                     | `0.0.0.0:8080` | Listening address.                                                                                                                                         |
-| `VDA_METADATA_POOL_SIZE`       | `20`           | Metadata connections per node (1–200). Health and discovery schedulers each use one more.                                                                  |
-| `VDA_BOOTSTRAP_ADMIN_EMAIL`    | unset          | First administrator, created only when no users exist. Set with the password.                                                                              |
-| `VDA_BOOTSTRAP_ADMIN_PASSWORD` | unset          | First administrator's password, at least 12 bytes.                                                                                                         |
-| `VDA_ADMIN_PASSWORD`           | unset          | Password for the `create-admin` command.                                                                                                                   |
-| `VDA_COOKIE_SECURE`            | `true`         | Secure session cookie and HSTS. Set `false` only for local plain-HTTP development (a startup warning is logged).                                           |
-| `VDA_ALLOWED_CIDRS`            | empty          | Comma-separated client allowlist; intersected with the allowlist set in the console. Empty allows all.                                                     |
-| `VDA_TRUST_PROXY_HEADERS`      | `false`        | Use `X-Forwarded-For` for client attribution.                                                                                                              |
-| `VDA_TRUSTED_PROXIES`          | empty          | Comma-separated CIDRs of your proxies. With forwarding on and no list, only the direct peer is trusted. `VDA_TRUSTED_PROXY_CIDRS` is accepted as an alias. |
-| `VDA_ALLOW_PRIVATE_TARGETS`    | `false`        | Allow loopback database targets (development). RFC 1918 targets are always allowed.                                                                        |
-| `VDA_METRICS_TOKEN`            | unset          | When set, `/metrics` requires `Authorization: Bearer <token>`.                                                                                             |
-| `VDA_LOG_FORMAT`               | `text`         | `text` or `json`.                                                                                                                                          |
-| `RUST_LOG`                     | `info`         | Log filter.                                                                                                                                                |
+| Variable                       | Default        | Purpose                                                                                                                                                                      |
+| ------------------------------ | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VDA_DATABASE_URL`             | required       | PostgreSQL metadata URL. Migration privileges are needed on first start.                                                                                                     |
+| `VDA_MASTER_KEY`               | required       | Standard-base64 32-byte key that encrypts stored credentials. Generate with `openssl rand -base64 32` or `visp-db-access gen-key`.                                           |
+| `VDA_BIND`                     | `0.0.0.0:8080` | Listening address.                                                                                                                                                           |
+| `VDA_METADATA_POOL_SIZE`       | `20`           | Metadata connections per node (1–200). Health and discovery schedulers each use one more.                                                                                    |
+| `VDA_BOOTSTRAP_ADMIN_EMAIL`    | unset          | First administrator, created only when no users exist. Set with the password.                                                                                                |
+| `VDA_BOOTSTRAP_ADMIN_PASSWORD` | unset          | First administrator's password, at least 12 bytes.                                                                                                                           |
+| `VDA_ADMIN_PASSWORD`           | unset          | Password for the `create-admin` command.                                                                                                                                     |
+| `VDA_COOKIE_SECURE`            | `true`         | Secure session cookie and HSTS. Set `false` only for local plain-HTTP development (a startup warning is logged).                                                             |
+| `VDA_ALLOWED_CIDRS`            | empty          | Comma-separated client allowlist; intersected with the allowlist set in the console. Empty allows all.                                                                       |
+| `VDA_TRUST_PROXY_HEADERS`      | `false`        | Use `X-Forwarded-For` for client attribution.                                                                                                                                |
+| `VDA_TRUSTED_PROXIES`          | empty          | Comma-separated CIDRs of your proxies. With forwarding on and no list, only the direct peer is trusted. `VDA_TRUSTED_PROXY_CIDRS` is accepted as an alias.                   |
+| `VDA_ALLOW_PRIVATE_TARGETS`    | `false`        | Allow loopback database targets (development). RFC 1918 targets are always allowed. For notices it also allows a webhook on a private address, and plain `http` to loopback. |
+| `VDA_METRICS_TOKEN`            | unset          | When set, `/metrics` requires `Authorization: Bearer <token>`.                                                                                                               |
+| `VDA_PUBLIC_URL`               | unset          | The address people open the console at, such as `https://gate.example.com`: an `http(s)` origin with no path. Notices link to the request only when it is set.               |
+| `VDA_LOG_FORMAT`               | `text`         | `text` or `json`.                                                                                                                                                            |
+| `RUST_LOG`                     | `info`         | Log filter.                                                                                                                                                                  |
 
 Back up the master key together with the metadata database. Stored credentials
 can't be decrypted with a different key; if the key is lost, re-enter each
@@ -103,6 +104,15 @@ For AWS discovery on EKS, see [IRSA setup](DISCOVERY.md#eks-irsa).
 - Cluster health probes run every 30 seconds on one node (elected through a
   PostgreSQL advisory lock), with up to 16 probes in parallel. Health history is
   kept for seven days.
+- Notices to approvers are delivered by a worker on every node, which looks
+  for due notices every five seconds. `vda_notices_sent_total`,
+  `vda_notices_retried_total` and `vda_notices_dead_total` count deliveries,
+  failed attempts that will be tried again, and notices that were given up.
+  A rising `vda_notices_dead_total` means that the receiver has been failing
+  for about an hour; Settings → Notices shows the last error.
+- "Send test" is limited to five test notices a minute on each node, for all
+  administrators together. Behind a load balancer the total is five times the
+  number of nodes.
 
 ## Operations notes
 
@@ -113,4 +123,16 @@ For AWS discovery on EKS, see [IRSA setup](DISCOVERY.md#eks-irsa).
 - Concurrency limits, cancellation and login throttling are per node. Use
   load-balancer affinity so a cancel request reaches the node running the query.
 - Runtime network settings are cached for 30 seconds and schema trees for five
-  minutes.
+  minutes. Notice settings are not cached: a change applies to the next state
+  change on every node.
+- Notices need outbound HTTPS from the gateway to the webhook's host, and to
+  nothing else. The gateway uses the public certificate authorities built into
+  the binary; it reads no proxy and no trust store from the environment, so a
+  receiver behind a private authority or an outbound proxy cannot be used.
+- During a rolling upgrade to a version that stores notice settings an older
+  node cannot read, the older nodes pause notices (they write and send none
+  and log this once a minute) and answer 409 on the notice settings. The
+  outbox is kept and the upgraded nodes deliver it; a state change handled
+  by an older node in that time writes no notice.
+- At shutdown the notice worker gives the requests on the wire five seconds.
+  A notice that was not sent stays in the outbox and is sent by any node.

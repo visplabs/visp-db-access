@@ -11,6 +11,7 @@ use crate::{
     db,
     error::{ApiError, Input},
     network::ClientIp,
+    notices::{self, Event},
     query::QueryInput,
     rbac,
 };
@@ -180,6 +181,7 @@ async fn open(
     state
         .audit_details(&mut tx, &owner, "approval.create", Some(id), ip, details)
         .await?;
+    notices::enqueue(state, &mut tx, id, Event::Created).await?;
     tx.commit().await?;
     Ok(id)
 }
@@ -298,10 +300,7 @@ pub async fn list(
     {
         return Err(ApiError::validation("Invalid approval status"));
     }
-    sqlx::query(
-"UPDATE approvals SET status='expired' WHERE status IN ('pending','approved') AND expires_at<=now()",
-)
-.execute(&state.db).await?;
+    expire_due(&state, Due::All).await?;
     let limit = filters.limit.unwrap_or(50);
     if !(1..=100).contains(&limit) {
         return Err(ApiError::validation("Limit must be 1..=100"));
@@ -368,14 +367,106 @@ async fn visible(state: &AppState, user: &User, id: Uuid) -> Result<(Uuid, Uuid)
     }
     Ok((cluster_id, requester))
 }
-async fn expire(state: &AppState, id: Uuid) -> Result<(), ApiError> {
-    sqlx::query(
-        "UPDATE approvals SET status='expired' WHERE id=$1 AND status IN ('pending','approved') AND expires_at<=now()",
-    )
+/// Which requests a pass over the expired ones looks at.
+#[derive(Debug, Clone, Copy)]
+pub enum Due {
+    /// Every request.
+    All,
+    /// One request.
+    One(Uuid),
+    /// The requests of one agent.
+    Agent(Uuid),
+}
+/// Mark the requests whose time ran out as expired.
+///
+/// This is the one place that does it, for a list, a single request, an
+/// agent's requests and the scheduler alike. Each request that expires gets
+/// one audit row (`approval.expire`) and, if selected, one notice, in the
+/// transaction that changes it. That holds also when several handlers or
+/// nodes get here at once: the rows are locked in the order of their ids, a
+/// transaction that waited for a row sees its new state and leaves it out,
+/// and so only the transaction that changes a row writes for it.
+pub async fn expire_due(state: &AppState, due: Due) -> Result<(), ApiError> {
+    let (id, agent) = match due {
+        Due::All => (None, None),
+        Due::One(id) => (Some(id), None),
+        Due::Agent(agent) => (None, Some(agent)),
+    };
+    const DUE: &str = "status IN ('pending','approved') AND expires_at<=now()
+        AND ($1::uuid IS NULL OR id=$1) AND ($2::uuid IS NULL OR agent_id=$2)";
+    // Almost every call finds nothing: look first, without a transaction.
+    let any: bool = sqlx::query_scalar(&format!(
+        "SELECT EXISTS(SELECT 1 FROM approvals WHERE {DUE})"
+    ))
     .bind(id)
-    .execute(&state.db)
+    .bind(agent)
+    .fetch_one(&state.db)
     .await?;
+    if !any {
+        return Ok(());
+    }
+    let mut tx = state.db.begin().await?;
+    let expired: Vec<Uuid> = sqlx::query_scalar(&format!(
+        "UPDATE approvals a SET status='expired'
+         FROM (SELECT id FROM approvals WHERE {DUE} ORDER BY id FOR UPDATE) due
+         WHERE a.id=due.id AND a.status IN ('pending','approved') RETURNING a.id"
+    ))
+    .bind(id)
+    .bind(agent)
+    .fetch_all(&mut *tx)
+    .await?;
+    for id in expired {
+        state
+            .audit_system(&mut tx, "approval.expire", id, json!({}))
+            .await?;
+        notices::enqueue(state, &mut tx, id, Event::Expired).await?;
+    }
+    tx.commit().await?;
     Ok(())
+}
+/// Mark the requests that a node claimed and never finished as failed with
+/// `outcome_unknown`: nobody knows whether the write ran. Like
+/// [`expire_due`], each request gets one audit row and one notice.
+pub async fn fail_abandoned(state: &AppState) -> Result<(), ApiError> {
+    // The claim's own timeout plus five minutes, so a change of the policy
+    // cannot retire a write that is still running.
+    const ABANDONED: &str = "status='executing' AND
+        COALESCE(execution_started_at,reviewed_at,created_at)<
+        now()-((execution_timeout_ms+300000)*interval '1 millisecond')";
+    let any: bool = sqlx::query_scalar(&format!(
+        "SELECT EXISTS(SELECT 1 FROM approvals WHERE {ABANDONED})"
+    ))
+    .fetch_one(&state.db)
+    .await?;
+    if !any {
+        return Ok(());
+    }
+    let mut tx = state.db.begin().await?;
+    let failed: Vec<Uuid> = sqlx::query_scalar(&format!(
+        "UPDATE approvals a SET status='failed',
+         error='execution outcome unknown (node crashed or lost)',
+         error_code='outcome_unknown',executed_at=now()
+         FROM (SELECT id FROM approvals WHERE {ABANDONED} ORDER BY id FOR UPDATE) due
+         WHERE a.id=due.id AND a.status='executing' RETURNING a.id"
+    ))
+    .fetch_all(&mut *tx)
+    .await?;
+    for id in failed {
+        state
+            .audit_system(
+                &mut tx,
+                "approval.failed",
+                id,
+                json!({"code": "outcome_unknown", "recovered": true}),
+            )
+            .await?;
+        notices::enqueue(state, &mut tx, id, Event::Failed).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+async fn expire(state: &AppState, id: Uuid) -> Result<(), ApiError> {
+    expire_due(state, Due::One(id)).await
 }
 /// Return a visible approval request.
 pub async fn get(
@@ -502,6 +593,7 @@ pub async fn preview(
             json!({"affected_rows": preview.affected_rows, "bound_to": preview.bound_to}),
         )
         .await?;
+    notices::enqueue(&state, &mut tx, id, Event::Previewed).await?;
     tx.commit().await?;
     Ok(Json(view(&state, id).await?))
 }
@@ -580,6 +672,12 @@ async fn review(
             ip,
         )
         .await?;
+    let event = if approved {
+        Event::Approved
+    } else {
+        Event::Rejected
+    };
+    notices::enqueue(state, &mut tx, id, event).await?;
     tx.commit().await?;
     view(state, id).await
 }
@@ -659,6 +757,7 @@ async fn withdraw_as(
             json!({"agent_id": agent}),
         )
         .await?;
+    notices::enqueue(state, &mut tx, id, Event::Withdrawn).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -803,13 +902,15 @@ impl Execution {
         let mut tx = state.db.begin().await?;
         match result {
             Ok(result) => {
-                sqlx::query(
+                let recorded = sqlx::query(
                     "UPDATE approvals SET status='executed',result=$2,executed_at=now() WHERE id=$1 AND status='executing'",
                 )
                 .bind(id)
                 .bind(json!(result))
                 .execute(&mut *tx)
-                .await?;
+                .await?
+                .rows_affected()
+                    == 1;
                 let receipt = receipt(&state, &mut tx, id, &executor, bound_to).await?;
                 sqlx::query("UPDATE approvals SET receipt=$2 WHERE id=$1")
                     .bind(id)
@@ -829,11 +930,15 @@ impl Execution {
                         }),
                     )
                     .await?;
+                // A request that recovery already gave up on has had its notice.
+                if recorded {
+                    notices::enqueue(&state, &mut tx, id, Event::Executed).await?;
+                }
                 tx.commit().await?;
                 view(&state, id).await
             }
             Err(error) => {
-                sqlx::query(
+                let recorded = sqlx::query(
                     "UPDATE approvals SET status='failed',error=$2,error_code=$3,executed_at=now()
                      WHERE id=$1 AND status='executing'",
                 )
@@ -841,7 +946,9 @@ impl Execution {
                 .bind(&error.message)
                 .bind(error.code)
                 .execute(&mut *tx)
-                .await?;
+                .await?
+                .rows_affected()
+                    == 1;
                 state
                     .audit_details(
                         &mut tx,
@@ -852,6 +959,9 @@ impl Execution {
                         json!({"code": error.code}),
                     )
                     .await?;
+                if recorded {
+                    notices::enqueue(&state, &mut tx, id, Event::Failed).await?;
+                }
                 tx.commit().await?;
                 Err(error)
             }
@@ -1057,13 +1167,7 @@ pub(crate) async fn open_for_agent(
     state: &AppState,
     identity: &AgentIdentity,
 ) -> Result<Vec<Value>, ApiError> {
-    sqlx::query(
-        "UPDATE approvals SET status='expired' WHERE agent_id=$1 AND status IN ('pending','approved')
-           AND expires_at<=now()",
-    )
-    .bind(identity.agent_id)
-    .execute(&state.db)
-    .await?;
+    expire_due(state, Due::Agent(identity.agent_id)).await?;
     Ok(sqlx::query_scalar(
         "SELECT jsonb_build_object('approval_id',a.id,'database',a.cluster_id,'status',a.status,
            'task',a.reason,'created_at',a.created_at,'expires_at',a.expires_at)

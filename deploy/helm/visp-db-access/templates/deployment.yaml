@@ -63,6 +63,7 @@ spec:
             - {name: VDA_TRUSTED_PROXY_CIDRS, value: {{ .Values.config.trustedProxyCidrs | quote }}}
             - {name: VDA_ALLOW_PRIVATE_TARGETS, value: {{ .Values.config.allowPrivateTargets | quote }}}
             - {name: VDA_METADATA_POOL_SIZE, value: {{ .Values.config.metadataPoolSize | quote }}}
+            - {name: VDA_PUBLIC_URL, value: {{ .Values.config.publicUrl | quote }}}
             - {name: VDA_LOG_FORMAT, value: json}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

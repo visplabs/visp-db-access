@@ -69,6 +69,11 @@ pub struct Config {
     pub log_format: String,
     #[arg(long, env = "VDA_METRICS_TOKEN", hide_env_values = true)]
     pub metrics_token: Option<SecretString>,
+    /// The address people open the console at, such as
+    /// `https://gate.example.com`. Notices link to a request only when this
+    /// is set; an empty value counts as not set.
+    #[arg(long, env = "VDA_PUBLIC_URL")]
+    pub public_url: Option<String>,
 }
 impl Config {
     /// Validate options before starting services.
@@ -90,8 +95,37 @@ impl Config {
             self.bootstrap_admin_email.is_some() == self.bootstrap_admin_password.is_some(),
             "both bootstrap admin options must be supplied together"
         );
+        if let Some(value) = self.public_url.as_deref().filter(|v| !v.trim().is_empty()) {
+            anyhow::ensure!(
+                origin(value).is_some(),
+                "VDA_PUBLIC_URL must be an http(s) origin, such as https://gate.example.com"
+            );
+        }
         Ok(())
     }
+    /// The checked public address, without a trailing slash, for links in
+    /// notices. `None` when it is not set or not an origin.
+    pub fn public_origin(&self) -> Option<String> {
+        self.public_url.as_deref().and_then(origin)
+    }
+}
+/// An `http` or `https` origin: a scheme, a host and an optional port, with
+/// no user name, password, path, query or fragment. A link is built by
+/// adding a path to it, so anything more could change where the link goes.
+fn origin(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return None;
+    }
+    let url = url::Url::parse(value).ok()?;
+    let plain = matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some_and(|host| !host.is_empty())
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none();
+    plain.then(|| url.origin().ascii_serialization())
 }
 
 /// A comma-separated list of CIDRs; an explicitly empty environment value allows all.
@@ -119,5 +153,44 @@ impl std::ops::Deref for Cidrs {
     type Target = [IpNet];
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::origin;
+
+    #[test]
+    fn the_public_address_is_an_origin_and_nothing_more() {
+        for (given, expected) in [
+            ("https://gate.example.com", "https://gate.example.com"),
+            ("https://gate.example.com/", "https://gate.example.com"),
+            (
+                " https://Gate.Example.com:8443/ ",
+                "https://gate.example.com:8443",
+            ),
+            ("https://gate.example.com:443", "https://gate.example.com"),
+            ("http://localhost:3000", "http://localhost:3000"),
+            ("https://[2001:db8::1]:8443", "https://[2001:db8::1]:8443"),
+        ] {
+            assert_eq!(origin(given).as_deref(), Some(expected), "{given}");
+        }
+        for refused in [
+            "",
+            "gate.example.com",
+            "ftp://gate.example.com",
+            "javascript:alert(1)",
+            "https://",
+            "https://user@gate.example.com",
+            "https://user:pass@gate.example.com",
+            "https://gate.example.com/console",
+            "https://gate.example.com/?next=x",
+            "https://gate.example.com/#x",
+            "https://gate.example.com/\nSet-Cookie: x",
+            "https://gate.exa mple.com",
+            "https://gate.exa\nmple.com",
+        ] {
+            assert_eq!(origin(refused), None, "{refused:?}");
+        }
     }
 }
