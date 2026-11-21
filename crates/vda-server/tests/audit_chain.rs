@@ -2414,20 +2414,22 @@ async fn the_offline_check_reads_only_and_its_exit_code_says_what_it_found() {
         format!("{}{separator}options=-c%20search_path%3D{schema}", f.url)
     };
     let run = |schema: &str, master: [u8; 32], arguments: &[&str]| {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_visp-db-access"))
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_visp-db-access"));
+        command
             .arg("verify-audit")
             .args(arguments)
             .env("VDA_DATABASE_URL", url(schema))
             .env("VDA_MASTER_KEY", key(master))
             .env_remove("VDA_BOOTSTRAP_ADMIN_EMAIL")
-            .env_remove("VDA_BOOTSTRAP_ADMIN_PASSWORD")
-            .output()
-            .unwrap();
-        (
-            output.status.code(),
-            String::from_utf8_lossy(&output.stdout).into_owned(),
-            String::from_utf8_lossy(&output.stderr).into_owned(),
-        )
+            .env_remove("VDA_BOOTSTRAP_ADMIN_PASSWORD");
+        async move {
+            let output = command.output().await.unwrap();
+            (
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        }
     };
     // Everything the command could have written to.
     let fingerprint = || async {
@@ -2444,7 +2446,7 @@ async fn the_offline_check_reads_only_and_its_exit_code_says_what_it_found() {
         .unwrap()
     };
     let before = fingerprint().await;
-    let (code, out, err) = run(&f.schema, KEY, &[]);
+    let (code, out, err) = run(&f.schema, KEY, &[]).await;
     assert_eq!(code, Some(0), "{out}{err}");
     assert!(out.contains("result: INTACT"), "{out}");
     assert!(
@@ -2461,7 +2463,8 @@ async fn the_offline_check_reads_only_and_its_exit_code_says_what_it_found() {
         &f.schema,
         KEY,
         &["--expect-position", &position, "--expect-hash", &head.hash],
-    );
+    )
+    .await;
     assert_eq!(code, Some(0), "{out}{err}");
     assert!(
         out.contains("checkpoint: position=9 is in the chain"),
@@ -2479,7 +2482,8 @@ async fn the_offline_check_reads_only_and_its_exit_code_says_what_it_found() {
             "--expect-key-id",
             &head.key_id,
         ],
-    );
+    )
+    .await;
     assert_eq!(code, Some(0), "{out}{err}");
     assert!(
         out.contains("checkpoint: position=9 is in the chain with that hash and key"),
@@ -2497,13 +2501,14 @@ async fn the_offline_check_reads_only_and_its_exit_code_says_what_it_found() {
             "--expect-key-id",
             "0123456789abcdef",
         ],
-    );
+    )
+    .await;
     assert_eq!(code, Some(3), "{out}");
     assert!(out.contains("kind=checkpoint_mismatch position=9"), "{out}");
     assert!(out.contains("relabelled"), "{out}");
     assert!(out.contains("result: BROKEN"), "{out}");
     // The name of a key alone is not a checkpoint.
-    let (code, _, err) = run(&f.schema, KEY, &["--expect-key-id", &head.key_id]);
+    let (code, _, err) = run(&f.schema, KEY, &["--expect-key-id", &head.key_id]).await;
     assert_eq!(code, Some(2), "{err}");
     assert!(err.contains("--expect-position"), "{err}");
     // One that does not.
@@ -2511,7 +2516,8 @@ async fn the_offline_check_reads_only_and_its_exit_code_says_what_it_found() {
         &f.schema,
         KEY,
         &["--expect-position", "9", "--expect-hash", chain::GENESIS],
-    );
+    )
+    .await;
     assert_eq!(code, Some(3), "{out}");
     assert!(out.contains("kind=checkpoint_mismatch position=9"), "{out}");
     assert!(out.contains("result: BROKEN"), "{out}");
@@ -2519,17 +2525,18 @@ async fn the_offline_check_reads_only_and_its_exit_code_says_what_it_found() {
         &f.schema,
         KEY,
         &["--expect-position", "12", "--expect-hash", &head.hash],
-    );
+    )
+    .await;
     assert_eq!(code, Some(3), "{out}");
     assert!(out.contains("kind=chain_truncated position=10"), "{out}");
     // Half a checkpoint is refused before anything is read, as a wrong
     // command line and not as a verdict.
-    let (code, _, err) = run(&f.schema, KEY, &["--expect-position", "9"]);
+    let (code, _, err) = run(&f.schema, KEY, &["--expect-position", "9"]).await;
     assert_eq!(code, Some(2), "{err}");
     assert!(err.contains("--expect-hash"), "{err}");
     // Another master key: nothing is wrong, nothing is verified, and the
     // exit code is not 0.
-    let (code, out, _) = run(&f.schema, [5; 32], &[]);
+    let (code, out, _) = run(&f.schema, [5; 32], &[]).await;
     assert_eq!(code, Some(4), "{out}");
     assert!(out.contains("checked: 9 links, 0 verified"), "{out}");
     assert!(
@@ -2538,11 +2545,12 @@ async fn the_offline_check_reads_only_and_its_exit_code_says_what_it_found() {
     );
     assert!(out.contains("result: NOT FULLY VERIFIED"), "{out}");
     // No key, or no database: an error, not a verdict.
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_visp-db-access"))
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_visp-db-access"))
         .arg("verify-audit")
         .env("VDA_DATABASE_URL", url(&f.schema))
         .env_remove("VDA_MASTER_KEY")
         .output()
+        .await
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
     // None of that wrote anything, or migrated.
@@ -2553,7 +2561,7 @@ async fn the_offline_check_reads_only_and_its_exit_code_says_what_it_found() {
         .execute(&f.root)
         .await
         .unwrap();
-    let (code, out, err) = run(&empty, KEY, &[]);
+    let (code, out, err) = run(&empty, KEY, &[]).await;
     assert_eq!(code, Some(1), "{out}{err}");
     assert!(err.contains("no audit chain yet"), "{err}");
     let tables: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_tables WHERE schemaname=$1")
@@ -2569,7 +2577,7 @@ async fn the_offline_check_reads_only_and_its_exit_code_says_what_it_found() {
         .await
         .unwrap();
     f.events(2).await;
-    let (code, out, _) = run(&f.schema, KEY, &[]);
+    let (code, out, _) = run(&f.schema, KEY, &[]).await;
     assert_eq!(code, Some(0), "{out}");
     assert!(out.contains("unsealed: 2 audit rows wait"), "{out}");
     open.rollback().await.unwrap();
@@ -2588,7 +2596,7 @@ async fn the_offline_check_reads_only_and_its_exit_code_says_what_it_found() {
     .await
     .unwrap();
     let before = fingerprint().await;
-    let (code, out, err) = run(&f.schema, KEY, &[]);
+    let (code, out, err) = run(&f.schema, KEY, &[]).await;
     assert_eq!(code, Some(3), "{out}{err}");
     assert!(
         out.contains(&format!(

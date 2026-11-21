@@ -1,0 +1,4 @@
+# Made-up key ids in tests of the audit chain, in one commit of PR 28. Not secrets.
+41007fda7a71466343d595e78b6e1c0b786dd56b:web/tests/e2e/audit.spec.ts:generic-api-key:305
+41007fda7a71466343d595e78b6e1c0b786dd56b:crates/vda-server/tests/audit_chain.rs:generic-api-key:914
+41007fda7a71466343d595e78b6e1c0b786dd56b:crates/vda-server/tests/audit_chain.rs:generic-api-key:1484
