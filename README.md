@@ -18,7 +18,7 @@ the same gate through a web console.
 With Docker and a clone of this repository:
 
 ```sh
-docker compose -f deploy/demo/docker-compose.yml up --build
+docker compose -f deploy/demo/docker-compose.yml up
 ```
 
 This starts the gateway, a demo database and an agent that is ready to use
@@ -31,8 +31,9 @@ docker compose -f deploy/demo/docker-compose.yml run --rm agent --follow
 
 [The demo, step by step](docs/DEMO.md) says what to look for, how to approve
 the agent's write in the console, and how to connect your own MCP client. The
-first start builds the gateway from source, which takes several minutes;
-later starts take seconds.
+first start downloads the released image; later starts take seconds. Add
+`--build` to build the gateway from your checkout, which takes several
+minutes.
 
 ## What an agent gets
 

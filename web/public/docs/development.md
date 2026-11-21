@@ -154,8 +154,9 @@ docker compose -f deploy/demo/docker-compose.yml down -v
 ## Releasing
 
 1. Set the new version in `Cargo.toml` (`workspace.package.version`),
-   `web/package.json`, and `version`, `appVersion` and `image.tag` in the Helm
-   chart, then run `cargo check` to update `Cargo.lock`.
+   `web/package.json`, `version`, `appVersion` and `image.tag` in the Helm
+   chart, and the gateway image tag in `deploy/demo/docker-compose.yml`, then
+   run `cargo check` to update `Cargo.lock`.
 2. Move the `Unreleased` entries in `CHANGELOG.md` under the new version and
    date, and update the comparison links at the bottom.
 3. Commit, then tag and push: `git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0`.

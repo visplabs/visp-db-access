@@ -14,13 +14,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: version
-        name: Check the tag matches the crate, chart and changelog versions
+        name: Check the tag matches the crate, chart, demo and changelog versions
         run: |
           version="${GITHUB_REF_NAME#v}"
           crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           chart=$(sed -n 's/^appVersion: //p' deploy/helm/visp-gate/Chart.yaml)
           image=$(sed -n "s/^  tag: '\(.*\)'/\1/p" deploy/helm/visp-gate/values.yaml)
-          for found in "$crate" "$chart" "$image"; do
+          demo=$(sed -n 's|^    image: ghcr.io/.*/visp-gate:\(.*\)$|\1|p' deploy/demo/docker-compose.yml)
+          for found in "$crate" "$chart" "$image" "$demo"; do
             if [[ $found != "$version" ]]; then
               echo "::error::Tag $GITHUB_REF_NAME does not match version $found"; exit 1
             fi

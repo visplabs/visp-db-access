@@ -7,6 +7,8 @@ change the API and storage schema; migrations run automatically at startup.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-22
+
 ### Added
 
 - Notices to approvers: an outbound webhook, signed or in Slack's format, that
@@ -90,6 +92,10 @@ change the API and storage schema; migrations run automatically at startup.
   `VISP_GATE_MASTER_KEY`. The earlier names are not read any more. The notice
   headers are `X-Visp-Gate-*` in place of `X-VDA-*`, and the notice user agent
   is `visp-gate-notices/1`.
+- The demo starts from the released image
+  (`docker compose -f deploy/demo/docker-compose.yml up`). It builds the
+  gateway from the checkout when the image cannot be pulled, or with
+  `--build`.
 - The audit queue is written in batches of up to 256 events in one statement
   instead of one event at a time, so many agents at full rate no longer fill
   it. Retries, dead letters and the drain at shutdown are as before.
@@ -135,5 +141,6 @@ First public release.
 - A single Rust binary with the React console embedded, a PostgreSQL metadata
   store, a distroless Docker image and a Helm chart.
 
-[Unreleased]: https://github.com/visplabs/visp-gate/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/visplabs/visp-gate/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/visplabs/visp-gate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/visplabs/visp-gate/releases/tag/v0.1.0

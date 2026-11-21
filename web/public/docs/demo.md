@@ -8,16 +8,17 @@ and hold a write until you approve it.
 data, and it listens on `127.0.0.1` only. Do not put real data behind it. For a
 real installation see [Deployment](deployment.md).
 
-You need Docker with Compose 2.20 or newer, a clone of this repository, and
-several gigabytes of free disk space for the images and the build. Nothing
-else: the scripted agent runs in a container.
+You need Docker with Compose 2.20 or newer and a clone of this repository.
+Nothing else: the scripted agent runs in a container.
 
 How long it takes:
 
-- **The first start builds the gateway from source.** On a 16-core laptop that
-  took about eight minutes, five of them the Rust build, the rest downloads.
-  There is no way around it until a release image with the agent door is
-  published.
+- **The first start downloads the released gateway image** and two database
+  images. How long that takes depends on your connection.
+- If the released image cannot be downloaded, or if you add `--build`, the
+  gateway is built from your checkout. On a 16-core laptop that took about
+  eight minutes, five of them the Rust build, and it needs several gigabytes
+  of free disk space.
 - Every later start takes about 15 seconds.
 - The walkthrough below takes about five minutes.
 
@@ -26,7 +27,7 @@ How long it takes:
 From the root of the repository:
 
 ```sh
-docker compose -f deploy/demo/docker-compose.yml up --build
+docker compose -f deploy/demo/docker-compose.yml up
 ```
 
 The command stays in the foreground. It shows the output of one step only, the
@@ -49,7 +50,7 @@ in the background, add `-d`, and read the output of the setup step with
 is taken, choose another one and use it in every command of this page:
 
 ```sh
-VISP_GATE_DEMO_PORT=18480 docker compose -f deploy/demo/docker-compose.yml up --build
+VISP_GATE_DEMO_PORT=18480 docker compose -f deploy/demo/docker-compose.yml up
 ```
 
 What the setup step made:
