@@ -2,7 +2,6 @@ import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import * as Dropdown from '@radix-ui/react-dropdown-menu';
-import * as Popover from '@radix-ui/react-popover';
 import {
   Activity,
   Database,
@@ -33,7 +32,7 @@ import { BrandMark } from './ui/brand';
 import { CommandPalette } from './command-palette';
 import { SessionRecovery } from './session-recovery';
 import { PopoverLayerContext } from '../lib/popover-layer';
-import { Button, Field, Modal, Picker, RouteBoundary, Skeleton } from './ui';
+import { Button, Field, Modal, RouteBoundary, Skeleton } from './ui';
 const navigation = [
   { to: '/overview', text: 'Overview', icon: Activity },
   { to: '/clusters', text: 'Clusters', icon: Database },
@@ -239,19 +238,19 @@ export function Shell() {
             >
               {mobileOpen ? <X size={20} /> : <Menu size={20} />}
             </Button>
-            <Popover.Root>
-              <Popover.Trigger asChild>
+            <Dropdown.Root modal={false}>
+              <Dropdown.Trigger asChild>
                 <Button variant="ghost" className="project-switcher">
                   {projects.data?.items.find((item) => item.id === project)
                     ?.name ?? 'All projects'}
                   <ChevronDown size={14} />
                 </Button>
-              </Popover.Trigger>
-              <Popover.Portal>
-                <Popover.Content className="popover" align="start">
-                  <Picker
+              </Dropdown.Trigger>
+              <Dropdown.Portal container={popoverLayer}>
+                <Dropdown.Content className="dropdown" align="start">
+                  <Dropdown.RadioGroup
                     value={project}
-                    onChange={(value) => {
+                    onValueChange={(value) => {
                       setProject(value);
                       navigate(
                         value === 'all'
@@ -259,18 +258,23 @@ export function Shell() {
                           : `/clusters?project_id=${encodeURIComponent(value)}`,
                       );
                     }}
-                    label="Project"
-                    options={[
+                  >
+                    {[
                       { value: 'all', label: 'All projects' },
                       ...(projects.data?.items.map((item) => ({
                         value: item.id,
                         label: item.name,
                       })) ?? []),
-                    ]}
-                  />
-                </Popover.Content>
-              </Popover.Portal>
-            </Popover.Root>
+                    ].map((item) => (
+                      <Dropdown.RadioItem key={item.value} value={item.value}>
+                        {item.label}
+                        {project === item.value && <span>✓</span>}
+                      </Dropdown.RadioItem>
+                    ))}
+                  </Dropdown.RadioGroup>
+                </Dropdown.Content>
+              </Dropdown.Portal>
+            </Dropdown.Root>
             <div className="topbar-right">
               <Button
                 className="search-trigger"

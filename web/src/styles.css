@@ -380,6 +380,7 @@ kbd {
   padding: var(--space-2);
   min-width: 220px;
 }
+.dropdown [role='menuitemradio'],
 .dropdown [role='menuitem'] {
   padding: var(--space-2) var(--space-2);
   display: flex;
@@ -390,9 +391,11 @@ kbd {
   cursor: pointer;
   outline: none;
 }
+.dropdown [role='menuitemradio'][data-highlighted],
 .dropdown [role='menuitem'][data-highlighted] {
   background: var(--subtle);
 }
+.dropdown [role='menuitemradio'] span,
 .dropdown [role='menuitem'] span {
   margin-left: auto;
 }
@@ -2277,6 +2280,7 @@ h1 {
 .button,
 .select,
 .field,
+.dropdown [role='menuitemradio'],
 .dropdown [role='menuitem'],
 .sidebar nav a {
   font-size: var(--text-sm);

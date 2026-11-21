@@ -301,6 +301,7 @@ textarea::placeholder {
     )
   );
 }
+.dropdown [role='menuitemradio'],
 .dropdown [role='menuitem'],
 .select-item {
   min-height: 32px;
