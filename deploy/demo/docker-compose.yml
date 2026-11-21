@@ -48,7 +48,7 @@ services:
     attach: false
     environment:
       POSTGRES_USER: vda
-      POSTGRES_PASSWORD: vda-local-only
+      POSTGRES_PASSWORD: ${VDA_DEMO_METADATA_PASSWORD:-vda-local-only}
       POSTGRES_DB: vda
     volumes: ['metadata:/var/lib/postgresql/data']
     healthcheck:
@@ -83,7 +83,7 @@ services:
     attach: false
     ports: ['127.0.0.1:${VDA_DEMO_PORT:-8080}:8080']
     environment:
-      VDA_DATABASE_URL: postgres://vda:vda-local-only@metadata:5432/vda
+      VDA_DATABASE_URL: postgres://vda:${VDA_DEMO_METADATA_PASSWORD:-vda-local-only}@metadata:5432/vda
       VDA_BOOTSTRAP_ADMIN_EMAIL: admin@example.com
       VDA_BOOTSTRAP_ADMIN_PASSWORD: demo-admin-local-only
       VDA_COOKIE_SECURE: 'false'
