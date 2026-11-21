@@ -41,7 +41,7 @@ service:
 ingress:
   enabled: false
   className: nginx
-  host: db-access.example.com
+  host: visp-gate.example.com
   annotations: {}
   tlsSecretName: visp-gate-tls
 autoscaling:
