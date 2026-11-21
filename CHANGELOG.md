@@ -57,6 +57,31 @@ change the API and storage schema; migrations run automatically at startup.
   `VDA_HELD_RESULTS_AGENT_MAX_BYTES`. New error code `result_expired`. New
   metrics `vda_held_results*`.
 
+- A five-minute demo. Run this command from the repository root:
+
+  `docker compose -f deploy/demo/docker-compose.yml up --build`
+
+  It starts the gateway, a demo database and an agent that is ready to
+  use it, with demo-only passwords and a master key made at the first start,
+  on `127.0.0.1` only. `scripts/demo-seed.sh` sets it up through the public
+  API. `scripts/demo-agent.sh` plays an agent at the agent door, prints each
+  step, and exits non-zero when the gate does not behave as the demo says.
+  `docs/DEMO.md` has the steps. `make demo` now starts this demo.
+
+- A threat model (`docs/THREAT-MODEL.md`): the actors, the trust boundaries,
+  and for each threat what the gate does, where the code or a test shows it,
+  and what remains; with a list of what the gate does not protect against.
+- A comparison of approaches (`docs/COMPARISON.md`): direct credentials, a
+  read-only role, a generic SQL tool server, an access tool for people, and
+  this gate, with when another approach is the better choice.
+- The Helm chart and `docker-compose.yml` pass
+  `VDA_AGENT_STEPS_RETENTION_DAYS`, `VDA_HELD_RESULTS_MAX_BYTES` and
+  `VDA_HELD_RESULTS_AGENT_MAX_BYTES` (chart values
+  `config.agentStepsRetentionDays`, `config.heldResultsMaxBytes` and
+  `config.heldResultsAgentMaxBytes`).
+- A `.dockerignore`, so that an image built in a working copy does not take
+  in local build output or `node_modules`.
+
 ### Changed
 
 - The audit queue is written in batches of up to 256 events in one statement
@@ -71,6 +96,11 @@ change the API and storage schema; migrations run automatically at startup.
   the editor, and the safety panel no longer repeats the verdict in the
   console. When only an administrator can help, the bar has no button.
 - Deleting an agent also deletes its sessions and steps.
+- The README leads with the agent safety gate: what it is, the demo, the
+  agent tools and the safety layers. Its screenshots show the current
+  console, with two new ones: an agent's session and the preview of a write.
+  The details of the `demo` profile of `docker-compose.yml` moved to
+  `docs/DEPLOYMENT.md`.
 
 ## [0.1.0] - 2026-10-10
 

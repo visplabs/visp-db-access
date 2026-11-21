@@ -130,12 +130,26 @@ to add the MySQL section, and `VDA_DISCOVERY_FAKE_FIXTURE` to add discovery (see
 uniquely named records and leaves them for inspection. All `VDA_SMOKE_*`
 settings are listed at the top of the script.
 
+### Demo walkthrough
+
+`scripts/demo-seed.sh` and `scripts/demo-agent.sh` are the two steps of the
+[five-minute demo](DEMO.md). The second one plays an agent at the agent door
+and exits non-zero when the gate does not behave as the demo says, so it is
+also a test of a running gateway from the outside:
+
+```sh
+docker compose -f deploy/demo/docker-compose.yml up --build -d
+docker compose -f deploy/demo/docker-compose.yml wait seed
+docker compose -f deploy/demo/docker-compose.yml run --rm agent
+docker compose -f deploy/demo/docker-compose.yml down -v
+```
+
 ## Useful scripts
 
-| Command (in `web/`)                        | Purpose                                                                   |
-| ------------------------------------------ | ------------------------------------------------------------------------- |
-| `npm run screenshots:readme`               | Regenerate `docs/images/` from a mock server on port 5179                 |
-| `npm run audit:ui`, `npm run audit:states` | Capture every route and state with axe reports (mock server on port 5175) |
+| Command (in `web/`)                        | Purpose                                                                                                                                     |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run screenshots:readme`               | Regenerate `docs/images/` from a mock server on port 5179 (start it first: `npm run dev:mock -- --host 127.0.0.1 --port 5179 --strictPort`) |
+| `npm run audit:ui`, `npm run audit:states` | Capture every route and state with axe reports (mock server on port 5175)                                                                   |
 
 ## Releasing
 

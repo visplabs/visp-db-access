@@ -21,7 +21,8 @@ transaction, masked, and audited. Engineers never see credentials.
 5. **Strict Rust** — `unsafe_code = "forbid"`, no `unwrap`/`expect`/`panic` in
    non-test code (workspace lints).
 
-For the threat model and limits, see [Security model](SECURITY-MODEL.md).
+For the guarantees and their limits, see [Security model](SECURITY-MODEL.md);
+for the attackers and what remains, see [Threat model](THREAT-MODEL.md).
 
 ## Components
 

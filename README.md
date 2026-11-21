@@ -1,82 +1,130 @@
 # visp-db-access
 
-A self-hosted gateway that lets engineers query production PostgreSQL and MySQL
-databases safely. Every statement is parsed, checked against the caller's access
-and the cluster's policy, rewritten with hard limits, executed in a guarded
-transaction, masked and audited. Engineers never see database credentials.
+A free, self-hosted safety gate between AI agents and production PostgreSQL
+and MySQL databases. An agent gets a set of tools instead of a connection
+string. Every statement it sends is parsed, checked against its access and the
+database's policy, limited, run in a guarded transaction, masked and recorded.
+An agent can read. It cannot change data on its own: a person sees what a
+write would change, and approves or rejects it.
 
-![Console on a production cluster](docs/images/console.png)
+It is for teams that want to let an agent answer questions from real data, or
+prepare changes to it, without handing over database credentials. People use
+the same gate through a web console.
 
-## Features
+![An agent's session: each tool call, the guard's answer and the fix the agent read](docs/images/agent-session.png)
 
-- **Whole-statement SQL analysis** before anything reaches the database,
-  including CTEs, subqueries and nested writes (`WITH x AS (DELETE …) SELECT …`
-  is a write). Unsupported SQL fails closed.
-- **Read-only by default.** Writes need a grant, a policy that allows them and,
-  by default, a second person's approval. DDL always needs approval.
-- **Four-eyes approvals** with 24-hour expiry and a single-use execution claim;
-  requester and reviewer grants are re-checked at execution.
-- **Production protection:** statement and lock timeouts, row/byte/affected-row
-  caps, an optional `EXPLAIN` cost gate, per-cluster concurrency limits, read
-  replica routing and server-side cancellation.
-- **A pre-flight bar** next to the Run button: Safe to run, Needs approval or
-  Blocked, one sentence of why, exactly what the guard adds to your SQL (such
-  as `LIMIT 1001`), and one next step.
-- **Performance suggestions** alongside the verdict: unbounded reads,
-  `SELECT *`, leading-wildcard `LIKE`, non-sargable filters and large
-  `OFFSET`s, with one-click fixes such as a sample `LIMIT` or a preview of the
-  rows a write will touch. Suggestions never change what is allowed.
-- **Column masking**, expiring project/cluster grants, organization and cluster
-  network allowlists, and an append-only audit log with full query history.
-  The audit log is sealed into a keyed hash chain: a row that is changed or
-  deleted in the database shows, in the console and with an offline command.
-- **AWS discovery** of RDS and Aurora databases across accounts and regions,
-  with explicit, credential-verified import and drift detection.
-- **One binary**: a Rust server with the React console embedded. Stateless nodes,
-  all state in a PostgreSQL metadata store, Docker image and Helm chart.
+## Try it in five minutes
+
+With Docker and a clone of this repository:
+
+```sh
+docker compose -f deploy/demo/docker-compose.yml up --build
+```
+
+This starts the gateway, a demo database and an agent that is ready to use
+it, with demo-only passwords, on `127.0.0.1` only. Then watch a scripted
+agent be stopped, be let through, and wait for your approval:
+
+```sh
+docker compose -f deploy/demo/docker-compose.yml run --rm agent --follow
+```
+
+[The demo, step by step](docs/DEMO.md) says what to look for, how to approve
+the agent's write in the console, and how to connect your own MCP client. The
+first start builds the gateway from source, which takes several minutes;
+later starts take seconds.
+
+## What an agent gets
+
+The agent door is a Model Context Protocol endpoint (`POST /api/v1/mcp`) with
+a bearer token. It offers nine tools, and none of them is "run any SQL":
+
+| Tool             | What it does                                                            |
+| ---------------- | ----------------------------------------------------------------------- |
+| `list_databases` | The databases this agent can reach now, and its level on each           |
+| `search_schema`  | Find tables and columns by name; blocked tables are left out            |
+| `describe_table` | The columns of a table, with the protected ones marked                  |
+| `check_sql`      | Ask the guard about a statement without running it                      |
+| `run_query`      | Run one guarded read; protected values come back masked                 |
+| `fetch_rows`     | Read the next rows of a result that `run_query` fetched; nothing reruns |
+| `propose_write`  | Ask a person for one `INSERT`, `UPDATE` or `DELETE`; nothing runs       |
+| `get_approval`   | Follow a request: pending, approved, executed, rejected                 |
+| `withdraw`       | Take a request back                                                     |
+
+An agent belongs to one person, its owner. It can never do more than its
+owner can do at that moment, on the databases its owner chose.
+
+## The safety layers
+
+- **A SQL guard** that parses the whole statement, including CTEs, subqueries
+  and nested writes (`WITH x AS (DELETE …) SELECT …` is a write). SQL it does
+  not understand is refused.
+- **Limits:** a row cap that the guard writes into the SQL (`LIMIT 1001`),
+  statement and lock timeouts, a byte cap, an optional `EXPLAIN` cost gate,
+  per-database concurrency, counted on each node, and for each agent a call rate and an hourly
+  query budget.
+- **Column masking and blocked tables**, set in each database's policy. On
+  PostgreSQL an optional agent login makes the database itself refuse what
+  the policy hides.
+- **Refusals that teach.** Each refusal carries one action word and a hint
+  (`rewrite_sql`: "Add a WHERE clause …"), so an agent corrects itself and
+  does not guess again. Five refused queries in a row stop it for up to ten
+  minutes.
+- **Approvals with a measured preview.** A write waits for a second person.
+  On PostgreSQL the gateway tries it in a transaction that is rolled back,
+  shows the rows before and after, and later runs it only on those rows. A
+  write that ran leaves a signed receipt.
+- **A stop.** Pausing an agent refuses its next call and cancels the queries
+  it is running on that node.
+- **A record.** Each tool call is recorded as a step of a session that the
+  owner can read. Steps are a convenience record and can be dropped under
+  load (see the [threat model](docs/THREAT-MODEL.md)). Every query is in history with the task the agent gave; the audit
+  log is sealed into a keyed hash chain, so a row changed in the database
+  shows.
+
+Each layer has limits. The [threat model](docs/THREAT-MODEL.md) lists them,
+with what the gate does not protect against, and
+[the comparison](docs/COMPARISON.md) says when a simpler approach is enough.
+
+| A write, previewed before approval                                      | The console's pre-flight bar                                |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------- |
+| ![What an agent's write would change](docs/images/approval-preview.png) | ![Console on a production cluster](docs/images/console.png) |
+| **Safety policy**                                                       | **Approval inbox**                                          |
+| ![Policy](docs/images/policy.png)                                       | ![Approval inbox](docs/images/approvals.png)                |
+
+## For people
+
+The web console gives engineers the same guarded path: a SQL editor with a
+pre-flight bar (Safe to run, Needs approval or Blocked, and why), read-only
+access by default, four-eyes approval for writes, expiring grants per project
+or database, network allowlists, query history and the audit log. AWS
+discovery finds RDS and Aurora databases across accounts and imports them
+after a credential check.
 
 | Overview                              | Clusters                                                     |
 | ------------------------------------- | ------------------------------------------------------------ |
 | ![Overview](docs/images/overview.png) | ![Clusters grouped by environment](docs/images/clusters.png) |
-| **Safety policy**                     | **Approvals**                                                |
-| ![Policy](docs/images/policy.png)     | ![Approval inbox](docs/images/approvals.png)                 |
 
-## Quick start
+## Install
 
-1. Start the gateway with Docker Compose. Choose an initial admin password and
-   a master key (the server refuses to start without a valid 32-byte key). The
-   `demo` profile adds PostgreSQL and MySQL databases with sample shop data:
+The gateway is one binary with the console embedded. Nodes are stateless; all
+state is in a PostgreSQL metadata database. To run it with Docker Compose,
+choose an administrator password and a master key (the server refuses to
+start without a valid 32-byte key):
 
-   ```sh
-   export VDA_MASTER_KEY="$(openssl rand -base64 32)"
-   export VDA_BOOTSTRAP_ADMIN_PASSWORD='choose-a-long-random-password'
-   docker compose --profile demo up --build
-   ```
+```sh
+export VDA_MASTER_KEY="$(openssl rand -base64 32)"
+export VDA_BOOTSTRAP_ADMIN_PASSWORD='choose-a-long-random-password'
+docker compose up --build
+```
 
-2. Open <http://localhost:8080> and sign in as `admin@example.com` with that
-   password.
-3. Go to **Clusters → Add cluster**. On **Basics**, use **+ Create project** to
-   make a project, name the cluster, and set **Environment** to `development`
-   (production defaults block writes). Set **Provider** to `other`; any region
-   will do.
-4. On **Connection**, enter one of the demo databases below and set
-   **TLS mode** to `disable`: the demo databases have no certificate the
-   gateway can verify, so the default `verify full` cannot connect. Click **Test connection**; it should report
-   `healthy`.
+Open <http://localhost:8080>, sign in as `admin@example.com`, and add a
+database under **Clusters → Add cluster**. Keep the master key in a secret
+manager and back it up with the metadata database: stored credentials cannot
+be decrypted with a different key. [Deployment](docs/DEPLOYMENT.md) covers
+configuration, the Helm chart, health, metrics and operations.
 
-   | Engine     | Host            | Port | Database | User   | Password          |
-   | ---------- | --------------- | ---- | -------- | ------ | ----------------- |
-   | PostgreSQL | `demo-postgres` | 5432 | `shop`   | `demo` | `demo-local-only` |
-   | MySQL      | `demo-mysql`    | 3306 | `shop`   | `demo` | `demo-local-only` |
-
-5. Continue to **Review**, click **Create cluster**, open the new cluster and
-   run `SELECT * FROM customers`.
-
-Keep `verify full` for real databases: it checks the server certificate and
-host name. Keep the master key in a secret manager and back it up with the
-metadata database: stored credentials can't be decrypted with a different key.
-
-To try the console without any backend, run the UI in mock mode:
+To try the console without any backend, run it in mock mode:
 
 ```sh
 cd web && npm ci && npm run dev:mock
@@ -86,11 +134,14 @@ cd web && npm ci && npm run dev:mock
 
 | Topic                                    |                                                             |
 | ---------------------------------------- | ----------------------------------------------------------- |
-| [Architecture](docs/ARCHITECTURE.md)     | Components, data model, access model and query pipeline     |
+| [Demo](docs/DEMO.md)                     | The five-minute demo, step by step                          |
+| [Threat model](docs/THREAT-MODEL.md)     | Actors, threats, what the gate does and what remains        |
 | [Security model](docs/SECURITY-MODEL.md) | Guarantees, defense-in-depth layers and known limits        |
+| [Comparison](docs/COMPARISON.md)         | Other ways to give an agent a database, and when to use one |
+| [Architecture](docs/ARCHITECTURE.md)     | Components, data model, access model and query pipeline     |
+| [HTTP API](docs/API.md)                  | The v1 API contract, with the agent door and its tools      |
 | [Deployment](docs/DEPLOYMENT.md)         | Configuration, Docker, Helm, health, metrics and operations |
 | [AWS discovery](docs/DISCOVERY.md)       | IAM setup, cross-account roles, scanning and import         |
-| [HTTP API](docs/API.md)                  | The v1 API contract                                         |
 | [Development](docs/DEVELOPMENT.md)       | Local setup without Docker, tests and smoke tests           |
 | [Design system](docs/DESIGN.md)          | The console's visual language and components                |
 
@@ -103,8 +154,8 @@ crates/vda-discovery    Cloud discovery providers (AWS RDS/Aurora)
 crates/vda-core         Query pipeline: access, policy, masking, audit (no HTTP routes)
 crates/vda-server       HTTP API, auth, approvals, administration (binary)
 web/                    React + TypeScript console, embedded in the binary
-deploy/                 Helm chart, IAM policies, demo seed data
-scripts/                Local development and smoke-test scripts
+deploy/                 Helm chart, IAM policies, the demo and its seed data
+scripts/                Local development, smoke-test and demo scripts
 ```
 
 ## Status

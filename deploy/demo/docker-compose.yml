@@ -1,0 +1,165 @@
+# ============================================================================
+#  DEMO ONLY. Do not use this file for anything but a look at the product.
+#
+#  It uses well-known passwords, plain HTTP, made-up shop data, and a master
+#  key and a metadata password that live in a Docker volume. Everything listens on 127.0.0.1 only.
+#  For a real installation see docs/DEPLOYMENT.md.
+#
+#  Start:   docker compose -f deploy/demo/docker-compose.yml up --build
+#  Agent:   docker compose -f deploy/demo/docker-compose.yml run --rm agent
+#  Remove:  docker compose -f deploy/demo/docker-compose.yml down -v
+#
+#  The steps are in docs/DEMO.md. Needs Docker Compose 2.20 or newer.
+# ============================================================================
+name: visp-db-access-demo
+
+# A small image with bash, curl and jq for the one-shot steps and the scripted
+# agent, and a static shell for the gateway's start (see `gateway` below).
+# `init` builds it; the other services use the image that `init` built.
+x-tools: &tools
+  image: visp-db-access-demo-tools
+
+services:
+  # Makes the master key at the first start and keeps it in the `state`
+  # volume, so no key is written in this file and none has to be typed.
+  # `down -v` removes it together with the metadata it encrypts.
+  init:
+    <<: *tools
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM alpine:3.22
+        RUN apk add --no-cache bash busybox-static curl jq
+    attach: false
+    volumes: ['state:/state']
+    command:
+      - sh
+      - -ec
+      - |
+        mkdir -p /state/bin
+        cp /bin/busybox.static /state/bin/busybox
+        if [ ! -s /state/master-key ]; then
+          head -c 32 /dev/urandom | base64 > /state/master-key
+        fi
+        chmod 0444 /state/master-key
+        # The password of the metadata database is made here too, so that
+        # none is written in this file.
+        if [ ! -s /state/metadata-password ]; then
+          head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > /state/metadata-password
+        fi
+        chmod 0444 /state/metadata-password
+
+  metadata:
+    image: postgres:17
+    attach: false
+    environment:
+      POSTGRES_USER: vda
+      POSTGRES_PASSWORD_FILE: /demo-state/metadata-password
+      POSTGRES_DB: vda
+    volumes:
+      - metadata:/var/lib/postgresql/data
+      - state:/demo-state:ro
+    depends_on:
+      init: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U vda -d vda']
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  # The database the agent works on: the shop data and one more table.
+  demo-postgres:
+    image: postgres:17
+    attach: false
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo-local-only
+      POSTGRES_DB: shop
+    volumes:
+      # A named volume, so that `down -v` removes the data with the rest.
+      - shop:/var/lib/postgresql/data
+      - ./postgres.sql:/docker-entrypoint-initdb.d/001-shop.sql:ro
+      - ./postgres-gate.sql:/docker-entrypoint-initdb.d/002-gate.sql:ro
+    healthcheck:
+      # Over TCP: the server that loads the data listens on a socket only.
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U demo -d shop']
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  gateway:
+    image: visp-db-access:demo
+    build: ../..
+    attach: false
+    ports: ['127.0.0.1:${VDA_DEMO_PORT:-8080}:8080']
+    environment:
+      VDA_BOOTSTRAP_ADMIN_EMAIL: admin@example.com
+      VDA_BOOTSTRAP_ADMIN_PASSWORD: demo-admin-local-only
+      VDA_COOKIE_SECURE: 'false'
+      VDA_PUBLIC_URL: http://localhost:${VDA_DEMO_PORT:-8080}
+      VDA_LOG_FORMAT: text
+    # The gateway takes its master key and its database URL from the
+    # environment only, and its image has no shell. The static shell that
+    # `init` put into the volume reads the key and the metadata password that
+    # were made at the first start, then starts the gateway.
+    entrypoint:
+      - /demo-state/bin/busybox
+      - sh
+      - -c
+      - 'read -r VDA_MASTER_KEY < /demo-state/master-key && read -r metadata_password < /demo-state/metadata-password && export VDA_MASTER_KEY VDA_DATABASE_URL="postgres://vda:$${metadata_password}@metadata:5432/vda" && exec /usr/local/bin/visp-db-access serve'
+    volumes: ['state:/demo-state:ro']
+    healthcheck:
+      test: [CMD, /demo-state/bin/busybox, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/readyz']
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    depends_on:
+      init: {condition: service_completed_successfully}
+      metadata: {condition: service_healthy}
+    read_only: true
+    security_opt: ['no-new-privileges:true']
+    cap_drop: [ALL]
+
+  # Sets the demo up through the public API and prints what to do next.
+  # Safe to run again: `docker compose … run --rm seed` prints it once more.
+  seed:
+    <<: *tools
+    pull_policy: never
+    volumes:
+      - state:/state
+      - ../../scripts/demo-seed.sh:/demo/demo-seed.sh:ro
+    environment:
+      VDA_DEMO_URL: http://gateway:8080
+      VDA_DEMO_PUBLIC_URL: http://localhost:${VDA_DEMO_PORT:-8080}
+      VDA_DEMO_ADMIN_EMAIL: admin@example.com
+      VDA_DEMO_ADMIN_PASSWORD: demo-admin-local-only
+      VDA_DEMO_REVIEWER_EMAIL: reviewer@example.com
+      VDA_DEMO_REVIEWER_PASSWORD: demo-reviewer-local-only
+      VDA_DEMO_TARGET_HOST: demo-postgres
+      VDA_DEMO_TARGET_USER: shop_gate
+      VDA_DEMO_TARGET_PASSWORD: demo-local-only
+      VDA_DEMO_TOKEN_FILE: /state/agent-token
+    command: [bash, /demo/demo-seed.sh]
+    depends_on:
+      gateway: {condition: service_healthy}
+      demo-postgres: {condition: service_healthy}
+
+  # The scripted agent. Not started by `up`; run it with
+  #   docker compose -f deploy/demo/docker-compose.yml run --rm agent
+  agent:
+    <<: *tools
+    pull_policy: never
+    profiles: [walkthrough]
+    volumes:
+      - state:/state:ro
+      - ../../scripts/demo-agent.sh:/demo/demo-agent.sh:ro
+    environment:
+      VDA_DEMO_URL: http://gateway:8080
+      VDA_DEMO_PUBLIC_URL: http://localhost:${VDA_DEMO_PORT:-8080}
+      VDA_AGENT_TOKEN_FILE: /state/agent-token
+    entrypoint: [bash, /demo/demo-agent.sh]
+
+volumes:
+  metadata:
+  shop:
+  state:

@@ -82,6 +82,15 @@ jobs:
           done
           if [[ $ready != true ]]; then cat /tmp/vda-smoke-server.log; exit 1; fi
           bash scripts/e2e-smoke.sh
+          # The demo walkthrough (docs/DEMO.md) against the same gateway: a
+          # scripted agent at the agent door. It fails when the gate does
+          # not behave as the demo says.
+          psql -h localhost -U vda -d shop -v ON_ERROR_STOP=1 -f deploy/demo/postgres-gate.sql
+          VDA_DEMO_ADMIN_EMAIL="$VDA_BOOTSTRAP_ADMIN_EMAIL" VDA_DEMO_ADMIN_PASSWORD="$VDA_BOOTSTRAP_ADMIN_PASSWORD" \
+            VDA_DEMO_REVIEWER_PASSWORD=local-reviewer-password VDA_DEMO_TARGET_HOST=127.0.0.1 \
+            VDA_DEMO_TARGET_PASSWORD=demo-local-only VDA_DEMO_TOKEN_FILE=/tmp/vda-demo-agent-token \
+            bash scripts/demo-seed.sh
+          VDA_AGENT_TOKEN_FILE=/tmp/vda-demo-agent-token bash scripts/demo-agent.sh
   docker:
     runs-on: ubuntu-latest
     steps:

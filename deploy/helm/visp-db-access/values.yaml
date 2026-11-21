@@ -23,6 +23,16 @@ config:
   # The address people open the console at, such as https://gate.example.com.
   # Notices to approvers link to a request only when it is set.
   publicUrl: ''
+  # Days the record of agent steps (tool, task, SQL text; never rows) is kept.
+  agentStepsRetentionDays: 30
+  # Memory that one pod may use for rows it holds for the agent tool
+  # fetch_rows: for all agents together, and for one agent. Both are in
+  # bytes as a whole number; a value such as "256Mi" does not work. 0 holds
+  # nothing. The default of heldResultsMaxBytes (256 MiB) is half of the
+  # chart's default memory limit (512Mi): raise the memory limit, or lower
+  # this value, for agents that page large results.
+  heldResultsMaxBytes: 268435456
+  heldResultsAgentMaxBytes: 67108864
 resources:
   requests: {cpu: 100m, memory: 128Mi}
   limits: {cpu: '2', memory: 512Mi}
