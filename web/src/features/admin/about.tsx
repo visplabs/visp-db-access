@@ -5,7 +5,7 @@ export function AboutConsole() {
       <h2>About</h2>
       <dl className="review-policy">
         <dt>Application</dt>
-        <dd>visp · db access</dd>
+        <dd>visp · gate</dd>
         <dt>Console version</dt>
         <dd>{version}</dd>
         <dt>API</dt>

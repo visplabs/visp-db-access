@@ -22,7 +22,7 @@ export function Login() {
       <div className="login-brand">
         <BrandMark size={32} />
         <strong>
-          visp <span>· db access</span>
+          visp <span>· gate</span>
         </strong>
       </div>
       <p className="login-subtitle">Guarded database access</p>
