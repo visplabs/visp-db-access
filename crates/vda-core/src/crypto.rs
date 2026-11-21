@@ -15,6 +15,10 @@ pub struct Crypto {
     /// A key for signing records, derived from the master key, so a signature
     /// never reveals or reuses the encryption key.
     signing: [u8; 32],
+    /// A third key, for the audit hash chain only, derived from the master
+    /// key under its own label: a receipt signature can never stand in for a
+    /// chain link, and the other way round.
+    chain: [u8; 32],
 }
 impl std::fmt::Debug for Crypto {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -32,10 +36,34 @@ impl Crypto {
         let mut signing = Sha256::new();
         signing.update(b"visp-db-access record signing key v1\0");
         signing.update(key);
+        let mut chain = Sha256::new();
+        chain.update(b"visp-db-access audit chain key v1\0");
+        chain.update(key);
         Self {
             cipher: Aes256Gcm::new(key.into()),
             signing: signing.finalize().into(),
+            chain: chain.finalize().into(),
         }
+    }
+    /// HMAC-SHA256 of `message` under the audit chain key.
+    pub fn chain_mac(&self, message: &[u8]) -> [u8; 32] {
+        use hmac::{Hmac, Mac};
+        let mut mac = match <Hmac<sha2::Sha256> as Mac>::new_from_slice(&self.chain) {
+            Ok(mac) => mac,
+            // A 32-byte key is always accepted; all-zero never matches a link.
+            Err(_) => return [0; 32],
+        };
+        mac.update(message);
+        mac.finalize().into_bytes().into()
+    }
+    /// A public name for the audit chain key: the same master key always
+    /// gives the same name, and the name says nothing about the key.
+    pub fn chain_key_id(&self) -> String {
+        self.chain_mac(b"audit chain key id")
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
     /// An HMAC-SHA256 signature of `message`, in lower-case hex. Anyone with
     /// write access to the metadata store but not the master key cannot make
@@ -119,5 +147,24 @@ mod tests {
         assert!(!crypto.verify(b"receipt.", &signature));
         assert!(!Crypto::new(&[4; 32]).verify(b"receipt", &signature));
         assert!(!crypto.verify(b"receipt", ""));
+    }
+
+    #[test]
+    fn the_chain_key_is_separate_from_the_signing_key_and_named_without_revealing_it() {
+        let crypto = Crypto::new(&[3; 32]);
+        let mac: String = crypto
+            .chain_mac(b"receipt")
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        // The same message under the receipt key gives another value.
+        assert_ne!(mac, crypto.sign(b"receipt"));
+        assert_eq!(crypto.chain_key_id().len(), 16);
+        assert_eq!(crypto.chain_key_id(), Crypto::new(&[3; 32]).chain_key_id());
+        assert_ne!(crypto.chain_key_id(), Crypto::new(&[4; 32]).chain_key_id());
+        // Computed independently:
+        //   key = SHA-256("visp-db-access audit chain key v1\0" || 0x03 * 32)
+        //   HMAC-SHA256(key, "audit chain key id")[..8]
+        assert_eq!(crypto.chain_key_id(), "4a1886b932e8ae81");
     }
 }

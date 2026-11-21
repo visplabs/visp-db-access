@@ -716,6 +716,38 @@ pub async fn check(
         Verdict::Drift => "drift",
         Verdict::Failed => "error",
     };
+    store(&core.db, cluster, status, &findings).await?;
+    core.judged
+        .insert(
+            (cluster.id, cluster.updated_at),
+            (verdict, std::time::Instant::now()),
+        )
+        .await;
+    Ok((status.to_owned(), findings))
+}
+
+/// Store the result of a check and, when the status is another one than
+/// before, one `agent_login.status` audit event, in one transaction.
+///
+/// Every node checks on its own, and several may check the same cluster at
+/// the same moment. The stored status is the shared truth: its row is locked
+/// while it is compared and replaced, so the checks of one cluster store
+/// their results one after another, and each compares with what the one
+/// before it committed. A change is therefore recorded once, by the check
+/// that made it, however many nodes saw it.
+async fn store(
+    db: &sqlx::PgPool,
+    cluster: &ClusterRecord,
+    status: &str,
+    findings: &[Finding],
+) -> Result<(), ApiError> {
+    let mut tx = db.begin().await?;
+    let before: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM cluster_agent_logins WHERE cluster_id=$1 FOR UPDATE",
+    )
+    .bind(cluster.id)
+    .fetch_optional(&mut *tx)
+    .await?;
     sqlx::query(
         "UPDATE cluster_agent_logins SET status=$2,findings=$3,checked_at=now(),checked_version=$4
          WHERE cluster_id=$1",
@@ -724,15 +756,39 @@ pub async fn check(
     .bind(status)
     .bind(serde_json::json!(findings))
     .bind(cluster.updated_at)
-    .execute(&core.db)
+    .execute(&mut *tx)
     .await?;
-    core.judged
-        .insert(
-            (cluster.id, cluster.updated_at),
-            (verdict, std::time::Instant::now()),
-        )
-        .await;
-    Ok((status.to_owned(), findings))
+    if let Some(before) = before.filter(|before| before != status) {
+        status_changed(&mut tx, cluster.id, &before, status).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+/// Record that the status of a cluster's agent login changed, on the
+/// transaction that changes it. Nobody is the actor: a check found it. The
+/// findings are not copied: they name database objects, and the current
+/// ones are shown with the login.
+pub async fn status_changed(
+    connection: &mut sqlx::PgConnection,
+    cluster: Uuid,
+    from: &str,
+    to: &str,
+) -> Result<(), ApiError> {
+    crate::audit::persist_on(
+        connection,
+        &crate::audit::Event {
+            id: Uuid::new_v4(),
+            actor_id: None,
+            action: "agent_login.status".into(),
+            target_type: Some("cluster".into()),
+            target_id: Some(cluster),
+            ip: None,
+            details: serde_json::json!({"from": from, "to": to}),
+            created_at: chrono::Utc::now(),
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 /// Before an agent's query: when the cluster has an agent login, it must be

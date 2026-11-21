@@ -9,6 +9,7 @@ import type { Cluster, HistoryEntry, Policy, QueryResult, User } from './types';
 import { createAgents } from './mock-agents';
 import { createApprovals } from './mock-approvals';
 import { createNotices } from './mock-notices';
+import { createAuditChain } from './mock-audit';
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const fail = (
   code: string,
@@ -106,10 +107,16 @@ export function createMockTransport({
   const record = (
     action: string,
     target_type: string,
-    target_id: string,
+    target_id: string | null,
     details: unknown,
-  ) =>
-    state.audit.unshift({
+  ) => {
+    // The list is ordered by time, then by id, and ids are random. Two
+    // events in one millisecond would be listed in either order; here the
+    // later one always gets the later time, so the list is in the order
+    // written.
+    const newest = state.audit[0]?.created_at;
+    const written = now();
+    return state.audit.unshift({
       id: crypto.randomUUID(),
       actor: session ? { id: session.id, email: session.email } : null,
       action,
@@ -117,8 +124,20 @@ export function createMockTransport({
       target_id,
       ip: '10.12.0.24',
       details,
-      created_at: now(),
+      created_at:
+        newest && written <= newest
+          ? new Date(Date.parse(newest) + 1).toISOString()
+          : written,
+      // The next number; an event waits a moment before it is sealed.
+      seq: Math.max(0, ...state.audit.map((event) => event.seq)) + 1,
+      sealed: false,
     });
+  };
+  const chain = createAuditChain({
+    events: () => state.audit,
+    fail,
+    audit: record,
+  });
   const notices = createNotices({ fail, audit: record, now });
   // A state change of a request writes its audit row and its notice together.
   const audit = (
@@ -153,7 +172,14 @@ export function createMockTransport({
       error,
       created_at: now(),
     });
-    audit('query.execute', 'cluster', cluster.id, { sql, status });
+    // As the gateway writes it: the SQL is in the history, not in the audit
+    // log. The event is the intent, written before the query runs.
+    audit('query.execute', 'cluster', cluster.id, {
+      query_id: crypto.randomUUID(),
+      history_id: state.history[0]?.id ?? null,
+      status: status === 'blocked' ? 'blocked' : 'running',
+      agent_id: null,
+    });
   }
   function result(
     cluster: Cluster,
@@ -817,8 +843,19 @@ export function createMockTransport({
       }
       return approvals.route(id, action, method, body, actor);
     }
+    if (resource === 'audit' && id === 'integrity') {
+      admin();
+      if (method !== 'GET') fail('not_found', 'Endpoint not found.', 404);
+      return chain.integrity();
+    }
+    if (resource === 'audit' && id === 'verify') {
+      admin();
+      if (method !== 'POST') fail('not_found', 'Endpoint not found.', 404);
+      return chain.verify(body);
+    }
     if (resource === 'audit') {
       admin();
+      chain.seal();
       return page(
         state.audit.filter(
           (event) =>

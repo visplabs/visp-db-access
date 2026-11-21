@@ -52,12 +52,17 @@ pub struct Page {
     pub actor_id: Option<Uuid>,
 }
 impl Page {
-    /// Validated page size and optional cursor.
-    pub fn bounds(&self) -> Result<(i64, Option<cursor::Cursor>), ApiError> {
+    /// Validated page size.
+    pub fn limit(&self) -> Result<i64, ApiError> {
         let limit = self.limit.unwrap_or(50);
         if !(1..=200).contains(&limit) {
             return Err(ApiError::validation("Limit must be 1..=200"));
         }
+        Ok(limit)
+    }
+    /// Validated page size and optional cursor.
+    pub fn bounds(&self) -> Result<(i64, Option<cursor::Cursor>), ApiError> {
+        let limit = self.limit()?;
         Ok((
             limit,
             self.cursor

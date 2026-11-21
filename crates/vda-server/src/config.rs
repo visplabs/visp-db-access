@@ -31,6 +31,27 @@ pub enum Command {
     },
     /// Generate a base64 master key without connecting to any database.
     GenKey,
+    /// Check the audit hash chain and every audit row it seals. Reads only:
+    /// it does not migrate and writes nothing. Exits with 0 when the chain
+    /// is intact, 3 when something was changed, deleted, put in or cut off,
+    /// and 4 when nothing is wrong but some links were sealed with another
+    /// master key and could not be verified with this one.
+    VerifyAudit {
+        /// The position of a checkpoint saved outside the database, from an
+        /// `audit_checkpoint` log line or `GET /audit/integrity`.
+        #[arg(long, requires = "expect_hash", value_parser = clap::value_parser!(i64).range(1..))]
+        expect_position: Option<i64>,
+        /// The hash of that checkpoint. The link at that position must
+        /// still have this hash.
+        #[arg(long, requires = "expect_position")]
+        expect_hash: Option<String>,
+        /// The `key_id` of that checkpoint, when you have it. The link must
+        /// still name this key: its name is not inside its hash, and
+        /// relabelling links up to the head is how someone would make
+        /// changed rows look as if another master key had sealed them.
+        #[arg(long, requires = "expect_position")]
+        expect_key_id: Option<String>,
+    },
 }
 /// Gateway configuration. Secrets are redacted by their types.
 #[derive(Debug, Clone, clap::Args)]

@@ -5,6 +5,7 @@ mod agent_login;
 pub mod agents;
 pub mod app;
 pub mod approvals;
+pub mod audit_chain;
 pub mod auth;
 mod clusters;
 pub mod config;
@@ -21,4 +22,4 @@ pub mod rbac;
 mod web;
 
 // The pipeline modules live in `vda-core`; these paths stay for callers.
-pub use vda_core::{audit, crypto, masking, policy, pools, sanitation};
+pub use vda_core::{audit, chain, crypto, masking, policy, pools, sanitation};

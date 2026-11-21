@@ -3573,7 +3573,8 @@ async fn the_database_is_the_judge_for_agents() {
     let (_, v) = tool(&f, &token, "list_databases", json!({"task":"Look"})).await;
     assert_eq!(v["databases"][0]["enforced_by"], "gateway");
     let events: Vec<String> = sqlx::query_scalar(
-        "SELECT action FROM audit_log WHERE action LIKE 'agent_login.%' ORDER BY created_at,id",
+        "SELECT action FROM audit_log WHERE action IN ('agent_login.set','agent_login.remove')
+         ORDER BY txid,seq",
     )
     .fetch_all(&f.db)
     .await
@@ -3582,6 +3583,30 @@ async fn the_database_is_the_judge_for_agents() {
         events,
         ["agent_login.set", "agent_login.set", "agent_login.remove"]
     );
+    // Every change of the login's status on the way was recorded, once, and
+    // each begins where the one before ended.
+    let changes: Vec<String> = sqlx::query_scalar(
+        "SELECT (details->>'from')||'>'||(details->>'to') FROM audit_log
+         WHERE action='agent_login.status' AND actor_id IS NULL AND target_id=$1
+         ORDER BY txid,seq",
+    )
+    .bind(f.cluster)
+    .fetch_all(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        changes[..3],
+        ["unchecked>error", "error>unchecked", "unchecked>ok"]
+    );
+    assert!(changes.len() > 3, "{changes:?}");
+    for pair in changes.windows(2) {
+        let (before, after) = (
+            pair[0].split_once('>').unwrap(),
+            pair[1].split_once('>').unwrap(),
+        );
+        assert_eq!(before.1, after.0, "{changes:?}");
+        assert_ne!(after.0, after.1, "{changes:?}");
+    }
     // When the cluster's endpoint changes, the stored agent password is
     // cleared: it is never sent to an endpoint it was not entered for. The
     // login stays, so agents are refused; they do not quietly fall back to

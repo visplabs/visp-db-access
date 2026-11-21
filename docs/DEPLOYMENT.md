@@ -10,28 +10,30 @@ All settings are environment variables (each also has a matching CLI flag).
 The binary does not load `.env` files itself; see [.env.example](../.env.example)
 and [deploy/config.env.example](../deploy/config.env.example).
 
-| Variable                       | Default        | Purpose                                                                                                                                                                      |
-| ------------------------------ | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VDA_DATABASE_URL`             | required       | PostgreSQL metadata URL. Migration privileges are needed on first start.                                                                                                     |
-| `VDA_MASTER_KEY`               | required       | Standard-base64 32-byte key that encrypts stored credentials. Generate with `openssl rand -base64 32` or `visp-db-access gen-key`.                                           |
-| `VDA_BIND`                     | `0.0.0.0:8080` | Listening address.                                                                                                                                                           |
-| `VDA_METADATA_POOL_SIZE`       | `20`           | Metadata connections per node (1–200). Health and discovery schedulers each use one more.                                                                                    |
-| `VDA_BOOTSTRAP_ADMIN_EMAIL`    | unset          | First administrator, created only when no users exist. Set with the password.                                                                                                |
-| `VDA_BOOTSTRAP_ADMIN_PASSWORD` | unset          | First administrator's password, at least 12 bytes.                                                                                                                           |
-| `VDA_ADMIN_PASSWORD`           | unset          | Password for the `create-admin` command.                                                                                                                                     |
-| `VDA_COOKIE_SECURE`            | `true`         | Secure session cookie and HSTS. Set `false` only for local plain-HTTP development (a startup warning is logged).                                                             |
-| `VDA_ALLOWED_CIDRS`            | empty          | Comma-separated client allowlist; intersected with the allowlist set in the console. Empty allows all.                                                                       |
-| `VDA_TRUST_PROXY_HEADERS`      | `false`        | Use `X-Forwarded-For` for client attribution.                                                                                                                                |
-| `VDA_TRUSTED_PROXIES`          | empty          | Comma-separated CIDRs of your proxies. With forwarding on and no list, only the direct peer is trusted. `VDA_TRUSTED_PROXY_CIDRS` is accepted as an alias.                   |
-| `VDA_ALLOW_PRIVATE_TARGETS`    | `false`        | Allow loopback database targets (development). RFC 1918 targets are always allowed. For notices it also allows a webhook on a private address, and plain `http` to loopback. |
-| `VDA_METRICS_TOKEN`            | unset          | When set, `/metrics` requires `Authorization: Bearer <token>`.                                                                                                               |
-| `VDA_PUBLIC_URL`               | unset          | The address people open the console at, such as `https://gate.example.com`: an `http(s)` origin with no path. Notices link to the request only when it is set.               |
-| `VDA_LOG_FORMAT`               | `text`         | `text` or `json`.                                                                                                                                                            |
-| `RUST_LOG`                     | `info`         | Log filter.                                                                                                                                                                  |
+| Variable                       | Default        | Purpose                                                                                                                                                                                                    |
+| ------------------------------ | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VDA_DATABASE_URL`             | required       | PostgreSQL metadata URL, version 14 or newer. Migration privileges are needed on first start.                                                                                                              |
+| `VDA_MASTER_KEY`               | required       | Standard-base64 32-byte key that encrypts stored credentials. The keys that sign receipts and seal the audit log are derived from it. Generate with `openssl rand -base64 32` or `visp-db-access gen-key`. |
+| `VDA_BIND`                     | `0.0.0.0:8080` | Listening address.                                                                                                                                                                                         |
+| `VDA_METADATA_POOL_SIZE`       | `20`           | Metadata connections per node (1–200). Health and discovery schedulers each use one more.                                                                                                                  |
+| `VDA_BOOTSTRAP_ADMIN_EMAIL`    | unset          | First administrator, created only when no users exist. Set with the password.                                                                                                                              |
+| `VDA_BOOTSTRAP_ADMIN_PASSWORD` | unset          | First administrator's password, at least 12 bytes.                                                                                                                                                         |
+| `VDA_ADMIN_PASSWORD`           | unset          | Password for the `create-admin` command.                                                                                                                                                                   |
+| `VDA_COOKIE_SECURE`            | `true`         | Secure session cookie and HSTS. Set `false` only for local plain-HTTP development (a startup warning is logged).                                                                                           |
+| `VDA_ALLOWED_CIDRS`            | empty          | Comma-separated client allowlist; intersected with the allowlist set in the console. Empty allows all.                                                                                                     |
+| `VDA_TRUST_PROXY_HEADERS`      | `false`        | Use `X-Forwarded-For` for client attribution.                                                                                                                                                              |
+| `VDA_TRUSTED_PROXIES`          | empty          | Comma-separated CIDRs of your proxies. With forwarding on and no list, only the direct peer is trusted. `VDA_TRUSTED_PROXY_CIDRS` is accepted as an alias.                                                 |
+| `VDA_ALLOW_PRIVATE_TARGETS`    | `false`        | Allow loopback database targets (development). RFC 1918 targets are always allowed. For notices it also allows a webhook on a private address, and plain `http` to loopback.                               |
+| `VDA_METRICS_TOKEN`            | unset          | When set, `/metrics` requires `Authorization: Bearer <token>`.                                                                                                                                             |
+| `VDA_PUBLIC_URL`               | unset          | The address people open the console at, such as `https://gate.example.com`: an `http(s)` origin with no path. Notices link to the request only when it is set.                                             |
+| `VDA_LOG_FORMAT`               | `text`         | `text` or `json`.                                                                                                                                                                                          |
+| `RUST_LOG`                     | `info`         | Log filter.                                                                                                                                                                                                |
 
 Back up the master key together with the metadata database. Stored credentials
 can't be decrypted with a different key; if the key is lost, re-enter each
-cluster's password in its settings.
+cluster's password in its settings. The audit hash chain protects the audit
+log from people who have the database but not this key, so do not store the
+key in the database or where its administrators can read it.
 
 ### Policy defaults
 
@@ -56,6 +58,7 @@ Both use a 2-second lock timeout, four concurrent queries per node, a
 visp-db-access serve          # default; applies migrations, then serves
 visp-db-access migrate        # apply metadata migrations only
 visp-db-access gen-key        # print a new master key
+visp-db-access verify-audit   # check the audit hash chain; reads only
 VDA_ADMIN_PASSWORD=… visp-db-access create-admin --email you@example.com --name "Your Name"
 ```
 
@@ -114,10 +117,140 @@ For AWS discovery on EKS, see [IRSA setup](DISCOVERY.md#eks-irsa).
   administrators together. Behind a load balancer the total is five times the
   number of nodes.
 
+## Audit hash chain
+
+Every audit row is sealed into a keyed hash chain, so that a change made in
+the database behind the gateway's back shows. What it proves and what it does
+not is in the [security model](SECURITY-MODEL.md#a-tamper-evident-audit-log);
+the bytes are in the [API reference](API.md#the-audit-hash-chain).
+
+**How it runs.** Every node has a worker that ticks every two seconds. One
+node at a time seals (an advisory lock held for the length of one
+transaction), in batches of 500 rows and at most 20,000 rows a tick. One node
+at a time takes the next step of the background check: 5,000 links a tick,
+and a new pass over the whole chain a minute after the last one began. The
+check only reads. Nothing needs to be configured.
+
+**Upgrading.** Migration `0011_audit_chain` adds two columns to `audit_log`
+and numbers the rows that are there, in one transaction; on a laptop it took
+about two seconds for 200,000 rows. The old rows are then sealed in the
+background at about 10,000 rows a second, and show as waiting until then.
+Older nodes can keep writing during a rolling upgrade: the new columns have
+defaults.
+
+**Checkpoints.** A node writes the head of the chain to its log when it
+starts, at most every five minutes after that when the head has moved, and
+when it shuts down:
+
+```text
+INFO vda_server::audit_chain: audit_checkpoint position=48211 hash=5f0c…9a1e key_id=4a1886b932e8ae81
+```
+
+`GET /api/v1/audit/integrity` returns the same three values as `head`. Keep
+these lines in a log store that the administrators of the metadata database
+cannot change. They are the only proof of how long the chain was and which
+key sealed its end: without them, someone who removes the newest rows and
+their links leaves a shorter chain that verifies, and someone who writes
+another key's name on every link from a changed row to the head leaves a
+chain that only says "cannot be verified".
+
+**Checking offline.**
+
+```sh
+VDA_DATABASE_URL=… VDA_MASTER_KEY=… visp-db-access verify-audit
+VDA_DATABASE_URL=… VDA_MASTER_KEY=… visp-db-access verify-audit \
+  --expect-position 48211 --expect-hash 5f0c…9a1e --expect-key-id 4a1886b932e8ae81
+```
+
+The command reads the whole chain and every row it seals in one read-only
+snapshot. It does not migrate and writes nothing, so it can run against a
+replica or a restored backup, with a read-only database role. With a
+checkpoint it also checks that the chain still holds that link: the same hash
+at that position and, with `--expect-key-id`, under the same key's name. Give
+all three values of the log line; the key's name is optional only so that a
+checkpoint noted without it can still be used. On a laptop it checks about
+80,000 rows a second. Its exit code:
+
+| Code | Meaning                                                                                                       |
+| ---- | ------------------------------------------------------------------------------------------------------------- |
+| 0    | Intact: every link verified with this master key (and the checkpoint, if given, is in the chain).             |
+| 1    | No verdict: the database could not be reached, the key is missing, or the database has no chain yet.          |
+| 2    | Wrong command line.                                                                                           |
+| 3    | Broken. The output names the first problem: its kind, the link's position and the audit row.                  |
+| 4    | Nothing is wrong, but some links were sealed with another master key and could not be verified with this one. |
+
+Rows that wait to be sealed are reported and are not an error.
+
+**Metrics to alert on.**
+
+| Metric                                    | Alert when                                                                                                                                 |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `vda_audit_chain_broken`                  | It is 1. The background check, or this node's memory of the head, found a problem. The log has an `audit_chain_break` error with the kind. |
+| `vda_audit_chain_oldest_unsealed_seconds` | It stays above a minute or two. Something holds sealing back; rows written meanwhile are not protected.                                    |
+| `vda_audit_chain_unverifiable_links`      | It is above 0 and you did not change the master key.                                                                                       |
+| `vda_audit_chain_last_pass_age_seconds`   | It keeps growing well past the time a pass takes (about 7 minutes for each million rows). The background check is not running.             |
+| `vda_audit_chain_errors_total`            | It keeps rising. Ticks of the worker fail, usually because the database is away.                                                           |
+
+Also exported: `vda_audit_chain_head_position`, `vda_audit_chain_unsealed_rows`,
+`vda_audit_chain_sealed_total`, `vda_audit_chain_verified_links_total`,
+`vda_audit_chain_passes_total`, `vda_audit_chain_breaks_total` and
+`vda_audit_writer_batch_events` (how many queued events one statement wrote).
+The gauges are set by every node from the database, so any node can be
+scraped.
+
+**When sealing falls behind.** A row is sealed once no transaction with a
+lower ID is still open. Look for the oldest open transaction on the
+PostgreSQL instance of the metadata database, in any of its databases:
+
+```sql
+SELECT pid, datname, usename, state, xact_start, left(query, 80)
+FROM pg_stat_activity WHERE backend_xid IS NOT NULL ORDER BY xact_start LIMIT 5;
+SELECT gid, prepared, owner, database FROM pg_prepared_xacts ORDER BY prepared;
+```
+
+A session that sits `idle in transaction` after a write, a long data load and
+a forgotten prepared transaction are the usual causes. Give the metadata
+database its own instance, or set `idle_in_transaction_session_timeout`, if
+this happens often. Read-only transactions do not hold sealing back.
+
+**When the chain is reported broken.**
+
+1. Do not repair anything in the database. Take a copy of it as it is.
+2. Run `verify-audit` against the copy, with the newest checkpoint from your
+   log store. The output names the first problem. Rows before that position
+   still match the chain; treat that row and everything after it as unproven.
+3. Compare the unproven rows with a backup from before the problem, and with
+   the query history, which is a separate table.
+4. Find out who had access to the metadata database. Treat the master key as
+   exposed if the break is `checkpoint_mismatch` because of another hash
+   while the links verify: only the key makes links that verify. A
+   `checkpoint_mismatch` because the link names another key means links were
+   relabelled to hide a change in a row; so does `chain_broken` with
+   "relabelled" in its message, and the rows from the start of the run it
+   names are the ones to compare.
+5. The gateway keeps sealing new rows onto the chain, and keeps reporting the
+   break; that is intended. There is no command that resets the chain.
+
+Restoring the metadata database from a backup removes the rows written since
+the backup. Nodes that were running report `chain_truncated`, correctly; they
+stop after a restart.
+
+**Changing the master key.** The chain key is derived from the master key.
+After a change, the gateway logs once that the chain continues with another
+key, new links form a new segment, and the old links are reported as not
+verifiable (`partial`, exit code 4). Before the change, run `verify-audit`
+with the old key and save its head as a checkpoint. Keep the old key offline:
+only it can prove that the old rows were not changed. All nodes must run with
+the same master key; two keys at once make the segments alternate.
+
+**Rate limit.** "Verify now" (`POST /audit/verify`) is limited to six checks
+a minute on each node, for all administrators together.
+
 ## Operations notes
 
 - Shutdown is graceful: active queries are cancelled, HTTP requests and queued
-  history drain, pools close and the scheduler lock is released.
+  history drain, what can be sealed is sealed and the head of the audit chain
+  is logged, pools close and the scheduler lock is released.
 - Each node keeps small per-cluster connection pools (up to five connections per
   endpoint). Budget target connections across replicas accordingly.
 - Concurrency limits, cancellation and login throttling are per node. Use

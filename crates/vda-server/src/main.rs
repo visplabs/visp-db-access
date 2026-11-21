@@ -45,6 +45,31 @@ async fn main() -> anyhow::Result<()> {
         .database_url
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("VDA_DATABASE_URL is required"))?;
+    // Checking the audit chain reads only: no pool, no migration.
+    if let Some(Command::VerifyAudit {
+        expect_position,
+        expect_hash,
+        expect_key_id,
+    }) = &cli.command
+    {
+        let expect = expect_position
+            .zip(expect_hash.clone())
+            .map(|(position, hash)| vda_core::chain::Checkpoint {
+                position,
+                hash: hash.trim().to_lowercase(),
+                key_id: expect_key_id
+                    .as_ref()
+                    .map(|key_id| key_id.trim().to_lowercase()),
+            });
+        let code = vda_server::audit_chain::verify_offline(
+            url.expose_secret(),
+            &crypto,
+            expect,
+            &mut std::io::stdout(),
+        )
+        .await?;
+        std::process::exit(code);
+    }
     let db = vda_server::db::connect(url.expose_secret(), cli.config.metadata_pool_size).await?;
     vda_server::db::migrate(&db).await?;
     match cli.command.unwrap_or(Command::Serve) {
@@ -98,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Serve => serve(db, cli.config, crypto).await,
-        Command::GenKey => Ok(()),
+        Command::GenKey | Command::VerifyAudit { .. } => Ok(()),
     }
 }
 async fn serve(
@@ -116,6 +141,7 @@ async fn serve(
     let discovery_scheduler = tokio::spawn(vda_server::discovery::scheduler(state.clone()));
     let scheduler = tokio::spawn(vda_server::health::scheduler(state.clone()));
     let notices = tokio::spawn(vda_server::notices::worker::worker(state.clone()));
+    let audit_chain = tokio::spawn(vda_server::audit_chain::worker(state.clone()));
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind,"gateway listening");
     let shutdown_state = state.clone();
@@ -141,6 +167,10 @@ async fn serve(
     // All HTTP handlers have drained; close the sender side through receiver.close.
     // Let bounded queued events finish before closing metadata storage.
     writer.await?;
+    // The sealer stopped with the other workers. Seal what the drain wrote,
+    // as far as it can be sealed, and leave the head in the log.
+    audit_chain.await?;
+    vda_server::audit_chain::finish(&state).await;
     state.core.pools.close().await;
     state.db.close().await;
     result?;

@@ -1,9 +1,16 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useInfiniteQuery } from '@tanstack/react-query';
-import type { AuditEvent, User, Cluster } from '../../api/types';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { AlertTriangle, Clock, Lock } from 'lucide-react';
+import type {
+  AuditEvent,
+  AuditIntegrity,
+  AuditVerification,
+  User,
+  Cluster,
+} from '../../api/types';
 import { params, request } from '../../api/client';
-import { useResource } from '../../lib/query';
+import { useAction, useResource } from '../../lib/query';
 import {
   Button,
   Empty,
@@ -15,9 +22,15 @@ import {
 } from '../../components/ui';
 import { DateRange, inDateRange } from '../../components/ui/date-range';
 import { RelativeTime } from '../../components/ui/time';
-import { csvCell, download } from '../../lib/utils';
-import { dayLabel, statementSummary } from '../../lib/activity';
-import { SqlPreview } from '../../components/ui/sql-preview';
+import { csvCell, download, formatTime, message } from '../../lib/utils';
+import { dayLabel } from '../../lib/activity';
+import {
+  auditSummary,
+  integrityView,
+  problemPlace,
+  verificationText,
+  verifyRefusal,
+} from '../../lib/audit';
 export function AuditPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const action = searchParams.get('action') ?? '',
@@ -124,6 +137,8 @@ export function AuditPage() {
           'ip',
           'details',
           'created_at',
+          'seq',
+          'sealed',
         ]
           .map(csvCell)
           .join(','),
@@ -137,6 +152,8 @@ export function AuditPage() {
             event.ip,
             JSON.stringify(event.details),
             event.created_at,
+            event.seq,
+            event.sealed,
           ]
             .map(csvCell)
             .join(','),
@@ -149,12 +166,16 @@ export function AuditPage() {
       <div className="page-heading">
         <div>
           <h1>Audit log</h1>
-          <p>An append-only record of query and administration activity.</p>
+          <p>
+            An append-only record of query and administration activity, sealed
+            into a hash chain so that a change made outside the gateway shows.
+          </p>
         </div>
         <Button disabled={!items.length} onClick={exportRows}>
           Export loaded rows as CSV
         </Button>
       </div>
+      <Integrity />
       <div className="filterbar">
         <input
           value={actionInput}
@@ -217,6 +238,7 @@ export function AuditPage() {
                 <th scope="col">Target</th>
                 <th scope="col">IP address</th>
                 <th scope="col">Time</th>
+                <th scope="col">Sealed</th>
                 <th scope="col">Details</th>
               </tr>
             </thead>
@@ -231,7 +253,7 @@ export function AuditPage() {
                       items[index - 1]?.created_at.slice(0, 10) !==
                         event.created_at.slice(0, 10)) && (
                       <tr className="day-heading">
-                        <th colSpan={6} scope="colgroup">
+                        <th colSpan={7} scope="colgroup">
                           {dayLabel(event.created_at)}
                         </th>
                       </tr>
@@ -266,6 +288,9 @@ export function AuditPage() {
                       <td className="mono muted">{event.ip ?? '—'}</td>
                       <td className="nowrap">
                         <RelativeTime value={event.created_at} />
+                      </td>
+                      <td className="nowrap">
+                        <SealMark sealed={event.sealed} />
                       </td>
                       <td>
                         <details open={searchParams.get('event') === event.id}>
@@ -306,37 +331,155 @@ export function AuditPage() {
   );
 }
 
+/** Whether an event is in the hash chain, in words and a shape. */
+function SealMark({ sealed }: { sealed: boolean }) {
+  return sealed ? (
+    <span
+      className="seal-mark"
+      title="In the hash chain: a later change to this event would show."
+    >
+      <Lock size={14} aria-hidden="true" />
+      Sealed
+    </span>
+  ) : (
+    <span
+      className="seal-mark waiting"
+      title="Not in the hash chain yet. Events are sealed a few seconds after they are written."
+    >
+      <Clock size={14} aria-hidden="true" />
+      Waiting
+    </span>
+  );
+}
+
+/** The state of the hash chain, and a check on demand with its answer in
+ * place. The state is read again every fifteen seconds. */
+function Integrity() {
+  // Never from the cache: opening the screen shows the state as it is now.
+  const integrity = useQuery({
+    queryKey: ['api', '/audit/integrity'],
+    queryFn: ({ signal }) =>
+      request<AuditIntegrity>('/audit/integrity', { signal }),
+    staleTime: 0,
+    refetchInterval: 15000,
+  });
+  // The answer and a refusal both stay under the button, not in a toast.
+  const verify = useAction<AuditVerification>('', { quietErrors: true });
+  const [result, setResult] = useState<AuditVerification | null>(null),
+    [refused, setRefused] = useState<string | null>(null);
+  const view = integrity.data ? integrityView(integrity.data) : null;
+  const checkedAt = integrity.data?.verification.checked_at ?? null;
+  const said = result ? verificationText(result) : null;
+  return (
+    <section className="audit-integrity" aria-label="Audit log integrity">
+      {integrity.isPending ? (
+        <p className="muted" role="status">
+          Reading the state of the hash chain…
+        </p>
+      ) : integrity.error || !view ? (
+        <p className="error-text" role="alert">
+          The state of the hash chain could not be read.{' '}
+          {message(integrity.error)}
+        </p>
+      ) : view.problem ? (
+        <div className="callout danger integrity-broken" role="alert">
+          <AlertTriangle size={18} aria-hidden="true" />
+          <div>
+            <p>
+              <Badge variant="verdict" tone="danger">
+                Chain broken
+              </Badge>{' '}
+              <strong>{view.headline}</strong>
+            </p>
+            <p>
+              <strong>{view.problem.title}.</strong> {view.problem.meaning}
+            </p>
+            <p>
+              {problemPlace(view.problem)}
+              {view.problem.audit_id && (
+                <>
+                  {' '}
+                  Event <span className="mono">{view.problem.audit_id}</span>.
+                </>
+              )}{' '}
+              Events before that position still match the chain; treat that
+              event and the ones after it as unproven. Keep the database as it
+              is, and run <span className="mono">verify-audit</span> against a
+              checkpoint from the gateway&apos;s logs.
+            </p>
+            <p className="muted">{view.counts}</p>
+          </div>
+        </div>
+      ) : (
+        <>
+          <p className="integrity-line" role="status">
+            {view.state === 'partial' && (
+              <Badge variant="verdict" tone="warning">
+                Partly verified
+              </Badge>
+            )}
+            {view.headline}
+            {checkedAt && view.state !== 'pending' && (
+              <>
+                {' '}
+                <time dateTime={checkedAt} title={checkedAt}>
+                  {formatTime(checkedAt)}
+                </time>
+              </>
+            )}
+            {' · '}
+            {view.counts}
+          </p>
+          {view.notes.map((note) => (
+            <p className="integrity-note" key={note}>
+              {note}
+            </p>
+          ))}
+        </>
+      )}
+      <div className="audit-verify">
+        <Button
+          size="small"
+          disabled={verify.isPending}
+          onClick={() => {
+            setResult(null);
+            setRefused(null);
+            verify.mutate(
+              { path: '/audit/verify', body: {} },
+              {
+                onSuccess: (outcome) => setResult(outcome),
+                onError: (error) => setRefused(verifyRefusal(error)),
+              },
+            );
+          }}
+        >
+          {verify.isPending ? 'Verifying…' : 'Verify now'}
+        </Button>
+        <p
+          className={refused || said?.bad ? 'error-text' : 'muted'}
+          role="status"
+        >
+          {refused ?? said?.text ?? ''}
+        </p>
+      </div>
+    </section>
+  );
+}
+
 function AuditStatement({ event }: { event: AuditEvent }) {
-  const details =
-    event.details &&
-    typeof event.details === 'object' &&
-    !Array.isArray(event.details)
-      ? (event.details as Record<string, unknown>)
-      : {};
+  const summary = auditSummary(event);
   return (
     <>
       {event.action.replaceAll('.', ' · ')}
-      {typeof details.sql === 'string' && (
-        <div className="sql-preview">
-          <div className="sql-summary">{statementSummary(details.sql)}</div>
-          <SqlPreview sql={details.sql} />
+      {summary && (
+        <div className="audit-summary">
+          {summary.blocked && (
+            <Badge variant="verdict" tone="danger">
+              Blocked
+            </Badge>
+          )}
+          <span className="muted">{summary.text}</span>
         </div>
-      )}
-      {['allow', 'requires_approval', 'deny'].includes(
-        String(details.verdict),
-      ) && (
-        <Badge
-          variant="verdict"
-          tone={
-            details.verdict === 'deny'
-              ? 'danger'
-              : details.verdict === 'requires_approval'
-                ? 'warning'
-                : 'success'
-          }
-        >
-          {String(details.verdict).replaceAll('_', ' ')}
-        </Badge>
       )}
     </>
   );

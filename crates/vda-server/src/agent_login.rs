@@ -115,6 +115,17 @@ pub(crate) async fn put(
         .encrypt(cluster.id, &body.password)
         .map_err(|_| ApiError::internal())?;
     let mut tx = state.db.begin().await?;
+    // Setting the login again makes it unchecked; that is a change of its
+    // status like any other, and is recorded as one.
+    let before: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM cluster_agent_logins WHERE cluster_id=$1 FOR UPDATE",
+    )
+    .bind(cluster.id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(before) = before.filter(|before| before != "unchecked") {
+        vda_core::judge::status_changed(&mut tx, cluster.id, &before, "unchecked").await?;
+    }
     sqlx::query(
         "INSERT INTO cluster_agent_logins(cluster_id,username,password_enc) VALUES ($1,$2,$3)
          ON CONFLICT(cluster_id) DO UPDATE SET username=$2,password_enc=$3,status='unchecked',
