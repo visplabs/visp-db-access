@@ -5,7 +5,7 @@
 #  key and a metadata password that live in a Docker volume. Everything listens on 127.0.0.1 only.
 #  For a real installation see docs/DEPLOYMENT.md.
 #
-#  Start:   docker compose -f deploy/demo/docker-compose.yml up --build
+#  Start:   docker compose -f deploy/demo/docker-compose.yml up
 #  Agent:   docker compose -f deploy/demo/docker-compose.yml run --rm agent
 #  Remove:  docker compose -f deploy/demo/docker-compose.yml down -v
 #
@@ -88,7 +88,10 @@ services:
       retries: 60
 
   gateway:
-    image: visp-gate:demo
+    # The released image. If it cannot be pulled, Compose builds the gateway
+    # from this checkout; `up --build` always builds it from this checkout.
+    image: ghcr.io/visplabs/visp-gate:0.2.0
+    pull_policy: missing
     build: ../..
     attach: false
     ports: ['127.0.0.1:${VISP_GATE_DEMO_PORT:-8080}:8080']
