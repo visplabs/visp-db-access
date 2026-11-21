@@ -68,8 +68,8 @@ async fn pool(url: &str, schema: &str, size: u32) -> sqlx::PgPool {
 impl Fixture {
     /// A schema of its own; `None` (the test is skipped) without a database.
     async fn bare() -> Option<(sqlx::PgPool, sqlx::PgPool, String, String)> {
-        let Ok(url) = std::env::var("VDA_TEST_DATABASE_URL") else {
-            eprintln!("skipped: VDA_TEST_DATABASE_URL is not set");
+        let Ok(url) = std::env::var("VISP_GATE_TEST_DATABASE_URL") else {
+            eprintln!("skipped: VISP_GATE_TEST_DATABASE_URL is not set");
             return None;
         };
         let root = sqlx::PgPool::connect(&url).await.unwrap();
@@ -2229,7 +2229,7 @@ async fn the_migration_orders_the_rows_that_were_there_and_they_are_sealed() {
     assert_eq!(old.len(), 10);
     before.migrations = std::borrow::Cow::Owned(old);
     before.run(&db).await.unwrap();
-    let rows: i64 = std::env::var("VDA_TEST_MIGRATION_ROWS")
+    let rows: i64 = std::env::var("VISP_GATE_TEST_MIGRATION_ROWS")
         .ok()
         .and_then(|rows| rows.parse().ok())
         .unwrap_or(3000);
@@ -2418,14 +2418,14 @@ async fn the_offline_check_reads_only_and_its_exit_code_says_what_it_found() {
         format!("{}{separator}options=-c%20search_path%3D{schema}", f.url)
     };
     let run = |schema: &str, master: [u8; 32], arguments: &[&str]| {
-        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_visp-db-access"));
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_visp-gate"));
         command
             .arg("verify-audit")
             .args(arguments)
-            .env("VDA_DATABASE_URL", url(schema))
-            .env("VDA_MASTER_KEY", key(master))
-            .env_remove("VDA_BOOTSTRAP_ADMIN_EMAIL")
-            .env_remove("VDA_BOOTSTRAP_ADMIN_PASSWORD");
+            .env("VISP_GATE_DATABASE_URL", url(schema))
+            .env("VISP_GATE_MASTER_KEY", key(master))
+            .env_remove("VISP_GATE_BOOTSTRAP_ADMIN_EMAIL")
+            .env_remove("VISP_GATE_BOOTSTRAP_ADMIN_PASSWORD");
         async move {
             let output = command.output().await.unwrap();
             (
@@ -2549,10 +2549,10 @@ async fn the_offline_check_reads_only_and_its_exit_code_says_what_it_found() {
     );
     assert!(out.contains("result: NOT FULLY VERIFIED"), "{out}");
     // No key, or no database: an error, not a verdict.
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_visp-db-access"))
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_visp-gate"))
         .arg("verify-audit")
-        .env("VDA_DATABASE_URL", url(&f.schema))
-        .env_remove("VDA_MASTER_KEY")
+        .env("VISP_GATE_DATABASE_URL", url(&f.schema))
+        .env_remove("VISP_GATE_MASTER_KEY")
         .output()
         .await
         .unwrap();
@@ -2618,8 +2618,8 @@ async fn the_offline_check_reads_only_and_its_exit_code_says_what_it_found() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_change_of_the_agent_login_status_is_recorded_once_across_two_nodes() {
-    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
-        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+    let Ok(target_url) = std::env::var("VISP_GATE_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VISP_GATE_TEST_POSTGRES_URL is not set");
         return;
     };
     let Some(f) = Fixture::new().await else {

@@ -4,7 +4,7 @@
     clippy::panic,
     clippy::indexing_slicing
 )]
-//! Discovery API regressions using isolated schemas when VDA_TEST_DATABASE_URL is set.
+//! Discovery API regressions using isolated schemas when VISP_GATE_TEST_DATABASE_URL is set.
 use async_trait::async_trait;
 use axum::{
     body::{to_bytes, Body},
@@ -116,8 +116,8 @@ impl Fixture {
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .with_test_writer()
             .try_init();
-        let Ok(url) = std::env::var("VDA_TEST_DATABASE_URL") else {
-            eprintln!("skipped: VDA_TEST_DATABASE_URL is not set");
+        let Ok(url) = std::env::var("VISP_GATE_TEST_DATABASE_URL") else {
+            eprintln!("skipped: VISP_GATE_TEST_DATABASE_URL is not set");
             return None;
         };
         let root = sqlx::PgPool::connect(&url).await.unwrap();

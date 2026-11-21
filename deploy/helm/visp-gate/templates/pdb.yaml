@@ -2,10 +2,10 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "vda.name" . }}
+  name: {{ include "visp-gate.name" . }}
 spec:
   minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
   selector:
     matchLabels:
-      {{- include "vda.labels" . | nindent 6 }}
+      {{- include "visp-gate.labels" . | nindent 6 }}
 {{- end }}

@@ -12,7 +12,7 @@ change the API and storage schema; migrations run automatically at startup.
 - Notices to approvers: an outbound webhook, signed or in Slack's format, that
   says a request waits. Off by default; set up under Settings → Notices. A
   notice never holds SQL, rows or database errors. New optional setting
-  `VDA_PUBLIC_URL` adds a link to the request. Migration `0010_notices`.
+  `VISP_GATE_PUBLIC_URL` adds a link to the request. Migration `0010_notices`.
 - Audit events `approval.expire` and, for a write that a lost node left
   running, `approval.failed` with `outcome_unknown`.
 - A tamper-evident audit log. Every audit row is sealed into a keyed hash
@@ -20,7 +20,7 @@ change the API and storage schema; migrations run automatically at startup.
   put in afterwards, by someone who has the database but not the master key,
   is found by a background check, by "Verify now" on the Audit screen
   (`GET /audit/integrity`, `POST /audit/verify`) and by the new offline
-  command `visp-db-access verify-audit`. A link that is relabelled as another
+  command `visp-gate verify-audit`. A link that is relabelled as another
   master key's, to hide a changed row, breaks the chain as well. The head of
   the chain is logged as `audit_checkpoint` (position, hash and key) to keep
   outside the database, and `verify-audit --expect-position … --expect-hash …
@@ -47,14 +47,14 @@ change the API and storage schema; migrations run automatically at startup.
   administrators read them on the agent's screen, where a session that is
   going on updates by itself and "Pause agent" is one click away, and with
   `GET /agents/:id/sessions` and `…/sessions/:id/steps?after=`. Steps are
-  kept 30 days (`VDA_AGENT_STEPS_RETENTION_DAYS`). Migration
+  kept 30 days (`VISP_GATE_AGENT_STEPS_RETENTION_DAYS`). Migration
   `0012_agent_sessions`. New metrics `vda_agent_steps_*`.
 - Agent tool `fetch_rows`: pages through the rows that one `run_query`
   already fetched and masked. `run_query` adds `next_cursor` and `rows_left`
   when its answer could not hold all rows. Nothing runs again and no query
   is taken from the budget. The rows are held in the node's memory only, for
-  five minutes, within `VDA_HELD_RESULTS_MAX_BYTES` and
-  `VDA_HELD_RESULTS_AGENT_MAX_BYTES`. New error code `result_expired`. New
+  five minutes, within `VISP_GATE_HELD_RESULTS_MAX_BYTES` and
+  `VISP_GATE_HELD_RESULTS_AGENT_MAX_BYTES`. New error code `result_expired`. New
   metrics `vda_held_results*`.
 
 - A five-minute demo. Run this command from the repository root:
@@ -75,8 +75,8 @@ change the API and storage schema; migrations run automatically at startup.
   read-only role, a generic SQL tool server, an access tool for people, and
   this gate, with when another approach is the better choice.
 - The Helm chart and `docker-compose.yml` pass
-  `VDA_AGENT_STEPS_RETENTION_DAYS`, `VDA_HELD_RESULTS_MAX_BYTES` and
-  `VDA_HELD_RESULTS_AGENT_MAX_BYTES` (chart values
+  `VISP_GATE_AGENT_STEPS_RETENTION_DAYS`, `VISP_GATE_HELD_RESULTS_MAX_BYTES` and
+  `VISP_GATE_HELD_RESULTS_AGENT_MAX_BYTES` (chart values
   `config.agentStepsRetentionDays`, `config.heldResultsMaxBytes` and
   `config.heldResultsAgentMaxBytes`).
 - A `.dockerignore`, so that an image built in a working copy does not take
@@ -84,6 +84,12 @@ change the API and storage schema; migrations run automatically at startup.
 
 ### Changed
 
+- The product is now named visp-gate. The program, the Docker image and the
+  Helm chart (`deploy/helm/visp-gate`) are `visp-gate`, and every setting
+  starts with `VISP_GATE_` in place of `VDA_`, for example
+  `VISP_GATE_MASTER_KEY`. The earlier names are not read any more. The notice
+  headers are `X-Visp-Gate-*` in place of `X-VDA-*`, and the notice user agent
+  is `visp-gate-notices/1`.
 - The audit queue is written in batches of up to 256 events in one statement
   instead of one event at a time, so many agents at full rate no longer fill
   it. Retries, dead letters and the drain at shutdown are as before.
@@ -129,5 +135,5 @@ First public release.
 - A single Rust binary with the React console embedded, a PostgreSQL metadata
   store, a distroless Docker image and a Helm chart.
 
-[Unreleased]: https://github.com/djkeshawa/visp-db-access/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/djkeshawa/visp-db-access/releases/tag/v0.1.0
+[Unreleased]: https://github.com/visplabs/visp-gate/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/visplabs/visp-gate/releases/tag/v0.1.0

@@ -2,7 +2,7 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "vda.name" . }}
+  name: {{ include "visp-gate.name" . }}
   annotations:
     {{- toYaml .Values.ingress.annotations | nindent 4 }}
 spec:
@@ -18,6 +18,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: {{ include "vda.name" . }}
+                name: {{ include "visp-gate.name" . }}
                 port: {name: http}
 {{- end }}

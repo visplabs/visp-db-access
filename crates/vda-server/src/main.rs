@@ -38,13 +38,13 @@ async fn main() -> anyhow::Result<()> {
         .config
         .master_key
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("VDA_MASTER_KEY is required"))?;
+        .ok_or_else(|| anyhow::anyhow!("VISP_GATE_MASTER_KEY is required"))?;
     let crypto = Crypto::from_base64(master.expose_secret())?;
     let url = cli
         .config
         .database_url
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("VDA_DATABASE_URL is required"))?;
+        .ok_or_else(|| anyhow::anyhow!("VISP_GATE_DATABASE_URL is required"))?;
     // Checking the audit chain reads only: no pool, no migration.
     if let Some(Command::VerifyAudit {
         expect_position,
@@ -132,7 +132,9 @@ async fn serve(
     crypto: Crypto,
 ) -> anyhow::Result<()> {
     if !config.cookie_secure {
-        tracing::warn!("VDA_COOKIE_SECURE=false: session cookies may be sent over plaintext HTTP");
+        tracing::warn!(
+            "VISP_GATE_COOKIE_SECURE=false: session cookies may be sent over plaintext HTTP"
+        );
     }
     let prometheus = vda_server::metrics::install()?;
     let bind = config.bind;

@@ -24,7 +24,7 @@ const strictModes: readonly TlsMode[] = ['require', 'verify_full'];
  */
 export function localTlsSuggestion(host: string, tls: TlsMode): string | null {
   if (!isLoopbackHost(host) || !strictModes.includes(tls)) return null;
-  return 'This looks like a database on the gateway’s own machine. Local databases often run without TLS: if this one does, set TLS mode to “disable”. Loopback hosts are refused unless the gateway runs with VDA_ALLOW_PRIVATE_TARGETS=true; under Docker Compose, use the service name (for example demo-postgres) instead.';
+  return 'This looks like a database on the gateway’s own machine. Local databases often run without TLS: if this one does, set TLS mode to “disable”. Loopback hosts are refused unless the gateway runs with VISP_GATE_ALLOW_PRIVATE_TARGETS=true; under Docker Compose, use the service name (for example demo-postgres) instead.';
 }
 
 /**

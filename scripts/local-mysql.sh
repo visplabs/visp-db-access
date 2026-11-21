@@ -9,7 +9,7 @@
 set -euo pipefail
 umask 077
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-base=${VDA_LOCAL_MYSQL_DIR:-$HOME/.local/share/vda-mysql}
+base=${VISP_GATE_LOCAL_MYSQL_DIR:-$HOME/.local/share/vda-mysql}
 version=8.4.7
 install="$base/mysql-$version-linux-glibc2.28-x86_64-minimal"
 socket="$base/mysql.sock"

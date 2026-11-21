@@ -24,7 +24,7 @@ use vda_core::network::webhook_ip_allowed;
 const RESPONSE_LIMIT: usize = 4096;
 /// The longest address that is accepted.
 const URL_LIMIT: usize = 2048;
-const USER_AGENT: &str = "vda-notices/1";
+const USER_AGENT: &str = "visp-gate-notices/1";
 
 /// Why a delivery did not succeed. Only the class is kept and shown: never a
 /// part of the address, of a response, or of an error text from the network.

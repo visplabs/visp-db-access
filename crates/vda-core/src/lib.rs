@@ -1,4 +1,4 @@
-//! The query pipeline of visp-db-access, with no router and no request handlers.
+//! The query pipeline of visp-gate, with no router and no request handlers.
 //!
 //! Every door into the gateway (the web console today, agents next) builds an
 //! [`access::Actor`] and calls [`query`]. The rules are therefore the same for

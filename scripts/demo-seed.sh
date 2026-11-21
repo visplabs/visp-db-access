@@ -12,18 +12,18 @@ set -euo pipefail
 umask 077
 for tool in curl jq; do command -v "$tool" >/dev/null || { printf 'Missing tool: %s\n' "$tool" >&2; exit 1; }; done
 
-base_url=${VDA_DEMO_URL:-http://127.0.0.1:8080}
-public_url=${VDA_DEMO_PUBLIC_URL:-$base_url}
-admin_email=${VDA_DEMO_ADMIN_EMAIL:-admin@example.com}
-admin_password=${VDA_DEMO_ADMIN_PASSWORD:?Set VDA_DEMO_ADMIN_PASSWORD to the bootstrap administrator password}
-reviewer_email=${VDA_DEMO_REVIEWER_EMAIL:-reviewer@example.com}
-reviewer_password=${VDA_DEMO_REVIEWER_PASSWORD:?Set VDA_DEMO_REVIEWER_PASSWORD to a password of 12 characters or more}
-target_host=${VDA_DEMO_TARGET_HOST:-demo-postgres}
-target_port=${VDA_DEMO_TARGET_PORT:-5432}
-target_db=${VDA_DEMO_TARGET_DATABASE:-shop}
-target_user=${VDA_DEMO_TARGET_USER:-shop_gate}
-target_password=${VDA_DEMO_TARGET_PASSWORD:?Set VDA_DEMO_TARGET_PASSWORD to the password of the database login}
-token_file=${VDA_DEMO_TOKEN_FILE:-}
+base_url=${VISP_GATE_DEMO_URL:-http://127.0.0.1:8080}
+public_url=${VISP_GATE_DEMO_PUBLIC_URL:-$base_url}
+admin_email=${VISP_GATE_DEMO_ADMIN_EMAIL:-admin@example.com}
+admin_password=${VISP_GATE_DEMO_ADMIN_PASSWORD:?Set VISP_GATE_DEMO_ADMIN_PASSWORD to the bootstrap administrator password}
+reviewer_email=${VISP_GATE_DEMO_REVIEWER_EMAIL:-reviewer@example.com}
+reviewer_password=${VISP_GATE_DEMO_REVIEWER_PASSWORD:?Set VISP_GATE_DEMO_REVIEWER_PASSWORD to a password of 12 characters or more}
+target_host=${VISP_GATE_DEMO_TARGET_HOST:-demo-postgres}
+target_port=${VISP_GATE_DEMO_TARGET_PORT:-5432}
+target_db=${VISP_GATE_DEMO_TARGET_DATABASE:-shop}
+target_user=${VISP_GATE_DEMO_TARGET_USER:-shop_gate}
+target_password=${VISP_GATE_DEMO_TARGET_PASSWORD:?Set VISP_GATE_DEMO_TARGET_PASSWORD to the password of the database login}
+token_file=${VISP_GATE_DEMO_TOKEN_FILE:-}
 project_name='Demo shop'
 cluster_name='shop-production'
 agent_name='demo-agent'
@@ -155,10 +155,10 @@ shown_admin_password='(the password you set)'
 shown_reviewer_password='(the password you set)'
 [[ $admin_password == demo-admin-local-only ]] && shown_admin_password=$admin_password
 [[ $reviewer_password == demo-reviewer-local-only ]] && shown_reviewer_password=$reviewer_password
-if [[ ${VDA_DEMO_URL:-} == http://gateway:8080 ]]; then
+if [[ ${VISP_GATE_DEMO_URL:-} == http://gateway:8080 ]]; then
   agent_command='docker compose -f deploy/demo/docker-compose.yml run --rm agent'
 else
-  agent_command="VDA_DEMO_URL=$base_url VDA_AGENT_TOKEN_FILE=${token_file:-<token file>} bash scripts/demo-agent.sh"
+  agent_command="VISP_GATE_DEMO_URL=$base_url VISP_GATE_AGENT_TOKEN_FILE=${token_file:-<token file>} bash scripts/demo-agent.sh"
 fi
 
 cat <<TEXT

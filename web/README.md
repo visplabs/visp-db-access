@@ -1,6 +1,6 @@
-# visp-db-access web console
+# visp-gate web console
 
-The React 19 + TypeScript console for visp-db-access. It talks to the server's
+The React 19 + TypeScript console for visp-gate. It talks to the server's
 [v1 API](../docs/API.md) with same-origin session cookies and the
 `X-Requested-With: vda` header. `npm run build` writes hashed assets to
 `web/dist`, which the Rust server embeds and serves at `/` (the server returns

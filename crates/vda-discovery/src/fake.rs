@@ -11,7 +11,7 @@ use crate::{Provider, RegionError, RegionTest, ScanOutcome, SourceConfig, TestRe
 #[derive(Debug, Error)]
 pub enum FakeError {
     /// A fixture path is required to explicitly enable the fake provider.
-    #[error("VDA_DISCOVERY_FAKE_FIXTURE is not configured")]
+    #[error("VISP_GATE_DISCOVERY_FAKE_FIXTURE is not configured")]
     MissingPath,
     /// Reading the fixture failed.
     #[error("Unable to read discovery fixture")]
@@ -30,7 +30,7 @@ pub struct FakeProvider {
 impl FakeProvider {
     /// Explicitly enable a fixture provider from the process environment.
     pub fn from_env() -> Result<Self, FakeError> {
-        let path = std::env::var_os("VDA_DISCOVERY_FAKE_FIXTURE")
+        let path = std::env::var_os("VISP_GATE_DISCOVERY_FAKE_FIXTURE")
             .filter(|path| !path.is_empty())
             .ok_or(FakeError::MissingPath)?;
         Ok(Self::from_path(PathBuf::from(path)))
@@ -89,9 +89,9 @@ impl Provider for FakeProvider {
         TestReport {
             ok,
             account_id: outcome.is_ok().then(|| "123456789012".into()),
-            identity_arn: outcome.is_ok().then(|| {
-                "arn:aws:sts::123456789012:assumed-role/visp-db-access-fake/discovery".into()
-            }),
+            identity_arn: outcome
+                .is_ok()
+                .then(|| "arn:aws:sts::123456789012:assumed-role/visp-gate-fake/discovery".into()),
             regions,
         }
     }
@@ -152,7 +152,7 @@ mod tests {
         assert!(!report.ok);
         assert_eq!(
             report.identity_arn.as_deref(),
-            Some("arn:aws:sts::123456789012:assumed-role/visp-db-access-fake/discovery")
+            Some("arn:aws:sts::123456789012:assumed-role/visp-gate-fake/discovery")
         );
         tokio::fs::remove_file(path).await.unwrap();
     }

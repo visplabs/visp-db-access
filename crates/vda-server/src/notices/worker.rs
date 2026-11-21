@@ -26,7 +26,7 @@
 //!
 //! A notice is delivered at least once. If a node stops between the request
 //! and the record of its outcome, the notice is sent again after the lease;
-//! the receiver sees the same `X-VDA-Delivery` and can drop the repeat.
+//! the receiver sees the same `X-Visp-Gate-Delivery` and can drop the repeat.
 use super::{
     format::render,
     send::{Failure, Sender},

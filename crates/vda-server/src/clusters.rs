@@ -540,7 +540,7 @@ pub(crate) async fn test_connection(
         password: password.into(),
         tls: body.tls_mode,
         ca_cert_pem: None,
-        application_name: "visp-db-access:connection-test".into(),
+        application_name: "visp-gate:connection-test".into(),
     };
     Ok(Json(crate::health::Health::from_report(
         vda_connectors::test_connection(&spec).await,

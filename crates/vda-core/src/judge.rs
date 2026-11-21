@@ -250,7 +250,7 @@ pub fn script(
     // `role` is now known to be plain; it needs no escaping in a literal.
     let (name, role) = (literal(role), ident(role));
     let mut out = vec![
-        "-- visp-db-access: agent login for PostgreSQL.".to_owned(),
+        "-- visp-gate: agent login for PostgreSQL.".to_owned(),
         "-- Run this as a database administrator, in the database named below.".to_owned(),
         "-- Use a NEW login name. The script stops if the login is a superuser or".to_owned(),
         "-- owns anything, because it removes everything the login holds here.".to_owned(),

@@ -291,8 +291,8 @@ function NoticeForm({ original }: { original: NoticeSettings }) {
         {!original.links && (
           <p className="muted">
             Notices have no link to the request: the gateway does not know its
-            own address. Set <span className="mono">VDA_PUBLIC_URL</span> on the
-            server to add one.
+            own address. Set <span className="mono">VISP_GATE_PUBLIC_URL</span>{' '}
+            on the server to add one.
           </p>
         )}
       </section>

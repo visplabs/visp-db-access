@@ -18,8 +18,8 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          chart=$(sed -n 's/^appVersion: //p' deploy/helm/visp-db-access/Chart.yaml)
-          image=$(sed -n "s/^  tag: '\(.*\)'/\1/p" deploy/helm/visp-db-access/values.yaml)
+          chart=$(sed -n 's/^appVersion: //p' deploy/helm/visp-gate/Chart.yaml)
+          image=$(sed -n "s/^  tag: '\(.*\)'/\1/p" deploy/helm/visp-gate/values.yaml)
           for found in "$crate" "$chart" "$image"; do
             if [[ $found != "$version" ]]; then
               echo "::error::Tag $GITHUB_REF_NAME does not match version $found"; exit 1
@@ -41,15 +41,15 @@ jobs:
       - run: cargo build --locked --release -p vda-server
       - name: Package
         run: |
-          name="visp-db-access-${{ needs.check.outputs.version }}-x86_64-linux-gnu"
+          name="visp-gate-${{ needs.check.outputs.version }}-x86_64-linux-gnu"
           mkdir "$name"
-          cp target/release/visp-db-access LICENSE NOTICE README.md CHANGELOG.md "$name/"
+          cp target/release/visp-gate LICENSE NOTICE README.md CHANGELOG.md "$name/"
           tar -czf "$name.tar.gz" "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: binary
-          path: visp-db-access-*.tar.gz*
+          path: visp-gate-*.tar.gz*
 
   image:
     needs: check
@@ -107,4 +107,4 @@ jobs:
           prerelease=""
           [[ $VERSION == *-* ]] && prerelease="--prerelease"
           gh release create "$GITHUB_REF_NAME" --title "v$VERSION" --notes-file notes.md \
-            $prerelease visp-db-access-*.tar.gz*
+            $prerelease visp-gate-*.tar.gz*

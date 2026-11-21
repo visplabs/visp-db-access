@@ -44,8 +44,8 @@ impl Fixture {
     }
     /// A fixture whose configuration is changed before the state is built.
     async fn with(configure: impl FnOnce(&mut vda_server::config::Config)) -> Option<Self> {
-        let Ok(url) = std::env::var("VDA_TEST_DATABASE_URL") else {
-            eprintln!("skipped: VDA_TEST_DATABASE_URL is not set");
+        let Ok(url) = std::env::var("VISP_GATE_TEST_DATABASE_URL") else {
+            eprintln!("skipped: VISP_GATE_TEST_DATABASE_URL is not set");
             return None;
         };
         let root = sqlx::PgPool::connect(&url).await.unwrap();
@@ -105,7 +105,7 @@ impl Fixture {
             .execute(&db)
             .await
             .unwrap();
-        let target_url = std::env::var("VDA_TEST_POSTGRES_URL")
+        let target_url = std::env::var("VISP_GATE_TEST_POSTGRES_URL")
             .unwrap_or_else(|_| "postgres://vda@127.0.0.1:9/postgres".into());
         let target = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy(&target_url)
@@ -589,8 +589,8 @@ async fn approval_lists_recovery_cidrs_and_metrics_are_enforced() {
 
 #[tokio::test]
 async fn query_intent_is_durable_unique_fail_closed_and_masks_diagnostics() {
-    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
-        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+    let Ok(target_url) = std::env::var("VISP_GATE_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VISP_GATE_TEST_POSTGRES_URL is not set");
         return;
     };
     let Some(f) = Fixture::new().await else {
@@ -1014,7 +1014,7 @@ async fn account_lock_applies_across_source_ips_and_dns_is_checked_on_cached_hea
         .0,
         StatusCode::OK
     );
-    if std::env::var_os("VDA_TEST_POSTGRES_URL").is_some() {
+    if std::env::var_os("VISP_GATE_TEST_POSTGRES_URL").is_some() {
         let c = vda_server::db::cluster(&f.db, f.cluster).await.unwrap();
         let p = vda_server::db::policy(&f.db, f.cluster).await.unwrap();
         f.state.core.pools.get(&f.state.core, &c, &p).await.unwrap();
@@ -1034,8 +1034,8 @@ async fn account_lock_applies_across_source_ips_and_dns_is_checked_on_cached_hea
 
 #[tokio::test]
 async fn replica_health_is_reused_for_five_seconds_then_refreshed() {
-    if std::env::var_os("VDA_TEST_POSTGRES_URL").is_none() {
-        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+    if std::env::var_os("VISP_GATE_TEST_POSTGRES_URL").is_none() {
+        eprintln!("skipped: VISP_GATE_TEST_POSTGRES_URL is not set");
         return;
     }
     let Some(f) = Fixture::new().await else {
@@ -1300,8 +1300,8 @@ async fn master_key_change_reports_unreadable_credentials_and_new_password_recov
     let Some(f) = Fixture::new().await else {
         return;
     };
-    // Simulate ciphertext written under a previous VDA_MASTER_KEY.
-    let target_url = std::env::var("VDA_TEST_POSTGRES_URL")
+    // Simulate ciphertext written under a previous VISP_GATE_MASTER_KEY.
+    let target_url = std::env::var("VISP_GATE_TEST_POSTGRES_URL")
         .unwrap_or_else(|_| "postgres://vda@127.0.0.1:9/postgres".into());
     let password = target_url
         .split_once("://")
@@ -1344,7 +1344,7 @@ async fn master_key_change_reports_unreadable_credentials_and_new_password_recov
         )
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    if std::env::var("VDA_TEST_POSTGRES_URL").is_ok() {
+    if std::env::var("VISP_GATE_TEST_POSTGRES_URL").is_ok() {
         let (s, v) = f.request("POST", &check, &f.admin_cookie, None).await;
         assert_eq!(s, StatusCode::OK, "{v}");
         assert_ne!(v["status"], "down", "{v}");
@@ -1879,8 +1879,8 @@ async fn an_agent_token_works_only_at_the_agent_door_and_only_while_everything_i
 
 #[tokio::test]
 async fn agent_queries_are_capped_recorded_and_never_write_on_their_own() {
-    if std::env::var("VDA_TEST_POSTGRES_URL").is_err() {
-        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+    if std::env::var("VISP_GATE_TEST_POSTGRES_URL").is_err() {
+        eprintln!("skipped: VISP_GATE_TEST_POSTGRES_URL is not set");
         return;
     }
     let Some(f) = Fixture::new().await else {
@@ -2573,8 +2573,8 @@ async fn agent_door_speaks_the_protocol_and_refuses_everything_else() {
 
 #[tokio::test]
 async fn agent_tools_read_guarded_data_teach_on_refusal_and_stop_loops() {
-    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
-        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+    let Ok(target_url) = std::env::var("VISP_GATE_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VISP_GATE_TEST_POSTGRES_URL is not set");
         return;
     };
     let Some(f) = Fixture::new().await else {
@@ -3013,8 +3013,8 @@ async fn get_text(f: &Fixture, path: &str, cookie: &str) -> (StatusCode, String)
 
 #[tokio::test]
 async fn the_database_is_the_judge_for_agents() {
-    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
-        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+    let Ok(target_url) = std::env::var("VISP_GATE_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VISP_GATE_TEST_POSTGRES_URL is not set");
         return;
     };
     let Some(f) = Fixture::new().await else {
@@ -3731,8 +3731,8 @@ async fn note_and_n(target: &sqlx::PgPool, table: &str, id: i32) -> (String, i32
 
 #[tokio::test]
 async fn a_write_is_previewed_bound_to_its_effect_and_leaves_a_signed_receipt() {
-    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
-        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+    let Ok(target_url) = std::env::var("VISP_GATE_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VISP_GATE_TEST_POSTGRES_URL is not set");
         return;
     };
     let Some(f) = Fixture::new().await else {
@@ -4074,8 +4074,8 @@ async fn a_write_is_previewed_bound_to_its_effect_and_leaves_a_signed_receipt() 
 
 #[tokio::test]
 async fn an_agent_proposes_a_write_sees_no_rows_and_a_person_decides() {
-    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
-        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+    let Ok(target_url) = std::env::var("VISP_GATE_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VISP_GATE_TEST_POSTGRES_URL is not set");
         return;
     };
     let Some(f) = Fixture::new().await else {
@@ -4382,8 +4382,8 @@ async fn an_agent_proposes_a_write_sees_no_rows_and_a_person_decides() {
 
 #[tokio::test]
 async fn an_agent_that_follows_the_write_fix_is_not_stopped_and_reads_a_coded_outcome() {
-    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
-        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+    let Ok(target_url) = std::env::var("VISP_GATE_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VISP_GATE_TEST_POSTGRES_URL is not set");
         return;
     };
     let Some(f) = Fixture::new().await else {
@@ -4668,8 +4668,8 @@ async fn a_mysql_write_request_says_it_has_no_preview() {
 
 #[tokio::test]
 async fn the_attacks_found_on_safe_writes_stay_closed() {
-    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
-        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+    let Ok(target_url) = std::env::var("VISP_GATE_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VISP_GATE_TEST_POSTGRES_URL is not set");
         return;
     };
     let Some(f) = Fixture::new().await else {
@@ -5246,8 +5246,8 @@ fn hmac_hex(key: &str, message: &[u8]) -> String {
 /// What a receiver must check: the signature (scheme v1) covers the
 /// timestamp, the delivery id and the exact body, and the timestamp is recent.
 fn signed_with(hit: &Hit, secret: &str) -> bool {
-    let timestamp = hit.header("x-vda-timestamp");
-    let delivery = hit.header("x-vda-delivery");
+    let timestamp = hit.header("x-visp-gate-timestamp");
+    let delivery = hit.header("x-visp-gate-delivery");
     let age = chrono::Utc::now().timestamp() - timestamp.parse::<i64>().unwrap();
     assert!((0..60).contains(&age), "{age}");
     let message = [
@@ -5258,7 +5258,7 @@ fn signed_with(hit: &Hit, secret: &str) -> bool {
         hit.body.as_slice(),
     ]
     .concat();
-    hit.header("x-vda-signature") == format!("v1={}", hmac_hex(secret, &message))
+    hit.header("x-visp-gate-signature") == format!("v1={}", hmac_hex(secret, &message))
 }
 /// Let every wait pass: all notices that wait are due now.
 async fn all_due(f: &Fixture) {
@@ -5321,8 +5321,8 @@ async fn rejected(f: &Fixture) -> Uuid {
 
 #[tokio::test]
 async fn a_new_request_sends_one_signed_notice_that_says_little() {
-    let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") else {
-        eprintln!("skipped: VDA_TEST_POSTGRES_URL is not set");
+    let Ok(target_url) = std::env::var("VISP_GATE_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: VISP_GATE_TEST_POSTGRES_URL is not set");
         return;
     };
     let logs = Logs::capture();
@@ -5436,8 +5436,8 @@ async fn a_new_request_sends_one_signed_notice_that_says_little() {
     let hit = &hits[0];
     assert!(signed_with(hit, &secret));
     assert!(!signed_with(hit, "vda_whsec_wrong"));
-    assert_eq!(hit.header("x-vda-event"), "approval.created");
-    assert_eq!(hit.header("x-vda-delivery"), rows[0].0.to_string());
+    assert_eq!(hit.header("x-visp-gate-event"), "approval.created");
+    assert_eq!(hit.header("x-visp-gate-delivery"), rows[0].0.to_string());
     assert_eq!(hit.header("content-type"), "application/json");
     assert_eq!(hit.header("host"), format!("127.0.0.1:{}", receiver.port));
     let body = hit.json();
@@ -5479,11 +5479,11 @@ async fn a_new_request_sends_one_signed_notice_that_says_little() {
     // does not verify.
     let mut moved = hit.clone();
     moved.headers.insert(
-        "x-vda-delivery",
+        "x-visp-gate-delivery",
         Uuid::new_v4().to_string().parse().unwrap(),
     );
     assert!(!signed_with(&moved, &secret));
-    assert!(hit.header("x-vda-signature").starts_with("v1="));
+    assert!(hit.header("x-visp-gate-signature").starts_with("v1="));
     assert_eq!(body["version"], 1);
     assert_eq!(body["event"], "approval.created");
     assert_eq!(body["approval_id"], json!(approval));
@@ -5751,7 +5751,7 @@ async fn a_failing_receiver_is_retried_then_given_up_and_a_redirect_is_not_follo
     assert!(hits.iter().all(|hit| signed_with(hit, &secret)));
     assert!(hits
         .iter()
-        .all(|hit| hit.header("x-vda-delivery") == hits[0].header("x-vda-delivery")));
+        .all(|hit| hit.header("x-visp-gate-delivery") == hits[0].header("x-visp-gate-delivery")));
     let (_, v) = f
         .request("GET", "/settings/notices", &f.admin_cookie, None)
         .await;
@@ -5793,7 +5793,7 @@ async fn a_failing_receiver_is_retried_then_given_up_and_a_redirect_is_not_follo
     assert_eq!(v, json!({"delivered":true,"status":204,"error":null}));
     let test = receiver.hits().pop().unwrap();
     assert!(signed_with(&test, &secret));
-    assert_eq!(test.header("x-vda-event"), "notice.test");
+    assert_eq!(test.header("x-visp-gate-event"), "notice.test");
     assert_eq!(test.json()["event"], "notice.test");
     assert_eq!(test.json().as_object().unwrap().len(), 3, "{}", test.text());
     // A test is not a notice: the outbox did not change, the audit log did.
@@ -5836,7 +5836,7 @@ async fn a_failing_receiver_is_retried_then_given_up_and_a_redirect_is_not_follo
     assert_eq!(handled, 12);
     let new: Vec<String> = receiver.hits()[before..]
         .iter()
-        .map(|hit| hit.header("x-vda-delivery"))
+        .map(|hit| hit.header("x-visp-gate-delivery"))
         .collect();
     assert_eq!(new.len(), 12);
     assert_eq!(
@@ -5856,7 +5856,7 @@ async fn a_failing_receiver_is_retried_then_given_up_and_a_redirect_is_not_follo
     rejected(&f).await;
     assert_eq!(deliver(&f).await, 1);
     let hit = receiver.hits().pop().unwrap();
-    assert_eq!(hit.header("x-vda-signature"), "");
+    assert_eq!(hit.header("x-visp-gate-signature"), "");
     let body = hit.json();
     let text = body["text"].as_str().unwrap();
     assert_eq!(
@@ -6294,7 +6294,7 @@ async fn a_settings_change_on_one_node_is_seen_by_the_next_state_change_on_anoth
     assert!(receiver
         .hits()
         .iter()
-        .all(|hit| hit.header("x-vda-event") == "notice.test"));
+        .all(|hit| hit.header("x-visp-gate-event") == "notice.test"));
     // The limit is for everyone: another administrator is refused as well.
     sqlx::query("UPDATE users SET org_role='admin' WHERE id=$1")
         .bind(f.grantor)
@@ -6327,7 +6327,7 @@ async fn a_settings_change_on_one_node_is_seen_by_the_next_state_change_on_anoth
     assert!(receiver
         .hits()
         .iter()
-        .any(|hit| hit.header("x-vda-event") == "approval.rejected"));
+        .any(|hit| hit.header("x-visp-gate-event") == "approval.rejected"));
 
     other.stop.cancel();
     other.steps.finish().await;

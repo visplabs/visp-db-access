@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "vda.name" . }}
+  name: {{ include "visp-gate.name" . }}
 spec:
   selector:
-    {{- include "vda.labels" . | nindent 4 }}
+    {{- include "visp-gate.labels" . | nindent 4 }}
   ports:
     - {name: http, port: {{ .Values.service.port }}, targetPort: http}

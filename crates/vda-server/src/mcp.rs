@@ -117,7 +117,7 @@ pub(crate) async fn handle(
                 json!({
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}},
-                    "serverInfo": {"name": "visp-db-access", "version": env!("CARGO_PKG_VERSION")},
+                    "serverInfo": {"name": "visp-gate", "version": env!("CARGO_PKG_VERSION")},
                     "instructions": INSTRUCTIONS,
                 }),
             )
@@ -1096,13 +1096,13 @@ mod tests {
     }
 
     /// Compare a text with a checked-in golden file, or rewrite the file
-    /// when `VDA_UPDATE_GOLDEN=1`. JSON is compared as values: the order of
+    /// when `VISP_GATE_UPDATE_GOLDEN=1`. JSON is compared as values: the order of
     /// keys depends on how serde_json was built, not on what an agent reads.
     fn golden(name: &str, actual: &str) {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/golden")
             .join(name);
-        if std::env::var("VDA_UPDATE_GOLDEN").as_deref() == Ok("1") {
+        if std::env::var("VISP_GATE_UPDATE_GOLDEN").as_deref() == Ok("1") {
             assert!(std::fs::write(&path, actual).is_ok(), "{}", path.display());
             return;
         }
@@ -1117,7 +1117,7 @@ mod tests {
             same,
             "{} does not match what the agent door sends. Agents read this text: \
              if the change is intended, regenerate the file with \
-             `VDA_UPDATE_GOLDEN=1 cargo test -p vda-server --lib golden`, \
+             `VISP_GATE_UPDATE_GOLDEN=1 cargo test -p vda-server --lib golden`, \
              then review the diff.\n--- golden\n{expected}\n--- actual\n{actual}",
             path.display()
         );

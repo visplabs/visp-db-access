@@ -1,4 +1,4 @@
-//! HTTP gateway, security primitives and metadata storage for visp-db-access.
+//! HTTP gateway, security primitives and metadata storage for visp-gate.
 mod access;
 mod admin;
 mod agent_login;

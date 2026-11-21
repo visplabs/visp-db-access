@@ -303,7 +303,7 @@ async fn assume_role_request_wires_external_id_session_duration_and_role_without
     let request = request.expect_request();
     let body = std::str::from_utf8(request.body().bytes().unwrap()).unwrap();
     assert!(body.contains("Action=AssumeRole"));
-    assert!(body.contains("RoleSessionName=visp-db-access"));
+    assert!(body.contains("RoleSessionName=visp-gate"));
     assert!(body.contains("ExternalId=external-id-example"));
     assert!(body.contains("DurationSeconds=3600"));
     assert!(body.contains("RoleArn=arn%3Aaws%3Aiam%3A%3A123456789012%3Arole%2Fdiscovery"));
@@ -396,7 +396,7 @@ async fn total_deadline_retains_success_and_bounds_region_concurrency() {
 
 #[tokio::test]
 async fn live_aws_discovery_is_opt_in() {
-    let Ok(regions) = std::env::var("VDA_TEST_AWS_REGIONS") else {
+    let Ok(regions) = std::env::var("VISP_GATE_TEST_AWS_REGIONS") else {
         return;
     };
     let regions = regions

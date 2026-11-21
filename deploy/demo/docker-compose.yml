@@ -11,13 +11,13 @@
 #
 #  The steps are in docs/DEMO.md. Needs Docker Compose 2.20 or newer.
 # ============================================================================
-name: visp-db-access-demo
+name: visp-gate-demo
 
 # A small image with bash, curl and jq for the one-shot steps and the scripted
 # agent, and a static shell for the gateway's start (see `gateway` below).
 # `init` builds it; the other services use the image that `init` built.
 x-tools: &tools
-  image: visp-db-access-demo-tools
+  image: visp-gate-demo-tools
 
 services:
   # Makes the master key at the first start and keeps it in the `state`
@@ -88,16 +88,16 @@ services:
       retries: 60
 
   gateway:
-    image: visp-db-access:demo
+    image: visp-gate:demo
     build: ../..
     attach: false
-    ports: ['127.0.0.1:${VDA_DEMO_PORT:-8080}:8080']
+    ports: ['127.0.0.1:${VISP_GATE_DEMO_PORT:-8080}:8080']
     environment:
-      VDA_BOOTSTRAP_ADMIN_EMAIL: admin@example.com
-      VDA_BOOTSTRAP_ADMIN_PASSWORD: demo-admin-local-only
-      VDA_COOKIE_SECURE: 'false'
-      VDA_PUBLIC_URL: http://localhost:${VDA_DEMO_PORT:-8080}
-      VDA_LOG_FORMAT: text
+      VISP_GATE_BOOTSTRAP_ADMIN_EMAIL: admin@example.com
+      VISP_GATE_BOOTSTRAP_ADMIN_PASSWORD: demo-admin-local-only
+      VISP_GATE_COOKIE_SECURE: 'false'
+      VISP_GATE_PUBLIC_URL: http://localhost:${VISP_GATE_DEMO_PORT:-8080}
+      VISP_GATE_LOG_FORMAT: text
     # The gateway takes its master key and its database URL from the
     # environment only, and its image has no shell. The static shell that
     # `init` put into the volume reads the key and the metadata password that
@@ -106,7 +106,7 @@ services:
       - /demo-state/bin/busybox
       - sh
       - -c
-      - 'read -r VDA_MASTER_KEY < /demo-state/master-key && read -r metadata_password < /demo-state/metadata-password && export VDA_MASTER_KEY VDA_DATABASE_URL="postgres://vda:$${metadata_password}@metadata:5432/vda" && exec /usr/local/bin/visp-db-access serve'
+      - 'read -r VISP_GATE_MASTER_KEY < /demo-state/master-key && read -r metadata_password < /demo-state/metadata-password && export VISP_GATE_MASTER_KEY VISP_GATE_DATABASE_URL="postgres://vda:$${metadata_password}@metadata:5432/vda" && exec /usr/local/bin/visp-gate serve'
     volumes: ['state:/demo-state:ro']
     healthcheck:
       test: [CMD, /demo-state/bin/busybox, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/readyz']
@@ -129,16 +129,16 @@ services:
       - state:/state
       - ../../scripts/demo-seed.sh:/demo/demo-seed.sh:ro
     environment:
-      VDA_DEMO_URL: http://gateway:8080
-      VDA_DEMO_PUBLIC_URL: http://localhost:${VDA_DEMO_PORT:-8080}
-      VDA_DEMO_ADMIN_EMAIL: admin@example.com
-      VDA_DEMO_ADMIN_PASSWORD: demo-admin-local-only
-      VDA_DEMO_REVIEWER_EMAIL: reviewer@example.com
-      VDA_DEMO_REVIEWER_PASSWORD: demo-reviewer-local-only
-      VDA_DEMO_TARGET_HOST: demo-postgres
-      VDA_DEMO_TARGET_USER: shop_gate
-      VDA_DEMO_TARGET_PASSWORD: demo-local-only
-      VDA_DEMO_TOKEN_FILE: /state/agent-token
+      VISP_GATE_DEMO_URL: http://gateway:8080
+      VISP_GATE_DEMO_PUBLIC_URL: http://localhost:${VISP_GATE_DEMO_PORT:-8080}
+      VISP_GATE_DEMO_ADMIN_EMAIL: admin@example.com
+      VISP_GATE_DEMO_ADMIN_PASSWORD: demo-admin-local-only
+      VISP_GATE_DEMO_REVIEWER_EMAIL: reviewer@example.com
+      VISP_GATE_DEMO_REVIEWER_PASSWORD: demo-reviewer-local-only
+      VISP_GATE_DEMO_TARGET_HOST: demo-postgres
+      VISP_GATE_DEMO_TARGET_USER: shop_gate
+      VISP_GATE_DEMO_TARGET_PASSWORD: demo-local-only
+      VISP_GATE_DEMO_TOKEN_FILE: /state/agent-token
     command: [bash, /demo/demo-seed.sh]
     depends_on:
       gateway: {condition: service_healthy}
@@ -154,9 +154,9 @@ services:
       - state:/state:ro
       - ../../scripts/demo-agent.sh:/demo/demo-agent.sh:ro
     environment:
-      VDA_DEMO_URL: http://gateway:8080
-      VDA_DEMO_PUBLIC_URL: http://localhost:${VDA_DEMO_PORT:-8080}
-      VDA_AGENT_TOKEN_FILE: /state/agent-token
+      VISP_GATE_DEMO_URL: http://gateway:8080
+      VISP_GATE_DEMO_PUBLIC_URL: http://localhost:${VISP_GATE_DEMO_PORT:-8080}
+      VISP_GATE_AGENT_TOKEN_FILE: /state/agent-token
     entrypoint: [bash, /demo/demo-agent.sh]
 
 volumes:

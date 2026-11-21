@@ -798,13 +798,13 @@ mod tests {
     /// rounds each, and prints calls per second. It also prints what one
     /// `record` call costs on the call path and how fast the writer stores.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    #[ignore = "a load measurement; needs VDA_TEST_DATABASE_URL"]
+    #[ignore = "a load measurement; needs VISP_GATE_TEST_DATABASE_URL"]
     async fn load() {
         const AGENTS: usize = 64;
         const CALLS: usize = 100;
         const ROUNDS: usize = 5;
-        let Ok(url) = std::env::var("VDA_TEST_DATABASE_URL") else {
-            eprintln!("skipped: VDA_TEST_DATABASE_URL is not set");
+        let Ok(url) = std::env::var("VISP_GATE_TEST_DATABASE_URL") else {
+            eprintln!("skipped: VISP_GATE_TEST_DATABASE_URL is not set");
             return;
         };
         let root = sqlx::PgPool::connect(&url).await.unwrap();

@@ -32,6 +32,6 @@ pub async fn serve(req: Request) -> Response {
             let cache=if is_asset && path.starts_with("assets/") && path.contains('-') {"public, max-age=31536000, immutable"} else {"no-cache"};
             response.headers_mut().insert("cache-control",HeaderValue::from_static(cache));response
         }
-        None=>axum::response::Html("<!doctype html><html><head><title>visp-db-access</title></head><body><h1>UI not built</h1><p>Build web/ and rebuild the server to embed the console.</p></body></html>").into_response(),
+        None=>axum::response::Html("<!doctype html><html><head><title>visp-gate</title></head><body><h1>UI not built</h1><p>Build web/ and rebuild the server to embed the console.</p></body></html>").into_response(),
     }
 }

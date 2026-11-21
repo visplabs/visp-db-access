@@ -17,7 +17,7 @@ The five approaches:
 - **D. An access tool built for people.** A database proxy, a bastion or an
   access-management product that gives engineers sessions, with approval of
   access and a record of the session.
-- **E. This gate.** visp-db-access between the agent and the database.
+- **E. This gate.** visp-gate between the agent and the database.
 
 ## The table
 

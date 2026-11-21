@@ -33,6 +33,8 @@ impl Crypto {
     /// Initialize a cipher from a 256-bit key.
     pub fn new(key: &[u8; 32]) -> Self {
         use sha2::{Digest, Sha256};
+        // Both labels keep the product's earlier name on purpose: they are
+        // part of the stored format (receipts and the audit chain).
         let mut signing = Sha256::new();
         signing.update(b"visp-db-access record signing key v1\0");
         signing.update(key);
