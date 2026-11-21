@@ -484,6 +484,13 @@ function ApprovalDetail({
               <EnvBadge environment={cluster.data.environment} />
             )}
             <ApprovalBadge status={data.status} />
+            <Link
+              className="button ghost small"
+              to={`/approvals?id=${id}`}
+              aria-label="Permalink to this approval"
+            >
+              Permalink
+            </Link>
           </div>
         </div>
         <div className="approval-reason">
@@ -506,7 +513,6 @@ function ApprovalDetail({
             </div>
           )
         )}
-        <Link to={`/approvals?id=${id}`}>Link to approval</Link>
         {data.error &&
           (isEffectChanged(data) ? (
             <div className="callout danger" role="alert">

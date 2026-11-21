@@ -971,13 +971,17 @@ td.numeric {
 .approval-inbox-detail {
   min-width: 0;
   position: sticky;
-  top: 0;
+  /* Pin below the 64px topbar, which would otherwise cover the pane's top. */
+  top: 80px;
 }
 .approval-inbox-detail > h2 {
   margin-bottom: 16px;
 }
 .approval-scroll {
   overflow: auto;
+  /* Keep the last row clear of the action bar. */
+  padding-bottom: 16px;
+  scroll-padding-bottom: 16px;
 }
 .approval-actions {
   background: var(--surface);

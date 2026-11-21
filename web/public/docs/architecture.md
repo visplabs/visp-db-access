@@ -21,8 +21,8 @@ transaction, masked, and audited. Engineers never see credentials.
 5. **Strict Rust** — `unsafe_code = "forbid"`, no `unwrap`/`expect`/`panic` in
    non-test code (workspace lints).
 
-For the guarantees and their limits, see [Security model](SECURITY-MODEL.md);
-for the attackers and what remains, see [Threat model](THREAT-MODEL.md).
+For the guarantees and their limits, see [Security model](security-model.md);
+for the attackers and what remains, see [Threat model](threat-model.md).
 
 ## Components
 
@@ -277,7 +277,7 @@ Approvers learn that a request waits through one outbound webhook
 - **Sender.** `notices::send` makes one HTTP/1.1 request on a connection it
   opens itself (hyper's connection API over tokio-rustls), to an address it
   resolved and checked. There is no client pool, redirect handling or proxy
-  support to configure away. See [the security model](SECURITY-MODEL.md).
+  support to configure away. See [the security model](security-model.md).
 - **Shutdown.** The worker stops after the HTTP server and the schedulers
   (`main.rs`), gives requests on the wire five seconds, and leaves the rest in
   the outbox.
@@ -337,7 +337,7 @@ another: they are compared on every page, with values that
 - Rows held for `fetch_rows` are in the memory of the node that ran the
   query. A page that reaches another node gets `result_expired`; route an
   agent's calls to one node to avoid that (see
-  [Deployment](DEPLOYMENT.md#agents-on-several-nodes)).
+  [Deployment](deployment.md#agents-on-several-nodes)).
 - Per-node pool cache (moka, idle eviction); pool sizes are small by default
   (`max_connections=5` per cluster per node) to protect production.
 - Deploy: Docker image (distroless), docker-compose for single host, Helm chart
@@ -361,7 +361,7 @@ Minimal IAM policy for the gateway identity / assumed role:
 `rds:DescribeDBInstances`, `rds:DescribeDBClusters` (+ `sts:AssumeRole` on the
 gateway identity for cross-account roles). No write permissions are used.
 
-Setup and operations are covered in [AWS discovery](DISCOVERY.md).
+Setup and operations are covered in [AWS discovery](discovery.md).
 
 ## Roadmap
 

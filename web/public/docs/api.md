@@ -1210,7 +1210,7 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
   ```
 
   `head` is a checkpoint: save `position`, `hash` and `key_id` outside the database (the
-  gateway also logs them, see [Deployment](DEPLOYMENT.md#audit-hash-chain)) and a later
+  gateway also logs them, see [Deployment](deployment.md#audit-hash-chain)) and a later
   `verify-audit --expect-position … --expect-hash … --expect-key-id …` proves that the
   chain still contains that link, under the key that sealed it. `partial` means that nothing is wrong, but some links were sealed
   with another master key and only their structure could be checked; it is never
@@ -1234,7 +1234,7 @@ in the table `audit_chain`, and each link carries a keyed hash of the event and 
 link before it. An event that is changed or deleted, a link that is removed or moved, and
 an event that is put in among sealed ones no longer match, and the chain cannot be made
 again without the master key. What it does not prove is in the
-[security model](SECURITY-MODEL.md#audit).
+[security model](security-model.md#audit).
 
 Events are not sealed as they are written, because nothing serializes writers. A sealer
 on one node at a time appends links in the order `(txid, seq)`: the ID of the transaction
@@ -1382,7 +1382,7 @@ interface NoticeSettings {
   Unknown fields are refused. `url` left out or `null` keeps the stored address; `""`
   removes it. An address must be `https`, without a user name, password or fragment,
   at most 2048 bytes, and must not be an address inside the network (see
-  [the security model](SECURITY-MODEL.md)). Plain `http` is accepted only to loopback,
+  [the security model](security-model.md)). Plain `http` is accepted only to loopback,
   and only with `VDA_ALLOW_PRIVATE_TARGETS`. A host name is not resolved when it is
   saved; it is resolved and checked for every delivery. Turning notices on needs an
   address, at least one event and, for the `webhook` format, a signing secret (400
