@@ -19,6 +19,9 @@ transaction, masked and audited. Engineers never see database credentials.
 - **Production protection:** statement and lock timeouts, row/byte/affected-row
   caps, an optional `EXPLAIN` cost gate, per-cluster concurrency limits, read
   replica routing and server-side cancellation.
+- **A pre-flight bar** next to the Run button: Safe to run, Needs approval or
+  Blocked, one sentence of why, exactly what the guard adds to your SQL (such
+  as `LIMIT 1001`), and one next step.
 - **Performance suggestions** alongside the verdict: unbounded reads,
   `SELECT *`, leading-wildcard `LIKE`, non-sargable filters and large
   `OFFSET`s, with one-click fixes such as a sample `LIMIT` or a preview of the

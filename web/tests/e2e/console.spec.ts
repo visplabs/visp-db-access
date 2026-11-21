@@ -598,11 +598,11 @@ test('console suggests optimizations and applies fixes without flicker', async (
     const labels = new Set<string>();
     const observer = new MutationObserver(() =>
       labels.add(
-        document.querySelector('.safety-panel .verdict strong')?.textContent ??
-          '',
+        document.querySelector('.preflight-bar .preflight-state strong')
+          ?.textContent ?? '',
       ),
     );
-    observer.observe(document.querySelector('.safety-panel')!, {
+    observer.observe(document.querySelector('.preflight-bar')!, {
       subtree: true,
       childList: true,
       characterData: true,
@@ -622,9 +622,14 @@ test('console suggests optimizations and applies fixes without flicker', async (
   const labels = await page.evaluate(() =>
     (window as unknown as { __stop: () => string[] }).__stop(),
   );
-  expect(labels).not.toContain('Analyzing…');
+  expect(labels).not.toContain('Checking…');
+  expect(labels).toContain('Safe to run');
 
   await editor.fill('DELETE FROM users');
-  await expect(panel.getByText('Blocked', { exact: true })).toBeVisible();
+  await expect(
+    page
+      .getByRole('group', { name: 'Pre-flight check' })
+      .getByText('Blocked', { exact: true }),
+  ).toBeVisible();
   await expect(hints).toBeHidden();
 });

@@ -186,6 +186,7 @@ impl Fixture {
         self.state.core.tasks.close();
         self.state.core.tasks.wait().await;
         self.state.stop.cancel();
+        self.state.steps.finish().await;
         self.writer.await.unwrap();
         self.state.core.pools.close().await;
         self.db.close().await;

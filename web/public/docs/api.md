@@ -137,8 +137,42 @@ interface Analysis {
   statements: StatementAnalysis[];
   rewritten_sql: string | null;
   issues: Issue[];
-  suggestions: Suggestion[]; // advisory only; never change the verdict; empty when denied
+  // Advice about speed; it never changes the verdict. A denied statement has
+  // none: `suggestions` is then empty, or holds the one fix that resolves the
+  // block (its `code` is the code of the blocking issue).
+  suggestions: Suggestion[];
 } // issues = flattened, incl. top-level
+
+// The answer of `POST /clusters/:id/analyze`: the analysis and one more field.
+interface Checked extends Analysis {
+  preflight: Preflight;
+}
+// What the caller can do with the statement before running it: the state of
+// the check, why, and exactly one next step. It is made from the same
+// code-to-action lessons that give an agent its `fix`, worded for a person,
+// and it takes the caller's access level into account.
+interface Preflight {
+  state: 'safe' | 'needs_approval' | 'blocked';
+  // `run`, `request_approval` and `apply_fix` are a button in the console.
+  // With `edit_sql`, `ask_admin` and `change_policy` there is none: `hint` says
+  // what to change or who can help.
+  action:
+    | 'run'
+    | 'request_approval'
+    | 'apply_fix'
+    | 'edit_sql'
+    | 'ask_admin'
+    | 'change_policy';
+  label: string; // the next step in a few words; the button's text when there is one
+  hint: string; // why, in one or two plain sentences
+  code?: string; // what decided a state other than `safe`: an issue code, or `approval_required`
+  fix?: Fix; // with `apply_fix`: the edit that resolves the block
+  guard_change?: {
+    clause: string; // the row limit as it runs, such as "LIMIT 1001"
+    replaces?: string; // the limit as written, when the guard replaced one
+    text: string; // one sentence: what the guard does and why
+  };
+}
 
 interface Suggestion {
   code: string; // see the analyze endpoint for the list
@@ -431,7 +465,51 @@ database, username, password, tls_mode, replica_host?, replica_port?, tags?}` �
 
 ### Queries
 
-- `POST /clusters/:id/analyze` `{sql}` → `Analysis` (read). Cheap; UI calls it debounced while typing.
+- `POST /clusters/:id/analyze` `{sql}` → `Checked` (read): every field of `Analysis`, and
+  `preflight`. Cheap; UI calls it debounced while typing. `preflight` is what the console's
+  pre-flight bar shows next to the Run button:
+
+  | Verdict             | Caller                   | `state`          | `action`           | The console shows                           |
+  | ------------------- | ------------------------ | ---------------- | ------------------ | ------------------------------------------- |
+  | `allow`             | any level                | `safe`           | `run`              | the Run button                              |
+  | `requires_approval` | write or admin; a write  | `needs_approval` | `request_approval` | a button that opens the approval request    |
+  | `requires_approval` | any; a read that locks   | `blocked`        | `edit_sql`         | the reason; Run stays disabled              |
+  | `deny`              | any; the guard has a fix | `blocked`        | `apply_fix`        | a button with `label` that applies `fix`    |
+  | `deny`              | any; the SQL must change | `blocked`        | `edit_sql`         | the reason; Run stays disabled              |
+  | `deny`              | not a cluster admin      | `blocked`        | `ask_admin`        | no button: `hint` says who can help         |
+  | `deny`              | cluster admin, policy    | `blocked`        | `change_policy`    | no button: `hint`, and a link to the policy |
+
+  A person with read access who writes is `deny` with `insufficient_access` today, and gets
+  `ask_admin` with a hint that says who can ask for the change (a person with write access)
+  or give the access (an administrator of the database); the same answer is given if a
+  reader's statement is ever `requires_approval`. `ask_admin` and `change_policy` come
+  from the issues whose fix for an agent is `ask_owner` or `stop` (`insufficient_access`,
+  `blocked_table`, `writes_disabled`, `ddl_disabled`); when several issues block, the
+  hardest stop decides, as for an agent.
+
+  A read that takes row locks (`SELECT … FOR UPDATE`) by a person with write access is
+  `requires_approval` for the guard, but `POST /approvals` takes only a statement that
+  changes data. So `preflight` is `blocked` / `edit_sql` with the code `locking_read`
+  and the hint "This statement locks rows. Remove the locking clause (FOR UPDATE / FOR
+  SHARE) to run it as a read."; it never offers a request that would be refused.
+
+  `apply_fix` is offered only for a suggestion whose `code` is the code of the block,
+  and only when the fixed SQL passes the guard and the masking check. Advice about speed
+  is never offered as a fix: a statement that is denied, by the guard or by the masking
+  check (`masked_data_serialization`, `masked_data_transformation`), has no performance
+  suggestions and no `rewritten_sql`. The only fix today is `Keep the first statement`,
+  when several statements were sent and each would pass alone.
+
+  With `safe`, the hint for a read adds "Its cost is checked against this database's
+  limit when it runs." when the policy has `max_cost`: the check runs nothing, so a
+  statement that is safe here can still be refused with `cost_exceeded`.
+  `guard_change` is present when the guard added a row limit or replaced one
+  (`max_rows + 1`, to detect truncation); it names the clause exactly. Its text says
+  "lowers X to Y" only when both are a plain `LIMIT n` and the new number is smaller,
+  and "replaces X with Y" otherwise (`LIMIT 10, 5000`, `FETCH FIRST …`). No
+  hint for a person names an agent tool. `preflight` is not stored with an approval and
+  is not part of `QueryResult.analysis`.
+
   `suggestions` are advisory performance hints: `select_star`, `add_limit`
   (with a sample-`LIMIT` fix), `order_by_random`, `large_offset`,
   `function_on_column`, `leading_wildcard`, `not_in_subquery`, `large_in_list`
@@ -449,6 +527,7 @@ database, username, password, tls_mode, replica_host?, replica_port?, tags?}` �
   are rejected. Rewritten outer SELECT/FETCH limits use `max_rows + 1` when imposing/capping a
   policy limit to detect truncation. Smaller explicit limits are preserved. Display
   `rewritten_sql` verbatim; only `max_rows` rows are returned.
+
 - `POST /clusters/:id/query` `{sql, query_id?, task?}` → `QueryResult`.
   `query_id` (client-generated UUID) lets the client cancel before the response arrives.
   Errors: `query_denied` 422 (`details: Analysis`), `approval_required` 409 (`details: Analysis`),
@@ -602,13 +681,96 @@ last four characters of the token. A token digest is never returned.
   The owner can change every field. An org admin who is not the owner can change only
   `paused` (403 `forbidden` if any other field is present). A body with no field is 400.
   A body that asks for the state the agent already has returns the agent and writes nothing.
-- `DELETE /agents/:id` → `204` (owner or org admin). Deletes its tokens. Query history
-  stays, without the link to the agent.
+- `DELETE /agents/:id` → `204` (owner or org admin). Deletes its tokens, and its sessions
+  and steps with them. Query history stays, without the link to the agent, and so do the
+  `agent.tool` audit events.
 - `POST /agents/:id/tokens` `{expires_in_days? = 30}` → `{id, token, hint, expires_at}` (owner
   only). A JSON body is required; send `{}` for the default. `token` is `vda_agent_` followed
   by 43 characters. It is returned once and cannot be read again. Lifetime is 1–90 days. At
   most 5 active tokens per agent (409).
 - `DELETE /agents/:id/tokens/:token_id` → `204` (owner or org admin). Repeating it is harmless.
+- `GET /agents/:id/sessions?limit=50&cursor=` → `{items: AgentSession[], next_cursor}` (owner
+  or org admin; 404 for everyone else, as for the agent itself). Newest first by
+  `started_at`; `limit` must be 1–200.
+- `GET /agents/:id/sessions/:session_id/steps?after=0&limit=200` →
+  `{session: AgentSession, items: AgentStep[], after, more}` (same callers). The steps of
+  one session with `n > after`, oldest first; `limit` must be 1–500. `after` in the answer
+  is the `n` of the last step returned (the `after` that was sent when there is none): send
+  it back to read only what is new. `more` says that more steps wait than `limit` let
+  through. A session of another agent is 404.
+
+Sessions and steps are the gateway's own record of what an agent did at the agent door.
+The door keeps no session and the agent sends nothing for this: a **session** is a run of
+calls of one agent token with no gap longer than 30 minutes, decided in the metadata
+database, so every node gives the calls of one token the same session. A **step** is one
+tool call.
+
+```ts
+interface AgentSession {
+  id: string;
+  agent_id: string;
+  token: { id: string; hint: string };
+  started_at: string; // the time of the step that opened the session
+  last_step_at: string;
+  steps: number;
+  refusals: number; // steps whose outcome is not "ok"
+  first_task: string | null; // the task of its first step
+  active: boolean; // the gap has not passed since the last step
+}
+interface AgentStep {
+  n: number; // 1, 2, 3… in the session, in the order written, with no gap
+  id: string;
+  tool: string; // one of the nine tools
+  task: string | null; // null when the call had no valid task
+  database: string | null; // the cluster id; fetch_rows has that of its query
+  sql: string | null; // check_sql, run_query, propose_write; at most 16 KiB
+  sql_truncated: boolean; // the statement was longer and is cut
+  verdict: 'allow' | 'requires_approval' | 'deny' | null; // the guard's, when the call had one
+  outcome: string; // "ok", or the code of the error the agent got
+  // The fix the agent was given, with the error or inside check_sql's answer.
+  // `told` says the action word in one sentence for a person.
+  fix: { action: string; hint: string; told: string } | null;
+  row_count: number | null; // rows in this answer (run_query, fetch_rows)
+  elapsed_ms: number; // how long the call took in the gateway
+  history_id: string | null; // the query history row of run_query; fetch_rows has that of its query
+  approval_id: string | null; // propose_write, get_approval, withdraw
+  created_at: string; // when the call arrived
+}
+```
+
+What is recorded, and what is not:
+
+- One step per tool call that reaches a tool, whatever its outcome. A step holds the SQL
+  text of the call and never a result row: `row_count` is a number.
+- A call that is refused before a tool runs (`rate_limited`, or `validation` for arguments
+  that do not fit the tool or a task that is not valid) is a step too, with what could be
+  read from its arguments; a task that is not valid is left out. At most 30 such steps
+  per agent in a minute, on one node; more are counted in the metric
+  `vda_agent_steps_suppressed_total` and not recorded. A call
+  with an unknown tool name, or one that is not a valid message, is a protocol error and
+  not a step.
+- A step has a bounded size, whatever the agent sends. Every text is cut at a character
+  boundary when the step is queued and again when it is written: `sql` at 16 KiB
+  (`sql_truncated` says so), `task` at 2,000 bytes, `fix.hint` at 1,024 bytes, and
+  `tool`, `outcome` and `fix.action` at 64 bytes. An error message never repeats more
+  than 64 characters of an argument name the agent made up. So a step is at most about
+  20 KiB, and 150 steps (120 calls and 30 refused ones) is the most one agent adds on
+  one node in a minute.
+- Recording never slows a tool call down and never fails one. A step goes into a queue of
+  4,096 without waiting and a writer stores what waits in one transaction, up to 256
+  steps; it waits up to a quarter of a second for a batch to fill, so a step shows up
+  within about that time. A step that finds the queue full, and a batch that cannot be
+  written after four attempts or within five seconds of shutdown, are dropped, logged
+  and counted in `vda_agent_steps_dropped_total`. Steps are a convenience for people; the audit trail of
+  an agent stays the `agent.tool` event and query history, which do not depend on it.
+- `n` is given under a row lock per token, so two nodes that write steps of one token at
+  the same moment cannot give two steps the same number or the token two sessions. Steps
+  of one node are numbered in the order its calls ended; the steps of two nodes
+  interleave in the order their batches were written.
+- Steps older than `VDA_AGENT_STEPS_RETENTION_DAYS` (default 30) are deleted by the
+  maintenance cycle of the leader node, 5,000 at a time, also in a session that is still
+  going on; a session is deleted when it has no step left. `steps` and `refusals` of a
+  session keep counting what was written.
 
 Agent rules in the query pipeline:
 
@@ -783,7 +945,8 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
   | `search_schema`  | `task, database, query, limit? = 20`   | `{tables: [{table, kind, row_estimate, matching_columns}], more}`                                           |
   | `describe_table` | `task, database, table`                | `{table, kind, row_estimate, columns: [{name, type, nullable, primary_key, protected}]}`                    |
   | `check_sql`      | `task, database, sql`                  | `{verdict, risk, issues, will_run_as, suggestions, fix}`; nothing runs                                      |
-  | `run_query`      | `task, database, sql, max_rows? = 100` | `{query_id, columns, rows, row_count, truncated, ran_as, elapsed_ms}`                                       |
+  | `run_query`      | `task, database, sql, max_rows? = 100` | `{query_id, columns, rows, row_count, truncated, ran_as, elapsed_ms, next_cursor?, rows_left?}`             |
+  | `fetch_rows`     | `task, cursor, max_rows? = 100`        | the same as `run_query` without `ran_as`, with the next rows of that query; nothing runs                    |
   | `propose_write`  | `task, database, sql`                  | `{approval_id, status, previewed, …}`; nothing runs                                                         |
   | `get_approval`   | `task, approval_id?`                   | `{approval_id, status, previewed, review_note, executed_rows, error_code, error, fix?, …}`, or `{requests}` |
   | `withdraw`       | `task, approval_id`                    | the same as `get_approval`, with `status: "withdrawn"`                                                      |
@@ -861,16 +1024,72 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
   them, whatever the statement looks like. `check_sql` still answers `blocked_table` for a
   blocked name, so the block list is not a secret from the agent. `run_query` goes through the same pipeline as a
   person's query (guard, policy, masking, cost gate, audit) and stores `task` in query
-  history. It returns at most `max_rows` rows (1000 at most) and at most about one megabyte
+  history. It returns at most `max_rows` rows (1000 at most; a larger number is cut to
+  1000, and 0 is `400 validation`, for `fetch_rows` too) and at most about one megabyte
   of row data; `truncated` says when rows were left out. The request can run as long as a
   person's query (610 s ceiling); the statement timeout of the cluster policy applies.
+
+  `fetch_rows` hands out the rows that one `run_query` fetched and one answer could not
+  hold. The query fetches up to the policy's `max_rows`, and the gateway masks them; the
+  rows that do not fit in the answer stay in the memory of the node that ran the query,
+  and the answer has `next_cursor` and `rows_left`. `fetch_rows {cursor, max_rows?}`
+  returns the next rows in the same shape without `ran_as` (`query_id`, `columns` and
+  `elapsed_ms` are those of the query; what ran is said once, by `run_query`), with a
+  new `next_cursor` while rows are left.
+  `truncated` is true when rows were left out of this answer; `truncated` without
+  `next_cursor` means that no rows are held: the database had more rows than the policy
+  lets one query fetch, or the rest could not be kept. What holds:
+  - **No new access.** `fetch_rows` runs nothing on any database and reads nothing new.
+    All pages together are exactly the rows of the one run, in order: never more than
+    the policy's cap for one query, and masked as the policy was when the query ran.
+  - **In memory only.** Held rows are never written to the metadata database or to
+    disk. A cursor is refused from 5 minutes after the query or the last page; the
+    memory is freed by a sweep up to 30 seconds later. Held rows also end when the
+    gateway stops, and when the node needs the memory: all held rows of a node stay under
+    `VDA_HELD_RESULTS_MAX_BYTES` (default 256 MiB) and those of one agent under
+    `VDA_HELD_RESULTS_AGENT_MAX_BYTES` (default 64 MiB), counted as the rows' JSON text
+    plus a fixed cost per value, and the columns' names and types; an agent holds at most 32 results. The oldest are
+    dropped first: the agent's own, then anyone's. A result that alone is over the
+    agent's cap is not held at all (no `next_cursor`).
+  - **The cursor** is `rows_` and 32 random bytes in URL-safe base64. Only its SHA-256
+    digest is the key in memory. It works once: each page gives a new one, and two calls
+    with one cursor get one page. It works only for the agent and the token that ran the
+    query.
+  - **It ends with the agent's rights.** Held rows are dropped when the agent is paused,
+    changed or deleted, when its token is revoked, when its owner is disabled or loses
+    their tokens, and when the cluster's policy (masking included), endpoint or agent
+    login changes or the cluster is deleted. The node that handles the change drops them
+    at once. On other nodes they are refused when asked for: a held result carries the
+    `updated_at` of the agent and of the cluster as they were when the query ran, and
+    both are compared on every page. Each page also repeats the access and network
+    checks of a query, and the check that the token is still valid (a pause that came
+    after the call was authenticated). The rows are dropped and the agent gets the
+    error of that check: `forbidden` or `not_found` when it no longer reaches the
+    database, `network_denied` when its address is no longer accepted, and
+    `401 unauthenticated` when it is paused or its token is revoked, as at the door for
+    every tool.
+  - **One code for rows that are gone.** A cursor of another agent or token, a used,
+    expired or dropped one, one that is not a cursor at all, one whose agent or database
+    changed since the query, and one whose rows are on another node all get
+    `410 result_expired`, with the fix `rewrite_sql`: run the query again, narrower.
+  - **Limits.** A page counts toward the 120 tool calls a minute, is an `agent.tool`
+    audit event (with the database of its query) and a step. It takes nothing from the
+    hourly query budget and does not count as a refusal for `too_many_denials`. Each
+    page holds at most `max_rows` rows and about one megabyte; when the next row alone
+    is larger, the answer is `result_too_large` and the rest is dropped.
 
   A refused tool call is a normal result with `isError: true` and
   `structuredContent: {error: {code, message, fix}}`. `fix` is
   `{action, hint, retry_after_seconds?}`. `action` is one of `rewrite_sql`, `fix_arguments`,
   `choose_database`, `ask_owner`, `propose_write`, `retry_later`, `stop`. A write that needs
   approval (`approval_required`) and a write whose data changed after the approval
-  (`effect_changed`) have the fix `propose_write`. When a statement has several
+  (`effect_changed`) have the fix `propose_write`. A read that takes row locks
+  (`SELECT … FOR UPDATE`) by an agent with write level is `approval_required` too, but
+  `propose_write` takes only a statement that changes data; its fix, from `run_query`
+  and from `check_sql`, is `rewrite_sql`: "This statement locks rows, so it does not run
+  as a read, and it changes no data, so it cannot be proposed as a write. Remove the
+  locking clause (FOR UPDATE or FOR SHARE) and run it again." An argument that a tool
+  does not take is `validation` with at most the first 64 characters of its name. When a statement has several
   blocking issues, the hardest stop decides the fix. A failure inside the gateway (5xx
   other than `upstream`) has a generic message. Error codes are those of the query API,
   plus:
@@ -880,6 +1099,10 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
   - `database_check_failed` (503): the agent login could not be checked. The fix is
     `retry_later`.
   - `result_too_large` (422): one row alone is larger than about one megabyte.
+  - `result_expired` (410): `fetch_rows` has no rows for this cursor, for any of the
+    reasons above. The fix is `rewrite_sql`: "These rows are not held any more. Call
+    run_query again, with a narrower question: add filters, select fewer columns or
+    aggregate, so that the answer needs fewer pages."
   - `network_denied` (403): the cluster's own network policy excludes the agent's address.
     Such a cluster is also left out of `list_databases`.
   - `rate_limited` (429): more than 120 tool calls by one agent in one minute, all tools
@@ -904,6 +1127,13 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
     run in parallel, so several of them can reach the cost gate at once and each be
     refused there; the budget still bounds them. Five refused `propose_write` calls stop
     that tool for ten minutes; see its limits above.
+
+  `check_sql` gives a refused statement its `fix` and no `suggestions`: the console's
+  one-click repair for several statements is advice for a person, not for an agent.
+
+  Each tool call is also a step of the agent's session, which its owner and org admins
+  read with `GET /agents/:id/sessions`; see [Agents](#agents). The agent door has no tool
+  for it, and the answers to an agent carry no session id.
 
   Each tool call whose arguments parse is recorded as an `agent.tool` audit event:
   `{tool, task, database, outcome}`, under the owner, with the agent as the target. These

@@ -31,6 +31,31 @@ change the API and storage schema; migrations run automatically at startup.
 - Audit event `agent_login.status` (`{from, to}`) when the check of a
   cluster's agent login changes its status, written once per change however
   many nodes check.
+- A pre-flight bar in the console, always visible next to the Run button: the
+  state of the safety check (Safe to run, Needs approval, Blocked), one
+  sentence of why, and one next step: run, open the approval request, apply
+  the guard's fix, or read who can help. It names exactly what the guard adds
+  to the SQL, such as `LIMIT 1001`. The server makes it: the answer of
+  `POST /clusters/:id/analyze` gains the field `preflight`, from the same
+  lessons that give agents their `fix`, with the caller's access level. Every
+  existing field of the answer is unchanged.
+- The guard offers a fix for one kind of blocked statement: several
+  statements that would each pass alone ("Keep the first statement").
+- Agent sessions. The gateway records each tool call of an agent as a step
+  (tool, task, SQL text, verdict, outcome, the fix it was given, never result
+  rows) and groups the steps of one token into sessions. The owner and
+  administrators read them on the agent's screen, where a session that is
+  going on updates by itself and "Pause agent" is one click away, and with
+  `GET /agents/:id/sessions` and `…/sessions/:id/steps?after=`. Steps are
+  kept 30 days (`VDA_AGENT_STEPS_RETENTION_DAYS`). Migration
+  `0012_agent_sessions`. New metrics `vda_agent_steps_*`.
+- Agent tool `fetch_rows`: pages through the rows that one `run_query`
+  already fetched and masked. `run_query` adds `next_cursor` and `rows_left`
+  when its answer could not hold all rows. Nothing runs again and no query
+  is taken from the budget. The rows are held in the node's memory only, for
+  five minutes, within `VDA_HELD_RESULTS_MAX_BYTES` and
+  `VDA_HELD_RESULTS_AGENT_MAX_BYTES`. New error code `result_expired`. New
+  metrics `vda_held_results*`.
 
 ### Changed
 
@@ -42,6 +67,10 @@ change the API and storage schema; migrations run automatically at startup.
   fail. The cursor stays an opaque string.
 - The Audit screen shows the details the gateway records. It no longer looks
   for query SQL in an audit event: that is in History.
+- The Run button moved from the editor toolbar into the pre-flight bar under
+  the editor, and the safety panel no longer repeats the verdict in the
+  console. When only an administrator can help, the bar has no button.
+- Deleting an agent also deletes its sessions and steps.
 
 ## [0.1.0] - 2026-10-10
 

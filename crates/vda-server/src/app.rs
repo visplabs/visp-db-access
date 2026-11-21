@@ -58,6 +58,13 @@ pub struct AppState {
     pub(crate) agent_proposals: Cache<Uuid, Arc<tokio::sync::Mutex<crate::mcp::ProposalStreak>>>,
     /// Tool calls in the current minute, per agent.
     pub(crate) agent_calls: Cache<Uuid, Arc<AtomicU32>>,
+    /// Calls refused before a tool ran that were recorded as steps in the
+    /// current minute, per agent; see `mcp`.
+    pub(crate) agent_refused_steps: Cache<Uuid, Arc<AtomicU32>>,
+    /// The record of agent steps and sessions; see `steps`.
+    pub steps: crate::steps::Recorder,
+    /// Rows held in this node's memory for `fetch_rows`; see `held`.
+    pub held: Arc<crate::held::HeldResults>,
     login_rates: Cache<(IpAddr, String), Arc<AtomicU32>>,
     pub prometheus: Option<metrics_exporter_prometheus::PrometheusHandle>,
 }
@@ -95,6 +102,13 @@ impl AppState {
         let dummy_password_hash =
             crate::auth::hash_password("dummy-password-never-used".into()).await?;
         let writer = tokio::spawn(crate::audit::writer(db.clone(), receiver, stop.clone()));
+        let steps = crate::steps::Recorder::start(db.clone(), stop.clone());
+        let cap = |bytes: u64| usize::try_from(bytes).unwrap_or(usize::MAX);
+        let held = Arc::new(crate::held::HeldResults::new(
+            cap(config.held_results_max_bytes),
+            cap(config.held_results_agent_max_bytes),
+        ));
+        tokio::spawn(crate::held::sweeper(held.clone(), stop.clone()));
         let notices =
             crate::notices::send::Sender::new(config.allow_private_targets).map_err(|error| {
                 tracing::error!(%error, "cannot set up TLS for notices");
@@ -136,6 +150,12 @@ impl AppState {
                     .max_capacity(20000)
                     .time_to_live(Duration::from_secs(60))
                     .build(),
+                agent_refused_steps: Cache::builder()
+                    .max_capacity(20000)
+                    .time_to_live(Duration::from_secs(60))
+                    .build(),
+                steps,
+                held,
                 agent_denials: Cache::builder()
                     .max_capacity(20000)
                     .time_to_live(Duration::from_secs(crate::mcp::DENIAL_WINDOW_SECONDS))
@@ -173,6 +193,14 @@ impl AppState {
             })
             .await
             .map_err(|error: Arc<ApiError>| (*error).clone())
+    }
+    /// Drop the rows held for agents from a database whose policy, masking,
+    /// endpoint or agent login changed, or that was deleted. A held result
+    /// also carries the cluster's `updated_at`, so the rows on other nodes
+    /// are refused when they are asked for.
+    pub fn forget_held(&self, cluster: Uuid) {
+        self.held
+            .drop_where("changed", |held| held.database == cluster);
     }
     /// Immediately invalidate a local settings cache after an update.
     pub async fn invalidate_network(&self) {
@@ -418,6 +446,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/agents/{id}/tokens/{token_id}",
             delete(crate::agents::revoke_token),
+        )
+        .route("/agents/{id}/sessions", get(crate::steps::sessions))
+        .route(
+            "/agents/{id}/sessions/{session_id}/steps",
+            get(crate::steps::steps),
         )
         .route("/audit", get(crate::admin::audit))
         .route("/audit/integrity", get(crate::audit_chain::integrity))

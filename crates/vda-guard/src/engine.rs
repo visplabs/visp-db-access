@@ -1,7 +1,8 @@
 //! Assemble parsing, structural analysis, policy, and executable SQL.
 use crate::{
-    classify, hints, parse, policy, rewrite, syntax, walk, AccessLevel, Analysis, Dialect,
-    GuardPolicy, Issue, Risk, Severity, StatementAnalysis, StatementKind, Verdict,
+    classify, hints, parse, policy, rewrite, syntax, walk, AccessLevel, Analysis, Dialect, Fix,
+    FixAction, GuardPolicy, Issue, Risk, Severity, StatementAnalysis, StatementKind, Suggestion,
+    Verdict,
 };
 use sqlparser::ast::Statement;
 
@@ -59,6 +60,7 @@ pub(crate) fn analyze(
         rewritten_sql: None,
         issues: vec![],
         suggestions: vec![],
+        row_cap: None,
     };
     let mut locks = parsed.lock_syntax.iter().copied();
     for statement in &parsed.statements {
@@ -70,8 +72,16 @@ pub(crate) fn analyze(
         analysis.statements.push(detail);
     }
     if parsed.statements.len() > 1 {
+        let alone = analysis.verdict != Verdict::Deny;
         analysis.verdict = Verdict::Deny;
         analysis.issues.push(Issue::new(Severity::Block, "multiple_statements", "The gateway executes exactly one statement at a time. Submit each statement separately."));
+        // Every statement passes on its own, so the only block is that there
+        // are several. Keeping the first one resolves it.
+        if alone && parsed.lock_syntax.is_empty() {
+            analysis.suggestions = first_statement(&parsed.statements, dialect)
+                .into_iter()
+                .collect();
+        }
     }
     if analysis.verdict != Verdict::Deny {
         if let Some(statement) = parsed.statements.first() {
@@ -80,11 +90,9 @@ pub(crate) fn analyze(
                 .first()
                 .is_some_and(|s| s.kind == StatementKind::Select);
             analysis.rewritten_sql = Some(if select && matches!(statement, Statement::Query(_)) {
-                syntax::restore(
-                    &rewrite::cap(statement, policy.max_rows),
-                    dialect,
-                    &mut parsed.lock_syntax.iter().copied(),
-                )
+                let (capped, change) = rewrite::cap(statement, policy.max_rows);
+                analysis.row_cap = change;
+                syntax::restore(&capped, dialect, &mut parsed.lock_syntax.iter().copied())
             } else {
                 sql.trim().trim_end_matches(';').trim_end().to_owned()
             });
@@ -110,6 +118,25 @@ pub(crate) fn analyze(
     analysis
 }
 
+/// The fix for several statements that are each acceptable: run the first.
+fn first_statement(statements: &[Statement], dialect: Dialect) -> Option<Suggestion> {
+    let first = statements.first()?.to_string();
+    let sql = if dialect == Dialect::MySql {
+        crate::mysql::escape_rendered(&first)
+    } else {
+        first
+    };
+    Some(Suggestion {
+        code: "multiple_statements".into(),
+        message: "Only one statement runs at a time. Keep the first statement and run the others after it.".into(),
+        fix: Some(Fix {
+            label: "Keep the first statement".into(),
+            sql,
+            action: FixAction::Replace,
+        }),
+    })
+}
+
 pub(crate) fn denied(code: &str, message: &str) -> Analysis {
     Analysis {
         verdict: Verdict::Deny,
@@ -118,6 +145,7 @@ pub(crate) fn denied(code: &str, message: &str) -> Analysis {
         rewritten_sql: None,
         issues: vec![Issue::new(Severity::Block, code, message)],
         suggestions: vec![],
+        row_cap: None,
     }
 }
 

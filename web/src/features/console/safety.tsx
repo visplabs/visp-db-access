@@ -19,6 +19,7 @@ export const SafetyPanel = memo(function SafetyPanel({
   retry,
   suggestions,
   onApplyFix,
+  showVerdict = true,
 }: {
   analysis?: Analysis;
   pending?: boolean;
@@ -30,6 +31,9 @@ export const SafetyPanel = memo(function SafetyPanel({
   suggestions?: Suggestion[];
   /** Enables fix buttons; omitted where SQL cannot be edited (e.g. approvals). */
   onApplyFix?: (fix: Fix) => void;
+  /** False in the console, where the pre-flight bar beside the Run button
+   * says the verdict; the panel then holds the details only. */
+  showVerdict?: boolean;
 }) {
   const verdict = analysis?.verdict;
   const hints =
@@ -62,27 +66,37 @@ export const SafetyPanel = memo(function SafetyPanel({
         <ErrorPanel error={error} retry={retry} />
       ) : (
         <>
-          <div
-            className={`verdict ${analyzing ? 'neutral' : tone}`}
-            aria-live="polite"
-            aria-busy={pending}
-          >
-            <Icon size={21} />
-            <strong>
-              {analyzing
-                ? 'Analyzing…'
-                : verdict === 'allow'
-                  ? 'Safe to run'
-                  : verdict === 'requires_approval'
-                    ? 'Needs approval'
-                    : analysis
-                      ? 'Blocked'
-                      : 'Waiting for SQL'}
-            </strong>
-            {pending && analysis && (
-              <small className="verdict-updating">Updating…</small>
-            )}
-          </div>
+          {showVerdict ? (
+            <div
+              className={`verdict ${analyzing ? 'neutral' : tone}`}
+              aria-live="polite"
+              aria-busy={pending}
+            >
+              <Icon size={21} />
+              <strong>
+                {analyzing
+                  ? 'Analyzing…'
+                  : verdict === 'allow'
+                    ? 'Safe to run'
+                    : verdict === 'requires_approval'
+                      ? 'Needs approval'
+                      : analysis
+                        ? 'Blocked'
+                        : 'Waiting for SQL'}
+              </strong>
+              {pending && analysis && (
+                <small className="verdict-updating">Updating…</small>
+              )}
+            </div>
+          ) : (
+            !analysis && (
+              <p className="muted">
+                {analyzing
+                  ? 'The guard is checking this statement.'
+                  : 'The details of the check appear here.'}
+              </p>
+            )
+          )}
           {analysis && (
             <>
               <div className="risk-row">

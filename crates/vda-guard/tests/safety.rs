@@ -1269,3 +1269,96 @@ fn write_preview_and_denied_queries() {
     );
     assert!(hint(&a, "leading_wildcard").is_some());
 }
+
+#[test]
+fn the_guard_says_exactly_how_it_changed_the_row_limit() {
+    let cap = |sql: &str, dialect| check(sql, dialect, AccessLevel::Read).row_cap;
+    let pair = |cap: Option<vda_guard::RowCap>| cap.map(|cap| (cap.clause, cap.replaces));
+    let max = policy().max_rows;
+    let limit = format!("LIMIT {}", max + 1);
+    // No limit written: the guard adds one.
+    assert_eq!(
+        pair(cap("SELECT id FROM users", Dialect::Postgres)),
+        Some((limit.clone(), None))
+    );
+    // An offset stays; only the limit is the guard's.
+    assert_eq!(
+        pair(cap("SELECT id FROM users OFFSET 5", Dialect::Postgres)),
+        Some((limit.clone(), None))
+    );
+    // A limit above the cap is lowered, and the answer names what was written.
+    assert_eq!(
+        pair(cap(
+            &format!("SELECT id FROM users LIMIT {}", max + 500),
+            Dialect::Postgres
+        )),
+        Some((limit.clone(), Some(format!("LIMIT {}", max + 500))))
+    );
+    assert_eq!(
+        pair(cap(
+            &format!("SELECT id FROM users LIMIT 10, {}", max + 500),
+            Dialect::MySql
+        )),
+        Some((
+            format!("LIMIT 10, {}", max + 1),
+            Some(format!("LIMIT 10, {}", max + 500))
+        ))
+    );
+    let fetch = cap(
+        &format!("SELECT id FROM users FETCH FIRST {} ROWS ONLY", max + 500),
+        Dialect::Postgres,
+    );
+    let fetch = fetch.unwrap();
+    assert!(fetch.clause.contains(&(max + 1).to_string()), "{fetch:?}");
+    assert!(
+        fetch.replaces.unwrap().contains(&(max + 500).to_string()),
+        "the written limit is named"
+    );
+    // A limit within the cap, a write and a refused statement are not changed.
+    for sql in [
+        "SELECT id FROM users LIMIT 10",
+        "UPDATE users SET name = 'a' WHERE id = 1",
+        "SELECT pg_sleep(1)",
+        "EXPLAIN SELECT id FROM users",
+    ] {
+        assert_eq!(cap(sql, Dialect::Postgres), None, "{sql}");
+    }
+    // The change is not part of the wire shape.
+    let analysis = check("SELECT id FROM users", Dialect::Postgres, AccessLevel::Read);
+    let wire = serde_json::to_value(&analysis).unwrap();
+    assert!(wire.get("row_cap").is_none(), "{wire}");
+}
+
+#[test]
+fn several_acceptable_statements_offer_the_first_one_as_the_fix() {
+    let analysis = check(
+        "SELECT id FROM users WHERE id = 1; SELECT 2",
+        Dialect::Postgres,
+        AccessLevel::Read,
+    );
+    assert_eq!(analysis.verdict, Verdict::Deny);
+    let [suggestion] = analysis.suggestions.as_slice() else {
+        panic!("one fix expected: {:?}", analysis.suggestions);
+    };
+    assert_eq!(suggestion.code, "multiple_statements");
+    let fix = suggestion.fix.as_ref().unwrap();
+    assert_eq!(fix.label, "Keep the first statement");
+    assert_eq!(fix.action, vda_guard::FixAction::Replace);
+    // The fix resolves the block: the guard accepts it.
+    let fixed = check(&fix.sql, Dialect::Postgres, AccessLevel::Read);
+    assert_eq!(fixed.verdict, Verdict::Allow, "{fixed:?}");
+    assert!(fix.sql.contains("WHERE id = 1") && !fix.sql.contains("SELECT 2"));
+    // When a statement is refused for its own reason, the first one alone
+    // would not resolve the block, so no fix is offered.
+    for sql in [
+        "SELECT 1; SELECT pg_sleep(1)",
+        "SELECT pg_sleep(1); SELECT 1",
+        "SELECT 1; DELETE FROM users",
+        "SELECT pg_sleep(1)",
+        "SELEC 1",
+    ] {
+        let analysis = check(sql, Dialect::Postgres, AccessLevel::Read);
+        assert_eq!(analysis.verdict, Verdict::Deny, "{sql}");
+        assert!(analysis.suggestions.is_empty(), "{sql}");
+    }
+}

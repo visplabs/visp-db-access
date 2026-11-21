@@ -87,10 +87,15 @@ resolves a bearer token to such an actor; only the token's SHA-256 digest is
 stored.
 
 `teach` turns any refusal into one `fix` object: a stable action word and a
-plain hint. The agent door (`vda-server/src/mcp.rs`) is a Model Context
-Protocol endpoint over plain HTTP POST with five read tools. It keeps no
-session, so it works behind any load balancer. Each tool calls the same
-`vda-core` functions as the console, with the agent's `Actor`.
+plain hint. Each issue code has one lesson there, with the words for an agent
+and the words for a person side by side. `teach::preflight` makes the
+console's pre-flight answer from the same lessons, the verdict and the
+person's access level: a state, one sentence and one next step. So the bar
+next to the Run button and the `fix` an agent reads cannot disagree. The
+agent door (`vda-server/src/mcp.rs`) is a Model Context Protocol endpoint over
+plain HTTP POST with nine tools. It keeps no session, so it works behind any
+load balancer. Each tool calls the same `vda-core` functions as the console,
+with the agent's `Actor`.
 
 `judge` makes the target database the last word for agents. A PostgreSQL
 cluster can have an agent login with column grants for exactly what the policy
@@ -105,6 +110,10 @@ the target. The text guard stays as the fast first check.
 axum HTTP API + embedded SPA. Metadata in Postgres (sqlx migrations). Owns
 authn/z, pool cache, policies, approvals, audit, health and discovery
 schedulers, notices to approvers, metrics.
+
+`steps` is the gateway's own record of what agents do, and `held` keeps the
+rows that `fetch_rows` hands out; both are described
+[below](#agent-steps-sessions-and-held-rows).
 
 ### web/ (React + TypeScript + Vite)
 
@@ -130,6 +139,14 @@ Built to `web/dist`, embedded into the server binary with `rust-embed`.
   row_count, elapsed_ms, error, created_at)
 - `health_checks` (cluster_id, status, latency_ms, server_version, is_replica,
   details jsonb, checked_at) — retained 7 days
+- `agent_sessions` (id, agent_id, token_id, started_at, last_step_at, steps,
+  refusals, first_task) — a run of calls of one agent token
+- `agent_session_heads` (token_id PK, session_id) — the session a token is in;
+  the row that the writer of steps locks
+- `agent_steps` (session_id, n, id, tool, task, cluster_id, sql, sql_truncated,
+  verdict, outcome, fix_action, fix_hint, row_count, elapsed_ms, history_id,
+  approval_id, created_at) — one tool call; SQL text, never rows; retained 30
+  days by default
 - `audit_log` (id, actor_id, action, target_type, target_id, ip, details jsonb, created_at,
   seq, txid) — append-only; `txid` is the inserting transaction, `seq` a sequence number
 - `audit_chain` (position, audit_id, txid, seq, key_id, segment_start, prev_hash, hash,
@@ -264,6 +281,49 @@ Approvers learn that a request waits through one outbound webhook
   (`main.rs`), gives requests on the wire five seconds, and leaves the rest in
   the outbox.
 
+## Agent steps, sessions and held rows
+
+**Steps and sessions** (`vda-server/src/steps.rs`). The agent door keeps no
+session and the agent sends nothing extra, so the gateway makes its own.
+
+- **On the call path.** `mcp::call` times the call, runs it, and hands one
+  `Step` to `Recorder::record`, which is a `try_send` into a queue of 4,096.
+  It never waits and never fails the call; a full queue drops the step and
+  counts it. A call that is refused before a tool runs is recorded too, at
+  most 30 per agent in a minute.
+- **Writer.** One task per node takes up to 256 steps, waiting at most a
+  quarter of a second for more, and writes them in one transaction
+  (`steps::persist`): hold the agents' rows (`FOR KEY SHARE`),
+  make sure each token has a row in `agent_session_heads`, lock those rows in
+  id order, and only then read each token's session. A step continues the
+  session when it arrived no more than 30 minutes after the session's last
+  step; otherwise it starts a new one. The steps get the numbers after the
+  session's count. The lock is taken in a statement of its own, because a
+  statement that waits for a lock goes on with the snapshot it began with.
+- **Why two nodes agree.** A session is decided while the token's head row is
+  locked, from what is committed. The second writer waits, then sees the
+  first one's session and count. The order agents → heads is the order in
+  which a delete of an agent takes them, so the two cannot deadlock.
+- **Reading.** `GET /agents/:id/sessions` and `…/steps?after=n` serve the
+  console, which asks every three seconds for the steps after the last one
+  it has while the session is going on and the page is visible. There are no
+  server-sent events.
+- **Pruning** is part of the leader's maintenance cycle, like health history:
+  5,000 old steps and 500 empty sessions per pass.
+
+**Held rows** (`vda-server/src/held.rs`). `run_query` fetches up to the
+policy's row cap and masks the rows; one answer holds fewer. The rest stays
+in a map in the node's memory, keyed by the SHA-256 of a random cursor, with
+the agent, the token, and the `updated_at` of the agent and of the cluster as
+they were. `fetch_rows` takes the entry out, checks those marks and the
+agent's access again, hands out a page and puts the rest back under a new
+cursor. Nothing is written anywhere, and no database is asked again. The map
+is bounded in bytes for the node and for each agent, oldest first, and a
+sweep every 30 seconds drops what was not used for five minutes. The two
+marks are how a pause or a policy change on one node ends the rows held on
+another: they are compared on every page, with values that
+`agents::authenticate` and the access check read anyway.
+
 ## Scaling & deployment
 
 - Stateless nodes behind any L7 load balancer; sessions in Postgres.
@@ -271,6 +331,12 @@ Approvers learn that a request waits through one outbound webhook
 - The notice worker runs on every node; rows are claimed with `SKIP LOCKED`.
 - The audit chain worker runs on every node; sealing and the background check
   are each done by one node at a time, under an advisory lock.
+- The writer of agent steps runs on every node; sessions are decided in the
+  metadata database, under a row lock per token.
+- Rows held for `fetch_rows` are in the memory of the node that ran the
+  query. A page that reaches another node gets `result_expired`; route an
+  agent's calls to one node to avoid that (see
+  [Deployment](DEPLOYMENT.md#agents-on-several-nodes)).
 - Per-node pool cache (moka, idle eviction); pool sizes are small by default
   (`max_connections=5` per cluster per node) to protect production.
 - Deploy: Docker image (distroless), docker-compose for single host, Helm chart

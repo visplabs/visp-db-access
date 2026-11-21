@@ -9,16 +9,10 @@ import {
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'sql-formatter';
-import {
-  Play,
-  Square,
-  PanelLeft,
-  WandSparkles,
-  PanelRight,
-} from 'lucide-react';
+import { PanelLeft, WandSparkles, PanelRight } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import type {
-  Analysis,
+  Checked,
   Cluster,
   Fix,
   QueryResult,
@@ -46,6 +40,8 @@ import { ClusterHeading } from '../../components/ui/cluster-heading';
 import { SqlEditor } from './editor';
 import { SchemaExplorer } from './schema-tree';
 import { SafetyPanel } from './safety';
+import { PreflightBar } from './preflight';
+import { checkStatus, gate, preflightOf } from '../../lib/preflight';
 import { Results } from './results';
 import { QueryTabs } from './query-tabs';
 import { QueryLibrary } from './query-library';
@@ -135,7 +131,8 @@ export function ConsoleWorkspace({
   cluster: Cluster;
   initialSql?: string;
 }) {
-  const center = useRef<HTMLDivElement>(null);
+  const center = useRef<HTMLDivElement>(null),
+    barRef = useRef<HTMLDivElement>(null);
   const [editorMaximum, setEditorMaximum] = useState(640);
   const user = useUser();
   const policy = useResource<Policy>(`/clusters/${cluster.id}/policy`);
@@ -184,6 +181,19 @@ export function ConsoleWorkspace({
     };
     const observer = new ResizeObserver(measure);
     observer.observe(element);
+    measure();
+    return () => observer.disconnect();
+  }, []);
+  // The editor height is the height of the editor and the pre-flight bar
+  // together. The bar keeps the height its sentence needs (it wraps on a
+  // narrow screen) and is never cut; the editor gives way to it.
+  const [barHeight, setBarHeight] = useState(48);
+  useLayoutEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const measure = () => setBarHeight(bar.offsetHeight);
+    const observer = new ResizeObserver(measure);
+    observer.observe(bar);
     measure();
     return () => observer.disconnect();
   }, []);
@@ -249,7 +259,7 @@ export function ConsoleWorkspace({
   const analysis = useQuery({
     queryKey: ['analysis', cluster.id, analyzed],
     queryFn: ({ signal }) =>
-      request<Analysis>(`/clusters/${cluster.id}/analyze`, {
+      request<Checked>(`/clusters/${cluster.id}/analyze`, {
         ...json('POST', { sql: analyzed }),
         signal,
       }),
@@ -290,20 +300,32 @@ export function ConsoleWorkspace({
     !analysis.isPlaceholderData &&
     !!analysis.data &&
     !analysis.error;
-  const verdict = analysis.data?.verdict;
-  const needsApproval = verdict === 'requires_approval';
-  const canRun =
-    !running.isPending &&
-    analysisFresh &&
-    verdict !== 'deny' &&
-    !!sql.trim() &&
-    !(needsApproval && cluster.my_access === 'read');
+  // The server's pre-flight decides what the one button does; the verdict
+  // must agree, and the answer must be for the text in the editor.
+  const preflight = useMemo(
+    () => preflightOf(analysis.data, cluster.my_access),
+    [analysis.data, cluster.my_access],
+  );
+  const status = checkStatus({
+    hasSql: !!sql.trim(),
+    fresh: analysisFresh,
+    failed: !!analysis.error,
+    hasAnswer: !!analysis.data,
+  });
+  const can = gate({
+    analysis: analysis.data,
+    preflight,
+    status,
+    access: cluster.my_access,
+    busy: running.isPending,
+  });
   const run = () => {
-    if (!canRun || queryId.current) return;
-    if (needsApproval) {
+    if (queryId.current) return;
+    if (can.request) {
       setReasonOpen(true);
       return;
     }
+    if (!can.run) return;
     const id = crypto.randomUUID();
     queryId.current = id;
     setExecutionError(undefined);
@@ -449,9 +471,22 @@ export function ConsoleWorkspace({
     () => void refetchAnalysis(),
     [refetchAnalysis],
   );
+  const openReason = useCallback(() => setReasonOpen(true), []);
+  const runNow = useCallback(() => runRef.current(), [runRef]);
+  const cancelNow = useCallback(() => cancelRef.current(), [cancelRef]);
+  const openSafety = useCallback(() => setSafetyOpen(true), []);
+  const preflightFix = preflight?.fix;
+  const applyPreflightFix = useCallback(() => {
+    if (preflightFix) applyFix(preflightFix);
+  }, [preflightFix, applyFix]);
   return (
     <div
-      style={{ '--editor-height': `${editorHeight}px` } as CSSProperties}
+      style={
+        {
+          '--editor-height': `${editorHeight}px`,
+          '--preflight-height': `${barHeight}px`,
+        } as CSSProperties
+      }
       className="console-workspace"
     >
       <div
@@ -511,43 +546,6 @@ export function ConsoleWorkspace({
               >
                 <PanelLeft size={16} />
               </Button>
-              <Button
-                variant="primary"
-                className={
-                  needsApproval ? undefined : `run-${cluster.environment}`
-                }
-                disabled={!canRun}
-                title={
-                  verdict === 'deny'
-                    ? analysis.data?.issues.find(
-                        (issue) => issue.severity === 'block',
-                      )?.message
-                    : undefined
-                }
-                onClick={run}
-              >
-                <Play size={14} />
-                {running.isPending
-                  ? 'Running…'
-                  : needsApproval
-                    ? 'Request approval…'
-                    : cluster.environment === 'production'
-                      ? 'Run on production'
-                      : cluster.environment === 'staging'
-                        ? 'Run on staging'
-                        : 'Run'}
-                {!needsApproval && <kbd>⌘ ↵</kbd>}
-              </Button>
-              {running.isPending && (
-                <Button
-                  variant="danger"
-                  disabled={cancel.isPending}
-                  onClick={() => cancelRef.current()}
-                >
-                  <Square size={12} />
-                  Cancel
-                </Button>
-              )}
               <Button
                 aria-label="Format SQL"
                 title="Format SQL"
@@ -614,29 +612,24 @@ export function ConsoleWorkspace({
               schema={schema.data}
               readOnly={running.isPending}
             />
-            <div className="editor-hint">
-              {!safetyOpen && (
-                <Button
-                  variant="ghost"
-                  className={`compact-verdict ${verdict === 'allow' ? 'success-text' : verdict === 'deny' ? 'error-text' : 'warning-text'}`}
-                  aria-label="Open safety analysis"
-                  onClick={() => setSafetyOpen(true)}
-                >
-                  {analysis.error
-                    ? 'Analysis unavailable'
-                    : !analysisFresh
-                      ? 'Analyzing…'
-                      : verdict === 'allow'
-                        ? 'Safe to run'
-                        : needsApproval
-                          ? 'Needs approval'
-                          : 'Blocked'}
-                </Button>
-              )}
-
-              <span>⌘ / Ctrl + Enter to run</span>
-              <span>Esc to cancel</span>
-            </div>
+          </div>
+          <div ref={barRef} className="preflight-row">
+            <PreflightBar
+              preflight={preflight}
+              status={status}
+              can={can}
+              running={running.isPending}
+              cancelling={cancel.isPending}
+              environment={cluster.environment}
+              clusterId={cluster.id}
+              detailsOpen={safetyOpen}
+              onRun={runNow}
+              onRequest={openReason}
+              onApplyFix={applyPreflightFix}
+              onCancel={cancelNow}
+              onRetry={retryAnalysis}
+              onDetails={openSafety}
+            />
           </div>
           <SplitHandle
             value={editorHeight}
@@ -684,6 +677,7 @@ export function ConsoleWorkspace({
               retry={retryAnalysis}
               suggestions={suggestions}
               onApplyFix={applyFix}
+              showVerdict={false}
             />
           </aside>
         )}

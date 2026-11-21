@@ -12,20 +12,21 @@ use axum::{
     Extension, Json,
 };
 use serde_json::Value;
-pub use vda_core::query::{QueryInput, QueryResult};
-use vda_guard::Analysis;
+pub use vda_core::query::{Checked, QueryInput, QueryResult};
 
 /// Analyze without target I/O, under the caller's current access and policy.
+/// The answer is the analysis with one more field, `preflight`: the state of
+/// the check, why, and the one next step for this caller.
 pub async fn analyze(
     State(state): State<AppState>,
     Extension(user): Extension<User>,
     Extension(ip): Extension<ClientIp>,
     Path(id): Path<String>,
     Input(body): Input<QueryInput>,
-) -> Result<Json<Analysis>, ApiError> {
+) -> Result<Json<Checked>, ApiError> {
     let cluster_id = db::id(&id)?;
     Ok(Json(
-        vda_core::query::analyze(&state.core, &user.actor(), cluster_id, &body.sql, ip.0).await?,
+        vda_core::query::check(&state.core, &user.actor(), cluster_id, &body.sql, ip.0).await?,
     ))
 }
 /// Execute a guarded query for the caller.

@@ -167,6 +167,8 @@ async fn serve(
     // All HTTP handlers have drained; close the sender side through receiver.close.
     // Let bounded queued events finish before closing metadata storage.
     writer.await?;
+    // The record of agent steps drains its own queue the same way.
+    state.steps.finish().await;
     // The sealer stopped with the other workers. Seal what the drain wrote,
     // as far as it can be sealed, and leave the head in the log.
     audit_chain.await?;

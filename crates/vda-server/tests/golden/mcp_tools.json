@@ -121,7 +121,7 @@
       "name": "check_sql"
     },
     {
-      "description": "Run one guarded read-only statement and return its rows. Protected values come back masked.",
+      "description": "Run one guarded read-only statement and return its rows. Protected values come back masked. One answer holds at most `max_rows` rows and about 1 MB of row data. When the query fetched more rows than the answer holds, the answer has `next_cursor` and `rows_left`: call fetch_rows with that cursor to read the rest. `truncated` is true when rows were left out of this answer. `truncated` with no `next_cursor` means that no more rows are held for you: the database had more rows than one query may fetch here, or the rest could not be kept. Narrow the query then (filters, fewer columns, an aggregate).",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -156,6 +156,38 @@
         "type": "object"
       },
       "name": "run_query"
+    },
+    {
+      "description": "Read the next rows of a result that run_query already fetched. It runs nothing on the database and takes nothing from your hourly query budget. Pass the `next_cursor` of the last answer. The answer is like run_query's, without `ran_as`, and has a new `next_cursor` while rows are left. A cursor works once, and only for the token that ran the query. The rows are the ones that one query fetched, already masked: you never get more rows than that query was allowed. They are kept for 5 minutes after the last call, in the memory of the gateway node that ran the query. While you are paused or your token is revoked, this tool is refused like every other tool. If you can no longer reach the database, the answer is `forbidden` or `not_found`, and `network_denied` if your network address is no longer accepted. In every other case the rows are gone and the answer is `result_expired`: the time ran out, the cursor was used, you were paused or changed since the query, the database's policy changed, the gateway needed the memory, or the call reached another gateway node. Then call run_query again, with a narrower question so that the result needs fewer pages.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "The `next_cursor` of the last run_query or fetch_rows answer.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "max_rows": {
+            "default": 100,
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "task": {
+            "description": "One sentence: what you are doing and why. It is kept in the audit record.",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "cursor"
+        ],
+        "type": "object"
+      },
+      "name": "fetch_rows"
     },
     {
       "description": "Ask for a write: one plain INSERT, UPDATE or DELETE. No write runs now, and you never see rows. Your `task` is the reason the approver reads. A person who is not your owner approves it, and a person runs it. Use only built-in functions: a statement that calls a function defined in the database cannot be approved. On PostgreSQL: WITH, ONLY, ON CONFLICT, RETURNING, parameters, joins in the target and tuple assignments such as SET (a, b) = (...) are refused; the statement is first checked as your own read; a person then tries the write and rolls it back, and later it runs only on the rows that trial changed. When those rows cannot be named (INSERT, a view, some other targets), only the number of changed rows must match. On MySQL there is no trial run and nothing is bound. Five refused requests in a row stop this tool for 10 minutes. Keep the approval_id and follow it with get_approval.",

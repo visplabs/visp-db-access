@@ -61,6 +61,9 @@ pub struct AgentIdentity {
     pub agent_id: Uuid,
     pub agent_name: String,
     pub token_id: Uuid,
+    /// When the agent was last changed, paused or resumed. Work that is kept
+    /// for the agent between calls carries this mark and ends when it moves.
+    pub agent_updated_at: chrono::DateTime<chrono::Utc>,
     /// The owner, narrowed by the agent's limits.
     pub actor: Actor,
 }
@@ -68,6 +71,7 @@ pub struct AgentIdentity {
 struct Row {
     agent_id: Uuid,
     agent_name: String,
+    agent_updated_at: chrono::DateTime<chrono::Utc>,
     max_level: String,
     token_id: Uuid,
     owner_id: Uuid,
@@ -80,7 +84,8 @@ struct Row {
 pub async fn authenticate(pool: &sqlx::PgPool, token: &str) -> Result<AgentIdentity, ApiError> {
     let hash = digest(token).ok_or_else(ApiError::unauthenticated)?;
     let row: Option<Row> = sqlx::query_as(
-        "SELECT a.id AS agent_id,a.name AS agent_name,a.max_level,t.id AS token_id,
+        "SELECT a.id AS agent_id,a.name AS agent_name,a.updated_at AS agent_updated_at,
+         a.max_level,t.id AS token_id,
          u.id AS owner_id,u.email AS owner_email,u.org_role AS owner_role,
          COALESCE((SELECT array_agg(cluster_id) FROM agent_clusters WHERE agent_id=a.id),
          ARRAY[]::uuid[]) AS clusters
@@ -108,6 +113,7 @@ pub async fn authenticate(pool: &sqlx::PgPool, token: &str) -> Result<AgentIdent
         agent_id: row.agent_id,
         agent_name: row.agent_name,
         token_id: row.token_id,
+        agent_updated_at: row.agent_updated_at,
         actor: Actor {
             user_id: row.owner_id,
             email: row.owner_email,
