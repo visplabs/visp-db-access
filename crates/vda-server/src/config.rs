@@ -95,6 +95,22 @@ pub struct Config {
     /// is set; an empty value counts as not set.
     #[arg(long, env = "VDA_PUBLIC_URL")]
     pub public_url: Option<String>,
+    /// Days the record of agent steps and sessions is kept. Older steps are
+    /// deleted by the maintenance cycle.
+    #[arg(long, env = "VDA_AGENT_STEPS_RETENTION_DAYS", default_value = "30")]
+    pub agent_steps_retention_days: u32,
+    /// Memory, in bytes, that this node may use for rows it holds for
+    /// `fetch_rows`, for all agents together. 0 holds nothing: an agent then
+    /// gets no cursor and narrows its query instead.
+    #[arg(long, env = "VDA_HELD_RESULTS_MAX_BYTES", default_value = "268435456")]
+    pub held_results_max_bytes: u64,
+    /// The same bound for the rows held for one agent.
+    #[arg(
+        long,
+        env = "VDA_HELD_RESULTS_AGENT_MAX_BYTES",
+        default_value = "67108864"
+    )]
+    pub held_results_agent_max_bytes: u64,
 }
 impl Config {
     /// Validate options before starting services.
@@ -116,6 +132,17 @@ impl Config {
             self.bootstrap_admin_email.is_some() == self.bootstrap_admin_password.is_some(),
             "both bootstrap admin options must be supplied together"
         );
+        anyhow::ensure!(
+            (1..=3650).contains(&self.agent_steps_retention_days),
+            "VDA_AGENT_STEPS_RETENTION_DAYS must be 1..=3650"
+        );
+        // The bound for one agent is never more than the bound for the node;
+        // a larger value is cut to it when the store is made.
+        anyhow::ensure!(
+            self.held_results_max_bytes <= MAX_HELD_BYTES
+                && self.held_results_agent_max_bytes <= MAX_HELD_BYTES,
+            "VDA_HELD_RESULTS_MAX_BYTES and VDA_HELD_RESULTS_AGENT_MAX_BYTES must be at most 64 GiB"
+        );
         if let Some(value) = self.public_url.as_deref().filter(|v| !v.trim().is_empty()) {
             anyhow::ensure!(
                 origin(value).is_some(),
@@ -130,6 +157,9 @@ impl Config {
         self.public_url.as_deref().and_then(origin)
     }
 }
+/// The most memory that can be set aside for rows held for `fetch_rows`.
+const MAX_HELD_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+
 /// An `http` or `https` origin: a scheme, a host and an optional port, with
 /// no user name, password, path, query or fragment. A link is built by
 /// adding a path to it, so anything more could change where the link goes.
@@ -179,7 +209,48 @@ impl std::ops::Deref for Cidrs {
 
 #[cfg(test)]
 mod tests {
-    use super::origin;
+    #![allow(clippy::panic)]
+    use super::{origin, Cli, MAX_HELD_BYTES};
+    use clap::Parser;
+
+    #[test]
+    fn the_agent_record_and_held_rows_settings_have_safe_defaults_and_bounds() {
+        let parse = |args: &[&str]| {
+            let base = [
+                "test",
+                "--database-url",
+                "postgres://x",
+                "--master-key",
+                "x",
+            ];
+            Cli::try_parse_from(base.iter().chain(args).copied()).map(|cli| cli.config)
+        };
+        let defaults = parse(&[]).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(defaults.agent_steps_retention_days, 30);
+        assert_eq!(defaults.held_results_max_bytes, 256 * 1024 * 1024);
+        assert_eq!(defaults.held_results_agent_max_bytes, 64 * 1024 * 1024);
+        assert!(defaults.validate().is_ok());
+        // Holding nothing is one setting: the bound for the node.
+        for accepted in [
+            &["--held-results-max-bytes", "0"][..],
+            &["--agent-steps-retention-days", "1"],
+            &["--agent-steps-retention-days", "3650"],
+            &["--held-results-agent-max-bytes", "0"],
+        ] {
+            let config = parse(accepted).unwrap_or_else(|error| panic!("{error}"));
+            assert!(config.validate().is_ok(), "{accepted:?}");
+        }
+        let too_much = (MAX_HELD_BYTES + 1).to_string();
+        for refused in [
+            &["--agent-steps-retention-days", "0"][..],
+            &["--agent-steps-retention-days", "3651"],
+            &["--held-results-max-bytes", &too_much],
+            &["--held-results-agent-max-bytes", &too_much],
+        ] {
+            let config = parse(refused).unwrap_or_else(|error| panic!("{error}"));
+            assert!(config.validate().is_err(), "{refused:?}");
+        }
+    }
 
     #[test]
     fn the_public_address_is_an_origin_and_nothing_more() {

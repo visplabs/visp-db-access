@@ -384,6 +384,10 @@ pub(crate) async fn update(
     tx.commit().await?;
     if paused == Some(true) {
         stop(&state, id, None);
+    } else {
+        // The agent changed: what was held for it was fetched under its old
+        // shape. Its `updated_at` moved, so other nodes refuse theirs too.
+        state.held.drop_where("changed", |held| held.agent_id == id);
     }
     Ok(Json(agent(&state.db, id).await?))
 }
@@ -402,15 +406,25 @@ pub(crate) async fn revoke_for_owner(
     .await?;
     Ok(result.rows_affected())
 }
-/// Cancel what a person's agents are running on this node. Their own queries go on.
+/// Cancel what a person's agents are running on this node, and drop the rows
+/// held for them. Their own queries go on.
 pub(crate) fn stop_for_owner(state: &AppState, owner: Uuid) {
     state
         .core
         .cancel_where(|query| query.user_id == owner && query.agent.is_some());
+    state
+        .held
+        .drop_where("stopped", |held| held.owner_id == owner);
 }
-/// Cancel what an agent is running on this node, for all its tokens or for one.
-/// New requests are refused by authentication; this ends the ones in flight.
+/// Cancel what an agent is running on this node, for all its tokens or for
+/// one, and drop the rows held for them. New requests are refused by
+/// authentication; this ends the ones in flight. Rows held on another node
+/// end by themselves: a held result carries the agent's `updated_at`, which
+/// a pause moves, and a revoked token or a deleted agent cannot ask for them.
 fn stop(state: &AppState, agent: Uuid, token: Option<Uuid>) {
+    state.held.drop_where("stopped", |held| {
+        held.agent_id == agent && token.is_none_or(|token| token == held.token_id)
+    });
     let stopped = state.core.cancel_where(|query| {
         query
             .agent

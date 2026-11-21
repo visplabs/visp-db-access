@@ -207,6 +207,7 @@ impl Fixture {
         self.state.core.tasks.close();
         self.state.core.tasks.wait().await;
         self.state.stop.cancel();
+        self.state.steps.finish().await;
         self.writer.await.unwrap();
         self.state.core.pools.close().await;
         self.db.close().await;
@@ -2293,6 +2294,7 @@ async fn agent_door_speaks_the_protocol_and_refuses_everything_else() {
             "describe_table",
             "check_sql",
             "run_query",
+            "fetch_rows",
             "propose_write",
             "get_approval",
             "withdraw"
@@ -5894,6 +5896,7 @@ async fn a_failing_receiver_is_retried_then_given_up_and_a_redirect_is_not_follo
     }
     assert_eq!(last.hits().len(), 1);
     f.state.stop.cancel();
+    f.state.steps.finish().await;
     tokio::time::timeout(std::time::Duration::from_secs(10), worker)
         .await
         .expect("the worker ends at shutdown")
@@ -6327,6 +6330,7 @@ async fn a_settings_change_on_one_node_is_seen_by_the_next_state_change_on_anoth
         .any(|hit| hit.header("x-vda-event") == "approval.rejected"));
 
     other.stop.cancel();
+    other.steps.finish().await;
     other_writer.await.unwrap();
     f.close().await;
 }

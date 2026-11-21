@@ -120,8 +120,9 @@ and phone sizes in both themes. Screenshots they write go to the ignored
 
 With `dev-local.sh` running, `scripts/e2e-smoke.sh` drives the real API: sign-in,
 project and cluster setup, health and schema, masked and truncated reads, blocked
-statements, scoped grants, the full approval lifecycle, history and audit, and
-at its end that every audit row of the run is sealed and the hash chain is
+statements, scoped grants, the full approval lifecycle, history and audit, an
+agent session with its steps and one `fetch_rows` page, the pre-flight answer,
+and at its end that every audit row of the run is sealed and the hash chain is
 intact. Set
 `VDA_SMOKE_MYSQL_HOST=127.0.0.1` (and `VDA_SMOKE_MYSQL_PORT=33307` for MariaDB)
 to add the MySQL section, and `VDA_DISCOVERY_FAKE_FIXTURE` to add discovery (see

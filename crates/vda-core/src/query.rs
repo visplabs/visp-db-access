@@ -95,8 +95,27 @@ fn for_actor(mut policy: Policy, actor: &Actor, approved: bool) -> Policy {
 }
 /// Guard verdict plus the masking checks, for one statement text.
 fn judge(sql: &str, cluster: &ClusterRecord, level: AccessLevel, policy: &Policy) -> Analysis {
-    let mut analysis = vda_guard::analyze(sql, dialect(cluster), level, &policy.guard());
-    crate::masking::harden_analysis(&mut analysis, &policy.masked_columns, sql, dialect(cluster));
+    let checked = |sql: &str| {
+        let mut analysis = vda_guard::analyze(sql, dialect(cluster), level, &policy.guard());
+        crate::masking::harden_analysis(
+            &mut analysis,
+            &policy.masked_columns,
+            sql,
+            dialect(cluster),
+        );
+        analysis
+    };
+    let mut analysis = checked(sql);
+    // A refused statement keeps a suggestion only when it is a fix that
+    // resolves the block: its SQL must pass the same two checks.
+    if analysis.verdict == Verdict::Deny {
+        analysis.suggestions.retain(|suggestion| {
+            suggestion
+                .fix
+                .as_ref()
+                .is_some_and(|fix| checked(&fix.sql).verdict != Verdict::Deny)
+        });
+    }
     analysis
 }
 /// Analyze without target I/O, under the actor's current access and policy.
@@ -107,6 +126,40 @@ pub async fn analyze(
     sql: &str,
     ip: std::net::IpAddr,
 ) -> Result<Analysis, ApiError> {
+    Ok(analyze_as(core, actor, cluster_id, sql, ip).await?.0)
+}
+/// An analysis with the pre-flight answer made from it: the state of the
+/// check, why, and the one next step for the person who asked.
+#[derive(Debug, Clone, Serialize)]
+pub struct Checked {
+    #[serde(flatten)]
+    pub analysis: Analysis,
+    pub preflight: crate::teach::Preflight,
+}
+/// Analyze for a person at the console: the analysis, and what they can do
+/// next with their access level on this database.
+pub async fn check(
+    core: &Core,
+    actor: &Actor,
+    cluster_id: Uuid,
+    sql: &str,
+    ip: std::net::IpAddr,
+) -> Result<Checked, ApiError> {
+    let (analysis, asker) = analyze_as(core, actor, cluster_id, sql, ip).await?;
+    let preflight = crate::teach::preflight(&analysis, asker);
+    Ok(Checked {
+        analysis,
+        preflight,
+    })
+}
+/// The analysis, with who asked and the policy facts it was made under.
+async fn analyze_as(
+    core: &Core,
+    actor: &Actor,
+    cluster_id: Uuid,
+    sql: &str,
+    ip: std::net::IpAddr,
+) -> Result<(Analysis, crate::teach::Asker), ApiError> {
     validate_sql(sql)?;
     let (access, policy) = tokio::join!(
         crate::access::require_level_effective(&core.db, actor, cluster_id, AccessLevel::Read),
@@ -117,7 +170,13 @@ pub async fn analyze(
     if !crate::network::allowed(ip, &crate::network::parse_cidrs(&policy.allowed_cidrs)?) {
         return Err(ApiError::forbidden());
     }
-    Ok(judge(sql, &c, level, &for_actor(policy, actor, false)))
+    let policy = for_actor(policy, actor, false);
+    let asker = crate::teach::Asker {
+        level,
+        max_rows: policy.max_rows,
+        cost_limit: policy.max_cost.is_some(),
+    };
+    Ok((judge(sql, &c, level, &policy), asker))
 }
 struct Registration {
     core: Core,
@@ -147,8 +206,33 @@ pub async fn run(
         ip,
         (approved, None),
         Mode::Run,
+        &mut None,
     )
     .await
+}
+
+/// Run the pipeline, and also say which history row records the attempt.
+/// The id is `None` when the attempt was refused before it was recorded.
+pub async fn run_traced(
+    core: &Core,
+    actor: &Actor,
+    cluster_id: Uuid,
+    body: QueryInput,
+    ip: std::net::IpAddr,
+) -> (Option<Uuid>, Result<QueryResult, ApiError>) {
+    let mut recorded = None;
+    let result = run_inner(
+        core,
+        actor,
+        cluster_id,
+        body,
+        ip,
+        (false, None),
+        Mode::Run,
+        &mut recorded,
+    )
+    .await;
+    (recorded, result)
 }
 
 /// Preview a write: run it in a transaction that is always rolled back.
@@ -179,6 +263,7 @@ pub async fn dry_run(
         ip,
         (false, None),
         Mode::DryRun,
+        &mut None,
     )
     .await?;
     result.preview.ok_or_else(ApiError::internal)
@@ -237,10 +322,12 @@ pub async fn run_approved_bound(
         ip,
         (true, Some(timeout_ms)),
         mode,
+        &mut None,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_inner(
     core: &Core,
     actor: &Actor,
@@ -249,6 +336,7 @@ async fn run_inner(
     ip: std::net::IpAddr,
     approval: (bool, Option<u64>),
     mode: Mode,
+    recorded: &mut Option<Uuid>,
 ) -> Result<QueryResult, ApiError> {
     let (approved, timeout_ms) = approval;
     // A dry run changes nothing, so it may preview a write that needs approval.
@@ -359,6 +447,7 @@ async fn run_inner(
         .await
         .map_err(unavailable)?;
     tx.commit().await.map_err(unavailable)?;
+    *recorded = Some(history_id);
     let agent = actor.agent.is_some();
     let cancel_on_drop = token.clone().drop_guard();
     let core = core.clone();

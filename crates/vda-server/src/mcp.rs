@@ -37,9 +37,16 @@ const MAX_RESULT_BYTES: usize = 1024 * 1024;
 /// from flooding the gateway and from burying its own audit trail.
 const CALLS_PER_MINUTE: u32 = 120;
 
+/// Calls of one agent in one minute that were refused before a tool ran (too
+/// fast, or arguments that do not fit) and are still recorded as steps. More
+/// than this in a minute are counted in a metric and not recorded, so a
+/// flood cannot fill the record.
+const REFUSED_STEPS_PER_MINUTE: u32 = 30;
+
 const INSTRUCTIONS: &str = "This server gives guarded access to production databases. \
 Call list_databases first. Use search_schema and describe_table to learn the structure. \
 Call check_sql before run_query when you are not sure a statement is accepted. \
+When a run_query answer has `next_cursor`, call fetch_rows with it to read the rest of the rows. \
 Every call needs a `task`: one sentence that says what you are doing and why. \
 You can read data; you cannot change it on your own. \
 To change data, call propose_write: people check, approve and run the write, and you follow it with get_approval. \
@@ -168,12 +175,13 @@ fn tool_result(outcome: Result<Value, ApiError>) -> Value {
     })
 }
 
-const TOOL_NAMES: [&str; 8] = [
+const TOOL_NAMES: [&str; 9] = [
     "list_databases",
     "search_schema",
     "describe_table",
     "check_sql",
     "run_query",
+    "fetch_rows",
     "propose_write",
     "get_approval",
     "withdraw",
@@ -233,11 +241,42 @@ fn tools() -> Value {
         ),
         tool(
             "run_query",
-            "Run one guarded read-only statement and return its rows. Protected values come back masked.",
+            "Run one guarded read-only statement and return its rows. Protected values come back masked. \
+             One answer holds at most `max_rows` rows and about 1 MB of row data. \
+             When the query fetched more rows than the answer holds, the answer has `next_cursor` and `rows_left`: \
+             call fetch_rows with that cursor to read the rest. \
+             `truncated` is true when rows were left out of this answer. \
+             `truncated` with no `next_cursor` means that no more rows are held for you: \
+             the database had more rows than one query may fetch here, or the rest could not be kept. \
+             Narrow the query then (filters, fewer columns, an aggregate).",
             json!({"task": task, "database": database,
                 "sql": {"type":"string","minLength":1,"description":"One SQL statement."},
                 "max_rows": {"type":"integer","minimum":1,"maximum":MAX_ROWS,"default":DEFAULT_ROWS}}),
             &["task", "database", "sql"],
+        ),
+        tool(
+            "fetch_rows",
+            &format!(
+                "Read the next rows of a result that run_query already fetched. \
+                 It runs nothing on the database and takes nothing from your hourly query budget. \
+                 Pass the `next_cursor` of the last answer. The answer is like run_query's, without `ran_as`, \
+                 and has a new `next_cursor` while rows are left. A cursor works once, and only for the token that ran the query. \
+                 The rows are the ones that one query fetched, already masked: you never get more rows than that query was allowed. \
+                 They are kept for {} minutes after the last call, in the memory of the gateway node that ran the query. \
+                 While you are paused or your token is revoked, this tool is refused like every other tool. \
+                 If you can no longer reach the database, the answer is `forbidden` or `not_found`, \
+                 and `network_denied` if your network address is no longer accepted. \
+                 In every other case the rows are gone and the answer is `result_expired`: the time ran out, the cursor was used, \
+                 you were paused or changed since the query, the database's policy changed, the gateway needed the memory, \
+                 or the call reached another gateway node. \
+                 Then call run_query again, with a narrower question so that the result needs fewer pages.",
+                crate::held::IDLE.as_secs() / 60
+            ),
+            json!({"task": task,
+                "cursor": {"type":"string","minLength":1,"maxLength":200,
+                    "description":"The `next_cursor` of the last run_query or fetch_rows answer."},
+                "max_rows": {"type":"integer","minimum":1,"maximum":MAX_ROWS,"default":DEFAULT_ROWS}}),
+            &["task", "cursor"],
         ),
         tool(
             "propose_write",
@@ -286,6 +325,7 @@ struct Arguments {
     sql: Option<String>,
     max_rows: Option<usize>,
     approval_id: Option<Uuid>,
+    cursor: Option<String>,
 }
 /// The argument names each tool takes, as its input schema says.
 fn accepted(tool: &str) -> &'static [&'static str] {
@@ -294,22 +334,153 @@ fn accepted(tool: &str) -> &'static [&'static str] {
         "describe_table" => &["task", "database", "table"],
         "check_sql" => &["task", "database", "sql"],
         "run_query" => &["task", "database", "sql", "max_rows"],
+        "fetch_rows" => &["task", "cursor", "max_rows"],
         "propose_write" => &["task", "database", "sql"],
         "get_approval" | "withdraw" => &["task", "approval_id"],
         _ => &["task"],
+    }
+}
+/// How much of an argument name that a tool does not take is said back.
+const UNKNOWN_NAME_CHARS: usize = 64;
+/// The first `most` characters of a text, with an ellipsis when it was cut.
+fn shortened(text: &str, most: usize) -> String {
+    match text.char_indices().nth(most) {
+        Some((end, _)) => format!("{}…", text.get(..end).unwrap_or_default()),
+        None => text.to_owned(),
+    }
+}
+/// The rows one answer may hold: what the agent asked for, or the default,
+/// and never more than the most. Zero is refused, as the input schema says.
+fn row_limit(asked: Option<usize>) -> Result<usize, ApiError> {
+    match asked {
+        Some(0) => Err(ApiError::validation("`max_rows` must be 1 or more")),
+        Some(rows) => Ok(rows.min(MAX_ROWS)),
+        None => Ok(DEFAULT_ROWS),
     }
 }
 fn required<T>(value: Option<T>, name: &str) -> Result<T, ApiError> {
     value.ok_or_else(|| ApiError::validation(format!("`{name}` is required for this tool")))
 }
 
-/// Run one tool for an agent, then record that it was called and why.
+/// What a tool call leaves behind for the record of steps, filled in as the
+/// call goes on.
+#[derive(Debug, Default)]
+struct Trace {
+    /// Whether the call reached a tool: its arguments fit and its task is valid.
+    reached: bool,
+    task: Option<String>,
+    database: Option<Uuid>,
+    /// The SQL of the call, already cut to what a step keeps.
+    sql: Option<(String, bool)>,
+    verdict: Option<String>,
+    /// The fix inside a successful answer (`check_sql` on a refused statement).
+    fix: Option<vda_core::teach::Fix>,
+    row_count: Option<usize>,
+    history_id: Option<Uuid>,
+    approval_id: Option<Uuid>,
+}
+impl Trace {
+    /// What can be read from arguments that may not fit the tool at all.
+    /// A task is kept only when it is a valid one: it is shown to people.
+    fn of(arguments: &Value) -> Self {
+        let text = |name: &str| arguments.get(name).and_then(Value::as_str);
+        Self {
+            task: text("task")
+                .filter(|task| vda_core::query::validate_task(task).is_ok())
+                .map(|task| task.trim().to_owned()),
+            database: text("database").and_then(|id| id.parse().ok()),
+            sql: text("sql").map(crate::steps::clip_sql),
+            ..Self::default()
+        }
+    }
+    fn verdict(&mut self, verdict: vda_guard::Verdict) {
+        self.verdict = serde_json::to_value(verdict)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned));
+    }
+}
+
+/// Run one tool for an agent and record the call as a step of its session.
 async fn call(
     state: &AppState,
     identity: &AgentIdentity,
     ip: std::net::IpAddr,
     tool: &str,
     arguments: Value,
+) -> Result<Value, ApiError> {
+    let (started, at) = (Instant::now(), chrono::Utc::now());
+    let mut trace = Trace::of(&arguments);
+    let outcome = answer(state, identity, ip, tool, arguments, &mut trace).await;
+    if trace.reached || refused_step_fits(state, identity.agent_id).await {
+        state
+            .steps
+            .record(step(identity, tool, trace, &outcome, started, at));
+    } else {
+        metrics::counter!("vda_agent_steps_suppressed_total").increment(1);
+    }
+    outcome
+}
+/// Whether one more call that was refused before a tool ran may be recorded
+/// in this minute. The bound keeps a flood of such calls cheap.
+async fn refused_step_fits(state: &AppState, agent: Uuid) -> bool {
+    state
+        .agent_refused_steps
+        .get_with(agent, async { Default::default() })
+        .await
+        .fetch_add(1, Ordering::Relaxed)
+        < REFUSED_STEPS_PER_MINUTE
+}
+/// The step for a call that has ended. A refusal carries the fix the agent
+/// was given; the guard's verdict comes from the call or from the refusal.
+fn step(
+    identity: &AgentIdentity,
+    tool: &str,
+    trace: Trace,
+    outcome: &Result<Value, ApiError>,
+    started: Instant,
+    at: chrono::DateTime<chrono::Utc>,
+) -> crate::steps::Step {
+    let refused = outcome.as_ref().err();
+    let fix = refused.map(vda_core::teach::for_error).or(trace.fix);
+    let verdict = trace.verdict.or_else(|| {
+        let verdict = refused?.details.get("verdict")?.as_str()?;
+        matches!(verdict, "allow" | "requires_approval" | "deny").then(|| verdict.to_owned())
+    });
+    let (sql, sql_truncated) = match trace.sql {
+        Some((sql, cut)) => (Some(sql), cut),
+        None => (None, false),
+    };
+    crate::steps::Step {
+        id: Uuid::new_v4(),
+        agent_id: identity.agent_id,
+        token_id: identity.token_id,
+        tool: tool.to_owned(),
+        task: trace.task,
+        database: trace.database,
+        sql,
+        sql_truncated,
+        verdict,
+        outcome: refused.map_or("ok", |error| error.code).to_owned(),
+        fix: fix.map(|fix| (fix.action.to_owned(), fix.hint)),
+        row_count: trace
+            .row_count
+            .map(|rows| i32::try_from(rows).unwrap_or(i32::MAX)),
+        elapsed_ms: i32::try_from(started.elapsed().as_millis()).unwrap_or(i32::MAX),
+        history_id: trace.history_id,
+        approval_id: trace.approval_id,
+        at,
+    }
+}
+
+/// Check the call rate and the arguments, run the tool, then record in the
+/// audit log that it was called and why.
+async fn answer(
+    state: &AppState,
+    identity: &AgentIdentity,
+    ip: std::net::IpAddr,
+    tool: &str,
+    arguments: Value,
+    trace: &mut Trace,
 ) -> Result<Value, ApiError> {
     let calls = state
         .agent_calls
@@ -330,16 +501,24 @@ async fn call(
             .find(|name| !accepted(tool).contains(&name.as_str()))
     });
     if let Some(name) = unknown {
+        // The name is the agent's own text and can be as long as the request.
+        // The message goes into the answer and into the recorded step, so
+        // only its beginning is said.
         return Err(ApiError::validation(format!(
-            "`{name}` is not an argument of this tool"
+            "`{}` is not an argument of this tool",
+            shortened(name, UNKNOWN_NAME_CHARS)
         )));
     }
     let arguments: Arguments = serde_json::from_value(arguments)
         .map_err(|_| ApiError::validation("Arguments do not match the tool's input schema"))?;
     vda_core::query::validate_task(&arguments.task)?;
-    let database = arguments.database;
     let task = arguments.task.trim().to_owned();
-    let outcome = run_tool(state, identity, ip, tool, arguments).await;
+    trace.reached = true;
+    trace.task = Some(task.clone());
+    trace.database = arguments.database;
+    trace.sql = arguments.sql.as_deref().map(crate::steps::clip_sql);
+    trace.approval_id = arguments.approval_id;
+    let outcome = run_tool(state, identity, ip, tool, arguments, trace).await;
     // Queries are in query history with their task. This event covers every
     // tool, so a person can read an agent's whole trail in one place.
     let event = crate::audit::Event {
@@ -352,7 +531,7 @@ async fn call(
         details: json!({
             "tool": tool,
             "task": task,
-            "database": database,
+            "database": trace.database,
             "outcome": outcome.as_ref().err().map_or("ok", |error| error.code),
         }),
         created_at: chrono::Utc::now(),
@@ -377,6 +556,7 @@ async fn run_tool(
     ip: std::net::IpAddr,
     tool: &str,
     arguments: Arguments,
+    trace: &mut Trace,
 ) -> Result<Value, ApiError> {
     let actor = &identity.actor;
     match tool {
@@ -394,6 +574,11 @@ async fn run_tool(
         "withdraw" => {
             let id = required(arguments.approval_id, "approval_id")?;
             return crate::approvals::withdraw_for_agent(state, identity, id, ip).await;
+        }
+        "fetch_rows" => {
+            let cursor = required(arguments.cursor, "cursor")?;
+            let rows = row_limit(arguments.max_rows)?;
+            return fetch_rows(state, identity, ip, &cursor, rows, trace).await;
         }
         _ => {}
     }
@@ -479,20 +664,29 @@ async fn run_tool(
             let fix = match analysis.verdict {
                 vda_guard::Verdict::Allow => None,
                 vda_guard::Verdict::Deny => vda_core::teach::strongest(blocking),
+                // With the analysis, as run_query's refusal has it: a read
+                // that locks rows is sent to an edit, a write to propose_write.
                 vda_guard::Verdict::RequiresApproval => Some(vda_core::teach::for_error(
-                    &ApiError::new(StatusCode::CONFLICT, "approval_required", ""),
+                    &ApiError::new(StatusCode::CONFLICT, "approval_required", "")
+                        .details(&analysis),
                 )),
+            };
+            trace.verdict(analysis.verdict);
+            trace.fix = fix.clone();
+            // A refused statement comes with `fix` only. The console's
+            // one-click repair for a person ("keep the first statement")
+            // is not advice for an agent, which is told to split its work.
+            let suggestions = match analysis.verdict {
+                vda_guard::Verdict::Deny => vec![],
+                _ => analysis.suggestions,
             };
             Ok(json!({"verdict": analysis.verdict, "risk": analysis.risk,
                 "issues": analysis.issues, "will_run_as": analysis.rewritten_sql,
-                "suggestions": analysis.suggestions, "fix": fix}))
+                "suggestions": suggestions, "fix": fix}))
         }
         "run_query" => {
             let sql = required(arguments.sql, "sql")?;
-            let rows = arguments
-                .max_rows
-                .unwrap_or(DEFAULT_ROWS)
-                .clamp(1, MAX_ROWS);
+            let rows = row_limit(arguments.max_rows)?;
             let input = |sql: String| QueryInput {
                 sql,
                 query_id: None,
@@ -525,66 +719,66 @@ async fn run_tool(
                 .details(json!({"retry_after_seconds": DENIAL_WINDOW_SECONDS})));
             }
             // A database that the agent cannot reach is a refusal too.
-            if let Err(error) = visible(state, identity, database, ip).await {
-                if counted(error.code) {
-                    *refused += 1;
+            let cluster = match visible(state, identity, database, ip).await {
+                Ok((cluster, _)) => cluster,
+                Err(error) => {
+                    if counted(error.code) {
+                        *refused += 1;
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
+            };
             let accepted = vda_core::query::analyze(&state.core, actor, database, &sql, ip)
                 .await
                 .is_ok_and(|analysis| analysis.verdict == vda_guard::Verdict::Allow);
-            let result = if accepted {
+            let (history, result) = if accepted {
                 drop(refused);
-                let result =
-                    vda_core::query::run(&state.core, actor, database, input(sql), ip, false).await;
+                let (history, result) =
+                    vda_core::query::run_traced(&state.core, actor, database, input(sql), ip).await;
                 if let Err(error) = &result {
                     if counted(error.code) {
                         *streak.lock().await += 1;
                     }
                 }
-                result
+                (history, result)
             } else {
                 // The pipeline records the refused attempt; it does no target I/O.
-                let result =
-                    vda_core::query::run(&state.core, actor, database, input(sql), ip, false).await;
+                let (history, result) =
+                    vda_core::query::run_traced(&state.core, actor, database, input(sql), ip).await;
                 if result.as_ref().is_err_and(|error| counted(error.code)) {
                     *refused += 1;
                 }
                 drop(refused);
-                result
+                (history, result)
             };
+            trace.history_id = history;
             // A success ends the streak.
             let mut result = result?;
             state.agent_denials.invalidate(&identity.agent_id).await;
-            let mut truncated = result.truncated || result.rows.len() > rows;
-            result.rows.truncate(rows);
-            let mut bytes = 0;
-            let fits = result
-                .rows
-                .iter()
-                .take_while(|row| {
-                    bytes += serde_json::to_string(row).map_or(usize::MAX, |text| text.len());
-                    bytes <= MAX_RESULT_BYTES
-                })
-                .count();
-            if fits < result.rows.len() {
-                result.rows.truncate(fits);
-                truncated = true;
-            }
-            if result.rows.is_empty() && fits == 0 && truncated && bytes > MAX_RESULT_BYTES {
-                // Not even one row fits. An empty answer would look like no data.
-                return Err(ApiError::new(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "result_too_large",
-                    "One row of this result is larger than a tool answer can hold",
-                ));
-            }
-            Ok(
-                json!({"query_id": result.query_id, "columns": result.columns,
-                "rows": result.rows, "row_count": result.rows.len(), "truncated": truncated,
-                "ran_as": result.executed_sql, "elapsed_ms": result.elapsed_ms}),
+            trace.verdict(result.analysis.verdict);
+            // The rows that one answer cannot hold stay in this node's
+            // memory for `fetch_rows`. They are the rows this run fetched
+            // and masked; nothing more is ever read for them.
+            let fetched = std::mem::take(&mut result.rows);
+            let mut held = crate::held::Held::of(
+                identity.agent_id,
+                identity.token_id,
+                actor.user_id,
+                database,
+                identity.agent_updated_at,
+                cluster.updated_at,
+                history,
+                &result,
             )
+            .with_rows(fetched);
+            let page = held.page(rows, MAX_RESULT_BYTES)?;
+            trace.row_count = Some(page.len());
+            let mut answer = rows_answer(state, held, page);
+            // What ran is said once, with the query. The pages do not repeat it.
+            if let Some(object) = answer.as_object_mut() {
+                object.insert("ran_as".into(), json!(result.executed_sql));
+            }
+            Ok(answer)
         }
         "propose_write" => {
             let sql = required(arguments.sql, "sql")?;
@@ -620,7 +814,15 @@ async fn run_tool(
                 Err(error) => Err(error),
             };
             match &result {
-                Ok(_) => *streak = ProposalStreak::default(),
+                Ok(request) => {
+                    *streak = ProposalStreak::default();
+                    // A proposal that was taken is a write that waits for a person.
+                    trace.verdict(vda_guard::Verdict::RequiresApproval);
+                    trace.approval_id = request
+                        .get("approval_id")
+                        .and_then(Value::as_str)
+                        .and_then(|id| id.parse().ok());
+                }
                 Err(error) if refuses_proposal(error) => streak.refuse(Instant::now()),
                 Err(_) => {}
             }
@@ -628,6 +830,73 @@ async fn run_tool(
         }
         _ => Err(ApiError::internal()),
     }
+}
+
+/// One answer of rows: a page, and the cursor for the rest when rows are
+/// left and could be kept. `truncated` says that rows were left out of this
+/// answer; without `next_cursor` there are none to fetch.
+fn rows_answer(state: &AppState, held: crate::held::Held, page: Vec<Vec<Value>>) -> Value {
+    let left = held.left();
+    let mut answer = json!({"query_id": held.query_id, "columns": held.columns,
+        "rows": page, "row_count": page.len(), "truncated": held.truncated || left > 0,
+        "elapsed_ms": held.elapsed_ms});
+    if let (Some(cursor), Some(object)) = (
+        state.held.hold(held, Instant::now()),
+        answer.as_object_mut(),
+    ) {
+        object.insert("next_cursor".into(), json!(cursor));
+        object.insert("rows_left".into(), json!(left));
+    }
+    answer
+}
+
+/// Hand out the next rows of a result that `run_query` fetched. Nothing runs
+/// on the database. The cursor must be this token's own and still alive, the
+/// agent and the database must be unchanged since the query ran, and the
+/// agent must still reach the database from this address, as for a query.
+async fn fetch_rows(
+    state: &AppState,
+    identity: &AgentIdentity,
+    ip: std::net::IpAddr,
+    cursor: &str,
+    rows: usize,
+    trace: &mut Trace,
+) -> Result<Value, ApiError> {
+    // From here the rows are out of the store: any early return drops them.
+    let mut held = state
+        .held
+        .take(cursor, identity.agent_id, identity.token_id, Instant::now())
+        .ok_or_else(crate::held::expired)?;
+    trace.database = Some(held.database);
+    trace.history_id = held.history_id;
+    let changed = || {
+        metrics::counter!("vda_held_results_dropped_total", "reason" => "changed").increment(1);
+        crate::held::expired()
+    };
+    // Paused and resumed, or changed, since the query ran.
+    if held.agent_mark != identity.agent_updated_at {
+        return Err(changed());
+    }
+    // Paused, deleted or revoked after this request was authenticated: the
+    // same late check that a query gets before it runs.
+    if !vda_core::agents::still_valid(&state.db, identity.token_id).await? {
+        metrics::counter!("vda_held_results_dropped_total", "reason" => "stopped").increment(1);
+        return Err(ApiError::unauthenticated());
+    }
+    // The agent no longer reaches the database, or not from this address:
+    // it gets that answer, as for a query, and the rows are dropped.
+    let (cluster, _) = visible(state, identity, held.database, ip)
+        .await
+        .inspect_err(|_| {
+            metrics::counter!("vda_held_results_dropped_total", "reason" => "access").increment(1);
+        })?;
+    // The policy, the masking, the endpoint or the agent login changed.
+    if cluster.updated_at != held.cluster_mark {
+        return Err(changed());
+    }
+    let page = held.page(rows, MAX_RESULT_BYTES)?;
+    trace.row_count = Some(page.len());
+    Ok(rows_answer(state, held, page))
 }
 
 /// Whether an error refuses the proposal itself, and so counts toward the
@@ -728,6 +997,20 @@ fn tables<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_an_agent_sends_is_said_back_only_in_part_and_zero_rows_are_refused() {
+        assert_eq!(shortened("extra", 64), "extra");
+        assert_eq!(shortened(&"n".repeat(64), 64), "n".repeat(64));
+        let cut = shortened(&"é".repeat(2_000_000), UNKNOWN_NAME_CHARS);
+        assert_eq!(cut.chars().count(), UNKNOWN_NAME_CHARS + 1);
+        assert!(cut.ends_with('…') && cut.starts_with('é'));
+        assert_eq!(row_limit(None).ok(), Some(DEFAULT_ROWS));
+        assert_eq!(row_limit(Some(1)).ok(), Some(1));
+        assert_eq!(row_limit(Some(5000)).ok(), Some(MAX_ROWS));
+        let refused = row_limit(Some(0)).err();
+        assert_eq!(refused.map(|error| error.code), Some("validation"));
+    }
 
     #[test]
     fn a_proposal_stop_lasts_the_window_from_the_refusal_that_reached_the_limit() {

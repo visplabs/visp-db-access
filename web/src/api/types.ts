@@ -128,6 +128,48 @@ export interface Suggestion {
   fix?: Fix;
 }
 
+/** The state of the pre-flight check, as the bar names it. */
+export type PreflightState = 'safe' | 'needs_approval' | 'blocked';
+/** The one next step. `run`, `request_approval` and `apply_fix` are a button;
+ * with `edit_sql`, `ask_admin` and `change_policy` there is none: read `hint`. */
+export type PreflightAction =
+  | 'run'
+  | 'request_approval'
+  | 'apply_fix'
+  | 'edit_sql'
+  | 'ask_admin'
+  | 'change_policy';
+/** What the guard adds to the SQL that runs. */
+export interface GuardChange {
+  /** The limit as it runs, such as `LIMIT 1001`. */
+  clause: string;
+  /** The limit as it was written, when the guard lowered one. */
+  replaces?: string;
+  /** One sentence: what the guard does and why. */
+  text: string;
+}
+/** What the caller can do with a statement before running it. The server
+ * makes it from the same lessons that it teaches agents, worded for a
+ * person, and with the caller's access level. */
+export interface Preflight {
+  state: PreflightState;
+  action: PreflightAction;
+  /** The next step in a few words: the button's text when there is one. */
+  label: string;
+  /** Why, in one or two plain sentences. */
+  hint: string;
+  /** The code that decided a state other than `safe`. */
+  code?: string;
+  /** With `apply_fix`: the edit that resolves the block. */
+  fix?: Fix;
+  guard_change?: GuardChange;
+}
+/** The answer of `POST /clusters/:id/analyze`: the analysis and its
+ * pre-flight. A server from before the pre-flight sends the analysis alone. */
+export interface Checked extends Analysis {
+  preflight?: Preflight;
+}
+
 export interface Column {
   name: string;
   type_name: string;
@@ -497,6 +539,63 @@ export interface Agent {
   created_at: string;
   updated_at: string;
 }
+/** A run of calls of one agent token with no gap longer than 30 minutes. */
+export interface AgentSession {
+  id: string;
+  agent_id: string;
+  token: { id: string; hint: string };
+  started_at: string;
+  last_step_at: string;
+  steps: number;
+  /** Steps that did not end in `ok`. */
+  refusals: number;
+  first_task: string | null;
+  /** The gap has not passed since the last step: another call would join. */
+  active: boolean;
+}
+export type AgentTool =
+  | 'list_databases'
+  | 'search_schema'
+  | 'describe_table'
+  | 'check_sql'
+  | 'run_query'
+  | 'fetch_rows'
+  | 'propose_write'
+  | 'get_approval'
+  | 'withdraw';
+/** One tool call of an agent. It holds SQL text, never result rows. */
+export interface AgentStep {
+  /** The step's number in its session, from 1, with no gap. */
+  n: number;
+  id: string;
+  tool: AgentTool;
+  /** Null when the call had no valid task. */
+  task: string | null;
+  /** The cluster id; null for a tool that names no database. */
+  database: string | null;
+  sql: string | null;
+  /** The SQL was longer than a step keeps (16 KiB) and is cut. */
+  sql_truncated: boolean;
+  verdict: Verdict | null;
+  /** `ok`, or the code of the error the agent got. */
+  outcome: string;
+  /** The fix the agent was given, and `told`: the same for a person. */
+  fix: { action: string; hint: string; told: string } | null;
+  row_count: number | null;
+  elapsed_ms: number;
+  history_id: string | null;
+  approval_id: string | null;
+  created_at: string;
+}
+export interface AgentSteps {
+  session: AgentSession;
+  items: AgentStep[];
+  /** The marker for the next call: the number of the last step read. */
+  after: number;
+  /** More steps wait after `after` than this answer holds. */
+  more: boolean;
+}
+
 export interface NewAgentToken {
   id: string;
   token: string;

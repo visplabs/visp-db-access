@@ -167,6 +167,7 @@ async fn system_routes_and_login_rate_limits_need_no_target_database() {
     state.login_succeeded("victim@example.com").await;
     assert!(state.check_account("victim@example.com").await.is_ok());
     state.stop.cancel();
+    state.steps.finish().await;
     writer.await.unwrap();
     state.db.close().await;
 }

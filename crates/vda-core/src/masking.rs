@@ -146,8 +146,15 @@ pub fn harden_analysis(
     for statement in &mut analysis.statements {
         statement.issues.push(issue.clone());
     }
+    // A refused statement carries no advice about speed and nothing of what
+    // would have run. A fix for the block is decided by the caller, which
+    // checks the fixed statement as a whole.
+    if analysis.verdict != vda_guard::Verdict::Deny {
+        analysis.suggestions.clear();
+    }
     analysis.verdict = vda_guard::Verdict::Deny;
     analysis.rewritten_sql = None;
+    analysis.row_cap = None;
 }
 
 /// Items a DML statement returns to the caller; empty for everything else.

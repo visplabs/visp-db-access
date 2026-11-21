@@ -197,6 +197,68 @@ link leads to the console, where the approver signs in and the usual rules
 apply. A lost notice changes nothing about the request; the console is always
 the source of truth.
 
+## Agent steps, sessions and held rows
+
+**What is stored about an agent's calls.** The gateway keeps one row per tool
+call of an agent, a _step_, and groups the steps of one token into sessions
+(a run of calls with no gap longer than 30 minutes). A step holds: the tool,
+the task the agent gave, the database, the SQL text when the tool takes SQL
+(cut at 16 KiB), the guard's verdict, the outcome code, the fix the agent was
+given (the action word and the hint), how many rows the answer held, how long
+the call took, and the id of the query history row or the approval request.
+Every text of a step is cut to a fixed size when it is written (a step is at
+most about 20 KiB), so an agent cannot make the record large with what it
+sends. It never holds a result row or a value from one: protected values cannot
+reach it. SQL text can itself hold a literal that a person or an agent typed;
+that is true of query history as well.
+
+**Who can read it.** The agent's owner and organization administrators, with
+`GET /agents/:id/sessions` and `…/steps`: the same rule as for the agent
+itself, and "not found" for everyone else, also for a person who administers
+the same database. An agent cannot read steps: the agent door has no tool for
+them, and the API for people refuses an agent token. A step names a database
+by its id only; the console shows a name only for a database the reader can
+see.
+
+**How long.** Steps older than `VDA_AGENT_STEPS_RETENTION_DAYS` (default 30)
+are deleted. Deleting an agent deletes its sessions and steps at once; the
+`agent.tool` audit events and query history stay.
+
+**Not the audit trail.** Steps are written through a queue that drops them
+when it is full, and they are not part of the audit hash chain: someone who
+can write to the metadata database can change or delete them unseen. What an
+agent did is proved by the `agent.tool` audit events and by query history,
+which are written as before. Use the steps to understand a session, and the
+audit log to prove one.
+
+**Held rows.** `fetch_rows` gives an agent the rows that one `run_query`
+fetched and one answer could not hold. It gives no new access:
+
+- The rows are those the query fetched, never more than the policy's cap for
+  one query, already masked as the policy was when the query ran. Nothing is
+  run or read again for a page.
+- They are held in the memory of the node that ran the query, never in the
+  metadata database and never on disk, and within byte bounds for the node
+  and for each agent. A cursor is refused from five minutes after the last
+  use; the memory is freed by a sweep up to 30 seconds after that.
+- The cursor is 32 random bytes, usable once, and bound to the agent and to
+  the token that ran the query. Only its SHA-256 digest is kept. Another
+  agent, another token of the same agent, a used cursor and a guess all get
+  the same answer, `result_expired`, which says nothing about whether such a
+  cursor ever existed.
+- The rows end when the agent's rights do. A pause, a change or a delete of
+  the agent, a revoked token, a disabled owner, and a change of the cluster's
+  policy (masking included), endpoint or agent login drop them on the node
+  that handles the change. On other nodes they are refused on the next page:
+  a held result carries the `updated_at` of the agent and of the cluster,
+  and both are compared, and the access and network checks of a query are
+  repeated, on every page, with the check that the token is still valid.
+  Until then the rows stay in that node's memory until the sweep after five
+  minutes without use.
+- A person with a memory dump of a node can read held rows, as they can read
+  a result that is being sent. Set `VDA_HELD_RESULTS_MAX_BYTES=0` to hold
+  nothing.
+
 ## Audit
 
 Security-relevant changes and their audit records share a metadata transaction.
@@ -306,6 +368,10 @@ transaction ID is never sealed and shows as a row that waits for ever.
   requester, agent) are metadata that the receiver will hold. The notice
   sender trusts the public certificate authorities only, and a notice can
   arrive twice or, after six failed attempts in about an hour, not at all.
+- The record of agent steps is not tamper-evident and can lose steps under
+  load; it stores the SQL text of agent calls for 30 days by default. Rows
+  held for `fetch_rows` and the limits on an agent's calls are per node; see
+  [Agent steps, sessions and held rows](#agent-steps-sessions-and-held-rows).
 - MySQL's `max_execution_time` covers only `SELECT`; writes rely on the client
   deadline and lock timeouts. Rollback requires transactional storage (InnoDB),
   MySQL DDL commits implicitly, and a connection lost during `COMMIT` leaves the

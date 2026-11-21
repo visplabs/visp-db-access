@@ -13,12 +13,14 @@ pub mod db;
 pub mod discovery;
 pub mod error;
 pub mod health;
+pub mod held;
 mod mcp;
 pub mod metrics;
 pub mod network;
 pub mod notices;
 pub mod query;
 pub mod rbac;
+pub mod steps;
 mod web;
 
 // The pipeline modules live in `vda-core`; these paths stay for callers.

@@ -10,24 +10,27 @@ All settings are environment variables (each also has a matching CLI flag).
 The binary does not load `.env` files itself; see [.env.example](../.env.example)
 and [deploy/config.env.example](../deploy/config.env.example).
 
-| Variable                       | Default        | Purpose                                                                                                                                                                                                    |
-| ------------------------------ | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VDA_DATABASE_URL`             | required       | PostgreSQL metadata URL, version 14 or newer. Migration privileges are needed on first start.                                                                                                              |
-| `VDA_MASTER_KEY`               | required       | Standard-base64 32-byte key that encrypts stored credentials. The keys that sign receipts and seal the audit log are derived from it. Generate with `openssl rand -base64 32` or `visp-db-access gen-key`. |
-| `VDA_BIND`                     | `0.0.0.0:8080` | Listening address.                                                                                                                                                                                         |
-| `VDA_METADATA_POOL_SIZE`       | `20`           | Metadata connections per node (1–200). Health and discovery schedulers each use one more.                                                                                                                  |
-| `VDA_BOOTSTRAP_ADMIN_EMAIL`    | unset          | First administrator, created only when no users exist. Set with the password.                                                                                                                              |
-| `VDA_BOOTSTRAP_ADMIN_PASSWORD` | unset          | First administrator's password, at least 12 bytes.                                                                                                                                                         |
-| `VDA_ADMIN_PASSWORD`           | unset          | Password for the `create-admin` command.                                                                                                                                                                   |
-| `VDA_COOKIE_SECURE`            | `true`         | Secure session cookie and HSTS. Set `false` only for local plain-HTTP development (a startup warning is logged).                                                                                           |
-| `VDA_ALLOWED_CIDRS`            | empty          | Comma-separated client allowlist; intersected with the allowlist set in the console. Empty allows all.                                                                                                     |
-| `VDA_TRUST_PROXY_HEADERS`      | `false`        | Use `X-Forwarded-For` for client attribution.                                                                                                                                                              |
-| `VDA_TRUSTED_PROXIES`          | empty          | Comma-separated CIDRs of your proxies. With forwarding on and no list, only the direct peer is trusted. `VDA_TRUSTED_PROXY_CIDRS` is accepted as an alias.                                                 |
-| `VDA_ALLOW_PRIVATE_TARGETS`    | `false`        | Allow loopback database targets (development). RFC 1918 targets are always allowed. For notices it also allows a webhook on a private address, and plain `http` to loopback.                               |
-| `VDA_METRICS_TOKEN`            | unset          | When set, `/metrics` requires `Authorization: Bearer <token>`.                                                                                                                                             |
-| `VDA_PUBLIC_URL`               | unset          | The address people open the console at, such as `https://gate.example.com`: an `http(s)` origin with no path. Notices link to the request only when it is set.                                             |
-| `VDA_LOG_FORMAT`               | `text`         | `text` or `json`.                                                                                                                                                                                          |
-| `RUST_LOG`                     | `info`         | Log filter.                                                                                                                                                                                                |
+| Variable                           | Default        | Purpose                                                                                                                                                                                                    |
+| ---------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VDA_DATABASE_URL`                 | required       | PostgreSQL metadata URL, version 14 or newer. Migration privileges are needed on first start.                                                                                                              |
+| `VDA_MASTER_KEY`                   | required       | Standard-base64 32-byte key that encrypts stored credentials. The keys that sign receipts and seal the audit log are derived from it. Generate with `openssl rand -base64 32` or `visp-db-access gen-key`. |
+| `VDA_BIND`                         | `0.0.0.0:8080` | Listening address.                                                                                                                                                                                         |
+| `VDA_METADATA_POOL_SIZE`           | `20`           | Metadata connections per node (1–200). Health and discovery schedulers each use one more.                                                                                                                  |
+| `VDA_BOOTSTRAP_ADMIN_EMAIL`        | unset          | First administrator, created only when no users exist. Set with the password.                                                                                                                              |
+| `VDA_BOOTSTRAP_ADMIN_PASSWORD`     | unset          | First administrator's password, at least 12 bytes.                                                                                                                                                         |
+| `VDA_ADMIN_PASSWORD`               | unset          | Password for the `create-admin` command.                                                                                                                                                                   |
+| `VDA_COOKIE_SECURE`                | `true`         | Secure session cookie and HSTS. Set `false` only for local plain-HTTP development (a startup warning is logged).                                                                                           |
+| `VDA_ALLOWED_CIDRS`                | empty          | Comma-separated client allowlist; intersected with the allowlist set in the console. Empty allows all.                                                                                                     |
+| `VDA_TRUST_PROXY_HEADERS`          | `false`        | Use `X-Forwarded-For` for client attribution.                                                                                                                                                              |
+| `VDA_TRUSTED_PROXIES`              | empty          | Comma-separated CIDRs of your proxies. With forwarding on and no list, only the direct peer is trusted. `VDA_TRUSTED_PROXY_CIDRS` is accepted as an alias.                                                 |
+| `VDA_ALLOW_PRIVATE_TARGETS`        | `false`        | Allow loopback database targets (development). RFC 1918 targets are always allowed. For notices it also allows a webhook on a private address, and plain `http` to loopback.                               |
+| `VDA_METRICS_TOKEN`                | unset          | When set, `/metrics` requires `Authorization: Bearer <token>`.                                                                                                                                             |
+| `VDA_PUBLIC_URL`                   | unset          | The address people open the console at, such as `https://gate.example.com`: an `http(s)` origin with no path. Notices link to the request only when it is set.                                             |
+| `VDA_AGENT_STEPS_RETENTION_DAYS`   | `30`           | Days the record of agent steps and sessions is kept (1–3650). Steps hold the SQL text of agent calls.                                                                                                      |
+| `VDA_HELD_RESULTS_MAX_BYTES`       | `268435456`    | Memory, in bytes, that one node may use for rows it holds for `fetch_rows`, for all agents together. `0` holds nothing: agents then get no cursor and narrow their queries.                                |
+| `VDA_HELD_RESULTS_AGENT_MAX_BYTES` | `67108864`     | The same bound for the rows held for one agent. Not more than the bound for the node.                                                                                                                      |
+| `VDA_LOG_FORMAT`                   | `text`         | `text` or `json`.                                                                                                                                                                                          |
+| `RUST_LOG`                         | `info`         | Log filter.                                                                                                                                                                                                |
 
 Back up the master key together with the metadata database. Stored credentials
 can't be decrypted with a different key; if the key is lost, re-enter each
@@ -116,6 +119,57 @@ For AWS discovery on EKS, see [IRSA setup](DISCOVERY.md#eks-irsa).
 - "Send test" is limited to five test notices a minute on each node, for all
   administrators together. Behind a load balancer the total is five times the
   number of nodes.
+- Agent steps: `vda_agent_steps_dropped_total` counts steps that were not
+  recorded because the queue was full or the metadata database refused them;
+  it should stay at zero. `vda_agent_steps_suppressed_total` counts calls
+  refused before a tool ran beyond 30 per agent in a minute, which are left
+  out on purpose. `vda_agent_step_writer_batch_steps` is the size of the
+  batches written.
+- Held rows: `vda_held_results` and `vda_held_result_bytes` are what one node
+  holds now; `vda_held_results_dropped_total{reason}` counts results dropped
+  as `expired`, for `memory`, as `too_large` to hold, because something
+  `changed`, because the agent lost its `access` to the database, or because
+  the agent or the gateway `stopped`. Many `memory`
+  drops mean that agents page through more than the node may hold: raise
+  `VDA_HELD_RESULTS_MAX_BYTES` or lower the policies' `max_rows`.
+
+## Agents on several nodes
+
+The agent door keeps no session, so any node can answer any call. Two things
+are kept per node:
+
+- **Rows held for `fetch_rows`.** When a query fetched more rows than one
+  answer holds, the rest stays in the memory of the node that ran it, for
+  five minutes after the last page. They are never written to the metadata
+  database or to disk, so a restart drops them. A `fetch_rows` call that
+  reaches another node gets the error `result_expired`, and the agent is
+  told to run the query again with a narrower question. Nothing is lost and
+  nothing leaks, but the agent pays one more query. To avoid it, route the
+  calls of one agent to one node: hash on the `Authorization` header (the
+  bearer token) at the load balancer, or use the balancer's source-address
+  affinity when each agent has its own address. Affinity is an optimization
+  only; do not rely on it for correctness.
+- **Limits.** The 120 tool calls a minute, the stop after five refusals and
+  the 30 recorded refused calls a minute are counted on each node. Behind a
+  balancer without affinity an agent can reach each limit once per node.
+
+What is the same on every node: an agent's access, pause and tokens; its
+hourly query budget; and its sessions. The steps of one token are in one
+session whichever nodes they went through, because the session is decided in
+the metadata database.
+
+Size the memory for held rows with `VDA_HELD_RESULTS_MAX_BYTES` (per node,
+default 256 MiB) and `VDA_HELD_RESULTS_AGENT_MAX_BYTES` (per agent, default
+64 MiB). One held result is at most what one query may fetch: the policy's
+`max_rows`, and never more than 32 MiB of row data as the database sent it;
+held as JSON values it can take about twice that. A result that is larger
+than the agent's bound is not held, and the agent is told to narrow its
+query, as before `fetch_rows` existed.
+
+The record of agent steps grows by one row per tool call: at most 150 a
+minute per agent and node (120 calls, and 30 calls refused before a tool
+ran), each at most about 20 KiB. Steps older than `VDA_AGENT_STEPS_RETENTION_DAYS`
+are deleted by the node that runs health checks, 5,000 per half minute.
 
 ## Audit hash chain
 

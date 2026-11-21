@@ -1,7 +1,10 @@
 import type {
+  AccessLevel,
   Analysis,
+  Fix,
   Issue,
   Policy,
+  Preflight,
   StatementKind,
   Suggestion,
 } from './types';
@@ -61,15 +64,20 @@ export function analyzeDemo(sql: string, policy: Policy): Analysis {
       code: 'missing_where',
       message: 'UPDATE and DELETE require a WHERE clause.',
     });
-  if (
-    code.replace(/;\s*$/, '').includes(';') ||
-    (/^with\b/i.test(code) && write)
-  )
+  const several = code.replace(/;\s*$/, '').includes(';');
+  if (several)
+    issues.push({
+      severity: 'block',
+      code: 'multiple_statements',
+      message:
+        'The gateway executes exactly one statement at a time. Submit each statement separately.',
+    });
+  else if (/^with\b/i.test(code) && write)
     issues.push({
       severity: 'block',
       code: 'complex_demo_sql',
       message:
-        'The demo blocks multi-statement and writable CTE queries. The server uses a full SQL parser.',
+        'The demo blocks writable CTE queries. The server uses a full SQL parser.',
     });
   if (
     policy.blocked_tables.some((pattern) =>
@@ -101,8 +109,18 @@ export function analyzeDemo(sql: string, policy: Policy): Analysis {
       code: 'write_approval',
       message: 'A second person must review this write before execution.',
     });
+  // A read that takes row locks: the guard asks for approval, as for a write.
+  const locking =
+    !write && kind === 'select' && /\bfor\s+(update|share)\b/i.test(code);
+  if (locking)
+    issues.push({
+      severity: 'warning',
+      code: 'locking_read',
+      message:
+        'This SELECT acquires row locks and may block other transactions. Approval is required; keep the query narrowly filtered.',
+    });
   let rewritten = clean.replace(/;\s*$/, '');
-  if (!write && kind === 'select') {
+  if (!write && !locking && kind === 'select') {
     if (limit) {
       rewritten =
         rewritten.slice(0, limit.index) +
@@ -119,11 +137,33 @@ export function analyzeDemo(sql: string, policy: Policy): Analysis {
   }
   const verdict = issues.some((issue) => issue.severity === 'block')
     ? 'deny'
-    : write
+    : write || locking
       ? 'requires_approval'
       : 'allow';
-  const risk = verdict === 'deny' ? 'critical' : write ? 'high' : 'low';
+  const risk =
+    verdict === 'deny' ? 'critical' : write || locking ? 'high' : 'low';
   const suggestions: Suggestion[] = [];
+  // Like the guard: when each statement would pass alone, the only block is
+  // that there are several, and keeping the first one resolves it.
+  if (several && issues.filter((i) => i.severity === 'block').length === 1) {
+    const first = clean.slice(0, code.indexOf(';')).trim();
+    const rest = clean.slice(code.indexOf(';') + 1);
+    if (
+      first &&
+      analyzeDemo(first, policy).verdict !== 'deny' &&
+      analyzeDemo(rest, policy).verdict !== 'deny'
+    )
+      suggestions.push({
+        code: 'multiple_statements',
+        message:
+          'Only one statement runs at a time. Keep the first statement and run the others after it.',
+        fix: {
+          label: 'Keep the first statement',
+          sql: first,
+          action: 'replace',
+        },
+      });
+  }
   if (verdict !== 'deny') {
     if (/^select\s+\*/i.test(code))
       suggestions.push({
@@ -164,4 +204,156 @@ export function analyzeDemo(sql: string, policy: Policy): Analysis {
       { kind, sql, tables, functions: [], risk, issues, has_where, has_limit },
     ],
   };
+}
+
+const WHY_CAP = (rows: number) =>
+  `the policy allows ${rows} rows, and one more row shows whether there are more`;
+/** The mock of the server's lessons for a person: one next step per code. */
+const LESSONS: Record<string, { stop: boolean; text: string }> = {
+  empty_sql: {
+    stop: false,
+    text: "The SQL does not parse. Write one complete statement in this database's dialect.",
+  },
+  multiple_statements: {
+    stop: false,
+    text: 'Only one statement runs at a time. Keep one statement in the editor and run the others after it.',
+  },
+  blocked_function: {
+    stop: false,
+    text: 'A function in this statement is not allowed here. Remove it and use plain columns, filters and aggregates.',
+  },
+  missing_where: {
+    stop: false,
+    text: 'A write must name the rows it changes. Add a WHERE clause that selects only those rows.',
+  },
+  complex_demo_sql: {
+    stop: false,
+    text: 'This statement would change data while it looks like a read. Use a plain SELECT, or EXPLAIN without ANALYZE.',
+  },
+  unsupported_demo_sql: {
+    stop: false,
+    text: 'This kind of statement or clause does not run through the gateway. Use a plain statement without locking clauses, hints or special comments.',
+  },
+  blocked_table: {
+    stop: true,
+    text: "This database's policy blocks a table in this statement.",
+  },
+  ddl_disabled: {
+    stop: true,
+    text: "This database's policy does not allow this kind of change, for anyone.",
+  },
+};
+/**
+ * The pre-flight answer, as the server makes it from an analysis and the
+ * caller's access level. The demo classifier does not know the level, so a
+ * reader's write is refused here.
+ */
+export function preflightDemo(
+  analysis: Analysis,
+  level: AccessLevel | null,
+  policy: Policy,
+): Preflight {
+  const [statement] = analysis.statements;
+  const kind = statement?.kind;
+  const effect = kind === 'ddl' ? 'changes the schema' : 'changes data';
+  if (analysis.verdict === 'allow') {
+    // The statement without its closing semicolon, so that the limit is last.
+    let text = (statement?.sql ?? '').trimEnd();
+    if (text.endsWith(';')) text = text.slice(0, -1).trimEnd();
+    const written = /\blimit\s+(\d+)$/i.exec(text);
+    const clause = `LIMIT ${policy.max_rows + 1}`;
+    const lowered = written && Number(written[1]) > policy.max_rows;
+    const added = kind === 'select' && !written;
+    return {
+      state: 'safe',
+      action: 'run',
+      label: 'Run',
+      hint:
+        policy.max_cost === null
+          ? 'This statement only reads data.'
+          : "This statement only reads data. Its cost is checked against this database's limit when it runs.",
+      ...(added && {
+        guard_change: {
+          clause,
+          text: `The guard adds ${clause}: ${WHY_CAP(policy.max_rows)}.`,
+        },
+      }),
+      ...(lowered && {
+        guard_change: {
+          clause,
+          replaces: `LIMIT ${written[1]}`,
+          text: `The guard lowers LIMIT ${written[1]} to ${clause}: ${WHY_CAP(policy.max_rows)}.`,
+        },
+      }),
+    };
+  }
+  const writeAccess =
+    'A person with write access can ask for this change, or an administrator of this database can give you write access.';
+  // A read that locks rows cannot be asked for: an approval is for a change.
+  if (analysis.verdict === 'requires_approval' && kind === 'select')
+    return {
+      state: 'blocked',
+      action: 'edit_sql',
+      label: 'Edit the SQL',
+      hint: 'This statement locks rows. Remove the locking clause (FOR UPDATE / FOR SHARE) to run it as a read.',
+      code: 'locking_read',
+    };
+  if (analysis.verdict === 'requires_approval')
+    return level === 'read' || !level
+      ? {
+          state: 'blocked',
+          action: 'ask_admin',
+          label: 'Ask for write access',
+          hint: `This statement ${effect} and needs approval, and your read access does not let you ask for it. ${writeAccess}`,
+          code: 'insufficient_access',
+        }
+      : {
+          state: 'needs_approval',
+          action: 'request_approval',
+          label: 'Request approval',
+          hint: `This statement ${effect}, so another person must approve it before it runs.`,
+          code: 'approval_required',
+        };
+  const blocking = analysis.issues.filter((i) => i.severity === 'block');
+  // The hardest stop decides, and among equals the first.
+  const issue = blocking.find((i) => LESSONS[i.code]?.stop) ?? blocking[0];
+  const lesson = issue ? LESSONS[issue.code] : undefined;
+  const text = lesson?.text ?? issue?.message ?? 'The guard refused this.';
+  if (lesson?.stop)
+    return level === 'admin'
+      ? {
+          state: 'blocked',
+          action: 'change_policy',
+          label: 'Change the policy',
+          hint: `${text} You administer this database: change its policy if this should run.`,
+          code: issue?.code,
+        }
+      : {
+          state: 'blocked',
+          action: 'ask_admin',
+          label: 'Ask an administrator',
+          hint: `${text} Only an administrator of this database can change its policy.`,
+          code: issue?.code,
+        };
+  // Only a suggestion that carries the code of the block is a fix for it.
+  const repair = (analysis.suggestions ?? []).find(
+    (suggestion): suggestion is Suggestion & { fix: Fix } =>
+      !!suggestion.fix && suggestion.code === issue?.code,
+  );
+  return repair
+    ? {
+        state: 'blocked',
+        action: 'apply_fix',
+        label: repair.fix.label,
+        hint: repair.message,
+        code: issue?.code,
+        fix: repair.fix,
+      }
+    : {
+        state: 'blocked',
+        action: 'edit_sql',
+        label: 'Edit the SQL',
+        hint: text,
+        code: issue?.code,
+      };
 }

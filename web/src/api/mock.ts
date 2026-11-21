@@ -1,6 +1,6 @@
 import { ApiError, type Transport } from './errors';
 import { fixtures, defaultPolicy, demoSchema, now, uuid } from './fixtures';
-import { analyzeDemo } from './mock-guard';
+import { analyzeDemo, preflightDemo } from './mock-guard';
 import { createMockDiscovery } from './mock-discovery';
 import { endpointChanged } from '../lib/connection';
 import { isCidr } from '../lib/utils';
@@ -688,7 +688,11 @@ export function createMockTransport({
       }
       const sql = String(body.sql ?? '');
       const analysis = analyzeDemo(sql, policy);
-      if (action === 'analyze') return analysis;
+      if (action === 'analyze')
+        return {
+          ...analysis,
+          preflight: preflightDemo(analysis, clusterAccess(cluster), policy),
+        };
       if (action === 'query') {
         if (analysis.verdict === 'deny') {
           history(

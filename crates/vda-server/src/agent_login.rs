@@ -154,6 +154,7 @@ pub(crate) async fn put(
         .await?;
     tx.commit().await?;
     state.core.pools.invalidate(cluster.id).await;
+    state.forget_held(cluster.id);
     verify(&state, cluster.id).await?;
     Ok(Json(view(&state, cluster.id).await?))
 }
@@ -184,6 +185,7 @@ pub(crate) async fn remove(
         .await?;
     tx.commit().await?;
     state.core.pools.invalidate(cluster.id).await;
+    state.forget_held(cluster.id);
     Ok(StatusCode::NO_CONTENT)
 }
 /// Verify now and return the result.

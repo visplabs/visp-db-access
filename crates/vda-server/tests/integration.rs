@@ -567,6 +567,7 @@ async fn authenticated_crud_policy_authorization_and_four_eyes() {
     state.core.tasks.close();
     state.core.tasks.wait().await;
     state.stop.cancel();
+    state.steps.finish().await;
     writer.await.unwrap();
     let audit_count: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_log")
         .fetch_one(&db)

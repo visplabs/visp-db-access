@@ -299,6 +299,43 @@ removed or disabled that control, focus goes to a stable place in the same
 area (`data-focus-return` on the area, `data-focus-target` with
 `tabIndex={-1}` on the element), never to the page itself.
 
+## The pre-flight bar
+
+The console's verdict lives in one bar under the SQL editor, next to the
+button it explains. It is always on screen, also when the safety panel is
+closed and on a phone.
+
+- **Three states**, in words and with a mark, never by colour alone: _Safe to
+  run_, _Needs approval_, _Blocked_. The colour of the mark and of the bar's
+  left edge only repeats the state.
+- **One sentence of why**, and when the guard changes the SQL, exactly what
+  it adds (`LIMIT 1001`), marked as code.
+- **One next step.** Run; open the approval request; apply the guard's fix;
+  or, when only an administrator can help, no button and a sentence that says
+  who. The server decides the state and the step (`preflight` in the analyze
+  answer); the console never works it out from the verdict when the server
+  sent one.
+- **While the check runs** the last answer stays, dimmed, with "Updating…",
+  and the button waits. When the check fails the bar says so and its one
+  action is "Check again". Nothing runs on a stale or failed check.
+- **For assistive technology** the bar is a group with one polite status
+  line. The line is set 700 ms after an answer has settled and only when its
+  text differs from what was said last, so typing does not make it speak.
+  The line names the state in other words ("Check passed.", "Approval
+  needed.", "Not allowed.") so that the label on screen stays the one element
+  with its text.
+- **On a phone** the sentence goes under the state and the button. With a
+  safe statement that the guard changes, the line shows what the guard adds;
+  the general sentence and the reason stay for the status line.
+
+The safety panel holds the details (risk, issues, suggestions, the SQL that
+runs) and no longer repeats the verdict in the console. On the approval
+screen, which has no bar, it still shows it.
+
+The agent session view follows the same rule for its marks: _Done_, _Needs a
+person_, _Refused_ and _Failed_ are words with an icon; the coloured edge of
+a step repeats them.
+
 ## Known gaps
 
 These need API support before the console can show them exactly:

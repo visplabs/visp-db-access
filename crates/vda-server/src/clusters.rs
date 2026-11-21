@@ -237,6 +237,7 @@ pub(crate) async fn update(
     apply_patch(&state, &mut tx, &user, ip.0, current, patch).await?;
     tx.commit().await?;
     state.core.pools.invalidate(id).await;
+    state.forget_held(id);
     state.schema_cache.invalidate(&id).await;
     Ok(Json(
         view(&state, &user, db::cluster(&state.db, id).await?).await?,
@@ -394,6 +395,7 @@ pub(crate) async fn remove(
         .await?;
     tx.commit().await?;
     state.core.pools.invalidate(id).await;
+    state.forget_held(id);
     state.schema_cache.invalidate(&id).await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -435,6 +437,7 @@ pub(crate) async fn put_policy(
         .await?;
     tx.commit().await?;
     state.core.pools.invalidate(id).await;
+    state.forget_held(id);
     Ok(Json(body))
 }
 #[derive(Deserialize)]

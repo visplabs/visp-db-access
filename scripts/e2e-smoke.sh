@@ -205,6 +205,92 @@ check "([.items[].action] | index(\"approval.create\") != null) and ([.items[].a
 call GET "/audit?actor_id=$reviewer_id&limit=200" 200 "$admin_jar"
 check '[.items[].action] | index("approval.approve") != null'
 pass 'history and durable audit'
+# An agent at the agent door. Its calls are the steps of one session that
+# people can read, and fetch_rows hands out the rows that one run_query
+# fetched: the policy lets a query fetch two rows, and each answer holds one.
+call POST /agents 200 "$admin_jar" "$(jq -n --arg name "Smoke agent $run_id" --arg cluster "$cluster_id" '{name:$name,cluster_ids:[$cluster]}')"
+agent_id=$(jq -er '.id' "$response")
+call POST "/agents/$agent_id/tokens" 200 "$admin_jar" '{"expires_in_days":1}'
+agent_token=$(jq -er '.token' "$response")
+# Call one tool; the answer's structured content is left in $response.
+tool() {
+  local name=$1 arguments=$2 status
+  status=$(jq -n --arg name "$name" --argjson arguments "$arguments" \
+    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$name,arguments:$arguments}}' |
+    curl --silent --show-error --max-time 90 --request POST \
+      --header 'Content-Type: application/json' --header "Authorization: Bearer $agent_token" \
+      --output "$response.raw" --write-out '%{http_code}' --data-binary @- "$base_url/api/v1/mcp")
+  if [[ $status != 200 ]]; then
+    printf 'FAIL tool %s: HTTP %s\n' "$name" "$status" >&2; cat "$response.raw" >&2; exit 1
+  fi
+  jq '.result.structuredContent + {is_error: .result.isError}' "$response.raw" > "$response"
+}
+database=$(jq -n --arg id "$cluster_id" '$id')
+agent_sql='SELECT id,name,email FROM customers ORDER BY id'
+tool list_databases '{"task":"Smoke: see what I can reach"}'
+check ".is_error == false and ([.databases[].id] | index($database) != null)"
+tool check_sql "$(jq -n --argjson database "$database" --arg sql "$agent_sql" '{task:"Smoke: check the read",database:$database,sql:$sql}')"
+check '.is_error == false and .verdict == "allow" and .fix == null'
+tool run_query "$(jq -n --argjson database "$database" --arg sql "$agent_sql" '{task:"Smoke: read two customers",database:$database,sql:$sql,max_rows:1}')"
+check '.is_error == false and .row_count == 1 and .truncated == true and .rows_left == 1 and (.next_cursor | startswith("rows_")) and .rows[0][2] == "••••••"'
+first_row_id=$(jq -er '.rows[0][0]' "$response")
+agent_query_id=$(jq -er '.query_id' "$response")
+cursor=$(jq -er '.next_cursor' "$response")
+tool fetch_rows "$(jq -n --arg cursor "$cursor" '{task:"Smoke: read the second customer",cursor:$cursor}')"
+check ".is_error == false and .row_count == 1 and .rows[0][0] != $first_row_id and .rows[0][2] == \"••••••\" and .query_id == \"$agent_query_id\" and .truncated == true and (has(\"next_cursor\") | not)"
+# A cursor works once; a used one and a made-up one get the same answer.
+for used in "$cursor" 'rows_made-up'; do
+  tool fetch_rows "$(jq -n --arg cursor "$used" '{task:"Smoke: a cursor that is gone",cursor:$cursor}')"
+  check '.is_error == true and .error.code == "result_expired" and .error.fix.action == "rewrite_sql"'
+done
+pass 'agent tools, masked rows and one fetch_rows page with no second query'
+
+# The steps are written by a queue; give the writer a moment.
+session_id=
+for _ in $(seq 1 60); do
+  call GET "/agents/$agent_id/sessions" 200 "$admin_jar"
+  if jq --exit-status '(.items | length) == 1 and .items[0].steps == 6' "$response" >/dev/null; then
+    session_id=$(jq -er '.items[0].id' "$response"); break
+  fi
+  sleep 0.5
+done
+if [[ -z $session_id ]]; then printf 'FAIL the agent session did not show six steps in 30 seconds\n' >&2; cat "$response" >&2; exit 1; fi
+check '.items[0].refusals == 2 and .items[0].active == true and .items[0].first_task == "Smoke: see what I can reach" and .next_cursor == null'
+call GET "/agents/$agent_id/sessions/$session_id/steps" 200 "$admin_jar"
+check '[.items[].tool] == ["list_databases","check_sql","run_query","fetch_rows","fetch_rows","fetch_rows"] and [.items[].n] == [1,2,3,4,5,6] and .after == 6 and .more == false'
+check '[.items[].outcome] == ["ok","ok","ok","ok","result_expired","result_expired"] and [.items[].row_count] == [null,null,1,1,null,null]'
+check ".items[1].verdict == \"allow\" and .items[2].sql == \"$agent_sql\" and .items[3].sql == null and .items[3].history_id == .items[2].history_id and (.items[4].fix.told | startswith(\"The agent was told\"))"
+check '(tostring | contains("••••••") | not) and ([.items[] | has("rows")] | any | not)'
+step_history_id=$(jq -er '.items[2].history_id' "$response")
+call GET "/agents/$agent_id/sessions/$session_id/steps?after=5" 200 "$admin_jar"
+check '(.items | length) == 1 and .items[0].n == 6'
+# One query in history for the run and its page, linked from the step.
+call GET "/history?cluster_id=$cluster_id&limit=200" 200 "$admin_jar"
+check "([.items[] | select(.agent_id == \"$agent_id\")] | length) == 1 and ([.items[] | select(.id == \"$step_history_id\" and .agent_id == \"$agent_id\" and .status == \"ok\")] | length) == 1"
+# Only the owner and administrators read an agent's sessions; an agent token
+# is refused by the API for people.
+call GET "/agents/$agent_id/sessions" 404 "$member_jar"
+call GET "/agents/$agent_id/sessions/$session_id/steps" 404 "$reviewer_jar"
+status=$(curl --silent --max-time 30 --output /dev/null --write-out '%{http_code}' \
+  --header 'X-Requested-With: vda' --header "Authorization: Bearer $agent_token" \
+  "$base_url/api/v1/agents/$agent_id/sessions")
+if [[ $status != 401 ]]; then printf 'FAIL an agent token read the session API: HTTP %s\n' "$status" >&2; exit 1; fi
+# Pausing the agent refuses its token at once.
+call PATCH "/agents/$agent_id" 200 "$admin_jar" '{"paused":true}'
+status=$(curl --silent --max-time 30 --output /dev/null --write-out '%{http_code}' --request POST \
+  --header 'Content-Type: application/json' --header "Authorization: Bearer $agent_token" \
+  --data-binary '{"jsonrpc":"2.0","id":1,"method":"ping"}' "$base_url/api/v1/mcp")
+if [[ $status != 401 ]]; then printf 'FAIL a paused agent was not refused: HTTP %s\n' "$status" >&2; exit 1; fi
+pass 'agent session with six steps, links to history, visibility and pause'
+
+# The pre-flight answer of the console's check, for each state.
+call POST "/clusters/$cluster_id/analyze" 200 "$admin_jar" "$read_body"
+check '.verdict == "allow" and .preflight.state == "safe" and .preflight.action == "run" and .preflight.guard_change.clause == "LIMIT 3"'
+call POST "/clusters/$cluster_id/analyze" 200 "$member_jar" "$write_body"
+check '.verdict == "requires_approval" and .preflight.state == "needs_approval" and .preflight.action == "request_approval"'
+call POST "/clusters/$cluster_id/analyze" 200 "$admin_jar" '{"sql":"SELECT 1; SELECT 2"}'
+check '.verdict == "deny" and .preflight.state == "blocked" and .preflight.action == "apply_fix" and .preflight.fix.sql == "SELECT 1"'
+pass 'pre-flight states: safe with the guard change, needs approval, blocked with a fix'
 if [[ -n ${VDA_SMOKE_MYSQL_HOST:-} ]]; then
   # shellcheck source=/dev/null
   source "$(dirname -- "${BASH_SOURCE[0]}")/mysql-smoke.sh"
@@ -241,5 +327,5 @@ call GET /audit/integrity 403 "$member_jar"
 call POST /audit/verify 403 "$member_jar" '{}'
 pass "audit chain intact: $sealed_rows rows sealed and verified"
 for jar in "$admin_jar" "$reviewer_jar" "$member_jar"; do call POST /auth/logout 204 "$jar"; done
-printf 'SMOKE OK: login → project → cluster → connection → health → schema → analyze → SELECT → blocked DELETE → approval → review → execute → history/audit → audit chain\n'
-printf 'Fixtures retained: project=%s cluster=%s approval=%s\n' "$project_id" "$cluster_id" "$approval_id"
+printf 'SMOKE OK: login → project → cluster → connection → health → schema → analyze → SELECT → blocked DELETE → approval → review → execute → history/audit → agent session and fetch_rows → pre-flight → audit chain\n'
+printf 'Fixtures retained: project=%s cluster=%s approval=%s agent=%s\n' "$project_id" "$cluster_id" "$approval_id" "$agent_id"

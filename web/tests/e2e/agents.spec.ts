@@ -148,6 +148,7 @@ test('an agent is connected, given a token once, paused, and deleted', async ({
     'describe_table',
     'check_sql',
     'run_query',
+    'fetch_rows',
     'propose_write',
     'get_approval',
     'withdraw',

@@ -19,6 +19,7 @@ import { CloudLabel } from '../../components/ui/cluster-heading';
 import { RelativeTime } from '../../components/ui/time';
 import { formatTime } from '../../lib/utils';
 import { useUser } from '../auth/session';
+import { SessionList, SessionView } from './sessions';
 
 const levelText = {
   read: 'Read only',
@@ -31,6 +32,7 @@ const tools = [
   ['describe_table', 'see the columns of one table'],
   ['check_sql', 'ask the guard before a run'],
   ['run_query', 'run a guarded read'],
+  ['fetch_rows', 'read more rows of a query it ran; nothing runs again'],
   ['propose_write', 'ask its owner for a write; nothing runs yet'],
   ['get_approval', 'see where its requests stand'],
   ['withdraw', 'take back a request that has not run'],
@@ -142,15 +144,28 @@ export function AgentsPage() {
               </tbody>
             </table>
           </div>
-          {selected && (
-            <AgentDetail
-              key={selected.id}
+          {selected && params.get('session') ? (
+            <SessionView
+              key={params.get('session')}
               agent={selected}
-              owner={selected.owner.id === user?.id}
+              sessionId={params.get('session') ?? ''}
               clusters={names}
-              onEdit={() => setEditing(selected)}
-              onGone={() => setParams({})}
+              onBack={() => setParams({ agent: selected.id })}
             />
+          ) : (
+            selected && (
+              <AgentDetail
+                key={selected.id}
+                agent={selected}
+                owner={selected.owner.id === user?.id}
+                clusters={names}
+                onEdit={() => setEditing(selected)}
+                onGone={() => setParams({})}
+                onSession={(session) =>
+                  setParams({ agent: selected.id, session })
+                }
+              />
+            )
           )}
         </div>
       )}
@@ -175,12 +190,14 @@ function AgentDetail({
   clusters,
   onEdit,
   onGone,
+  onSession,
 }: {
   agent: Agent;
   owner: boolean;
   clusters: Map<string, Cluster>;
   onEdit: () => void;
   onGone: () => void;
+  onSession: (session: string) => void;
 }) {
   const pause = useAction<Agent>(
       agent.paused ? 'Agent resumed' : 'Agent paused',
@@ -249,6 +266,7 @@ function AgentDetail({
           running on this gateway were cancelled.
         </p>
       )}
+      <SessionList agent={agent} onOpen={onSession} />
       <h3>What it can reach</h3>
       <ul className="agent-reach">
         {agent.cluster_ids.map((id) => {
@@ -387,7 +405,7 @@ function AgentDetail({
         open={deleting}
         onOpenChange={setDeleting}
         title={`Delete ${agent.name}?`}
-        description="Its tokens stop working at once. Its query history stays."
+        description="Its tokens stop working at once. Its sessions and steps are deleted with it. Its query history and the audit log stay."
         danger
         onConfirm={() =>
           remove.mutate(

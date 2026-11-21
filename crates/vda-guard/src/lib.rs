@@ -148,9 +148,25 @@ pub struct Analysis {
     pub rewritten_sql: Option<String>,
     /// All issues, flattened, including top-level ones (e.g. parse errors).
     pub issues: Vec<Issue>,
-    /// Advisory performance hints; never affect the verdict. Empty when denied.
+    /// Advisory performance hints; never affect the verdict. When denied, it
+    /// holds at most one suggestion: a fix that resolves the block.
     #[serde(default)]
     pub suggestions: Vec<Suggestion>,
+    /// How the guard changed the row limit in `rewritten_sql`, when it did.
+    /// It is for the caller in this process and is never serialized: stored
+    /// and sent analyses keep their shape.
+    #[serde(skip)]
+    pub row_cap: Option<RowCap>,
+}
+
+/// The row limit the guard put into the SQL that runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowCap {
+    /// The limit as it runs, such as `LIMIT 1001`.
+    pub clause: String,
+    /// The limit as it was written, when the guard lowered one. `None` when
+    /// the statement had no limit and the guard added one.
+    pub replaces: Option<String>,
 }
 
 /// An optional performance improvement, independent of the safety verdict.

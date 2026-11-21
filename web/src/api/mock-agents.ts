@@ -1,6 +1,14 @@
 // In-memory agents and agent logins for the mock API. It follows docs/API.md
 // closely enough for the screens and their tests; it is not a second gateway.
-import type { Agent, AgentLogin, Cluster, SetupFinding, User } from './types';
+import type {
+  Agent,
+  AgentLogin,
+  AgentSession,
+  AgentStep,
+  Cluster,
+  SetupFinding,
+  User,
+} from './types';
 
 type Fail = (code: string, message: string, status?: number) => never;
 const TOKEN_PREFIX = 'vda_agent_';
@@ -11,6 +19,120 @@ const secret = () =>
     ),
   ).join('');
 
+/** What the server says to a person for each action word of a fix. */
+const TOLD: Record<string, string> = {
+  rewrite_sql: 'The agent was told to change its SQL.',
+  fix_arguments: 'The agent was told to correct the arguments of its call.',
+  choose_database: 'The agent was told to use a database from its list.',
+  ask_owner: 'The agent was told to ask its owner.',
+  propose_write: 'The agent was told to ask a person for this write.',
+  retry_later: 'The agent was told to wait and try again.',
+  stop: 'The agent was told to stop.',
+};
+const fix = (action: string, hint: string) => ({
+  action,
+  hint,
+  told: TOLD[action] ?? 'The agent was told what to do next.',
+});
+type Draft = Pick<AgentStep, 'tool' | 'task'> & Partial<AgentStep>;
+/** What a demo agent does, in order. The live session goes through `LIVE`
+ * one step at a time while someone watches it. */
+const PAST: Draft[] = [
+  { tool: 'list_databases', task: 'See which databases I can use' },
+  { tool: 'search_schema', task: 'Find the orders tables' },
+  { tool: 'describe_table', task: 'Learn the columns of orders' },
+  {
+    tool: 'check_sql',
+    task: 'Check the report query before I run it',
+    sql: 'SELECT * FROM secrets.tokens',
+    verdict: 'deny',
+    fix: fix(
+      'stop',
+      'This table is not available here. Do not try other spellings of it. Tell your owner if you need it.',
+    ),
+  },
+  {
+    tool: 'run_query',
+    task: 'Count the orders of last week for the weekly report',
+    sql: "SELECT status, count(*) FROM orders WHERE created_at > now() - interval '7 days' GROUP BY status",
+    verdict: 'allow',
+    row_count: 4,
+    history_id: 'history',
+  },
+  {
+    tool: 'run_query',
+    task: 'Close the stale orders',
+    sql: "UPDATE orders SET status = 'closed' WHERE id = 4812",
+    verdict: 'requires_approval',
+    outcome: 'approval_required',
+    fix: fix(
+      'propose_write',
+      'This statement changes data, and an agent cannot change data on its own. Call propose_write with the same SQL and say why in `task`; a person decides.',
+    ),
+  },
+];
+const LIVE: Draft[] = [
+  { tool: 'list_databases', task: 'See which databases I can use' },
+  {
+    tool: 'check_sql',
+    task: 'Check the customer query',
+    sql: 'SELECT id, name, email FROM users ORDER BY created_at DESC',
+    verdict: 'allow',
+  },
+  {
+    tool: 'run_query',
+    task: 'Read the newest customers for the support summary',
+    sql: 'SELECT id, name, email FROM users ORDER BY created_at DESC',
+    verdict: 'allow',
+    row_count: 100,
+    history_id: 'history',
+  },
+  {
+    tool: 'fetch_rows',
+    task: 'Read the next customers',
+    row_count: 100,
+    history_id: 'history',
+  },
+  {
+    tool: 'run_query',
+    task: 'Look up the API tokens',
+    sql: 'SELECT * FROM secrets.tokens',
+    verdict: 'deny',
+    outcome: 'query_denied',
+    fix: fix(
+      'stop',
+      'This table is not available here. Do not try other spellings of it. Tell your owner if you need it.',
+    ),
+  },
+  {
+    tool: 'propose_write',
+    task: 'Correct the name of customer 42, as the ticket asks',
+    sql: "UPDATE users SET name = 'Maya Patel' WHERE id = 42",
+    verdict: 'requires_approval',
+    approval_id: 'approval',
+  },
+  {
+    tool: 'get_approval',
+    task: 'See whether my request was decided',
+    approval_id: 'approval',
+  },
+  {
+    tool: 'fetch_rows',
+    task: 'Read more customers',
+    outcome: 'result_expired',
+    fix: fix(
+      'rewrite_sql',
+      'These rows are not held any more. Call run_query again, with a narrower question: add filters, select fewer columns or aggregate, so that the answer needs fewer pages.',
+    ),
+  },
+  { tool: 'search_schema', task: 'Find the invoice tables' },
+  { tool: 'describe_table', task: 'Learn the columns of invoices' },
+];
+/** Steps of the live session that are there when it is first opened. */
+const LIVE_START = 3;
+/** The live session gets a step at most this often, while it is read. */
+const LIVE_EVERY_MS = 1500;
+
 export function createAgents(context: {
   clusters: () => Cluster[];
   access: (cluster: Cluster) => string | undefined;
@@ -20,6 +142,138 @@ export function createAgents(context: {
 }) {
   const { fail, audit, now } = context;
   const agents: Agent[] = [];
+  // Demo sessions of an agent that has a token: one that ended yesterday,
+  // and one that is going on and gets a new step while someone reads it.
+  type Trail = { session: AgentSession; steps: AgentStep[]; grown: number };
+  const trails = new Map<string, Trail[]>();
+  const stepOf = (
+    draft: Draft,
+    agent: Agent,
+    n: number,
+    at: number,
+  ): AgentStep => ({
+    n,
+    id: crypto.randomUUID(),
+    database:
+      draft.tool === 'list_databases' || draft.tool === 'get_approval'
+        ? null
+        : (agent.cluster_ids[0] ?? null),
+    sql: null,
+    sql_truncated: false,
+    verdict: null,
+    outcome: 'ok',
+    fix: null,
+    row_count: null,
+    elapsed_ms: 12 + ((n * 37) % 180),
+    created_at: new Date(at).toISOString(),
+    ...draft,
+    // The demo has no stored query or request behind a step; the ids are
+    // made up, and the linked page says that it has no such item.
+    history_id: draft.history_id ? crypto.randomUUID() : null,
+    approval_id: draft.approval_id ? crypto.randomUUID() : null,
+  });
+  const summary = (
+    agent: Agent,
+    token: Agent['tokens'][number],
+    steps: AgentStep[],
+    active: boolean,
+  ): AgentSession => ({
+    id: crypto.randomUUID(),
+    agent_id: agent.id,
+    token: { id: token.id, hint: token.hint },
+    started_at: steps[0]?.created_at ?? now(),
+    last_step_at: steps.at(-1)?.created_at ?? now(),
+    steps: steps.length,
+    refusals: steps.filter((step) => step.outcome !== 'ok').length,
+    first_task: steps[0]?.task ?? null,
+    active,
+  });
+  const trailsOf = (agent: Agent): Trail[] => {
+    const known = trails.get(agent.id);
+    if (known) return known;
+    const token = agent.tokens.at(-1);
+    // An agent with no token has never called.
+    if (!token) return [];
+    const day = 26 * 3_600_000;
+    const past = PAST.map((draft, index) =>
+      stepOf(draft, agent, index + 1, Date.now() - day + index * 21_000),
+    );
+    const live = LIVE.slice(0, LIVE_START).map((draft, index) =>
+      stepOf(draft, agent, index + 1, Date.now() - (LIVE_START - index) * 9000),
+    );
+    const made = [
+      {
+        session: summary(agent, token, live, true),
+        steps: live,
+        grown: Date.now(),
+      },
+      { session: summary(agent, token, past, false), steps: past, grown: 0 },
+    ];
+    trails.set(agent.id, made);
+    return made;
+  };
+  /** The live session goes on while its agent may act and someone reads it. */
+  const grow = (agent: Agent, trail: Trail) => {
+    const live = agent.tokens.some(
+      (token) =>
+        !token.revoked_at && new Date(token.expires_at).getTime() > Date.now(),
+    );
+    const draft = LIVE[trail.steps.length];
+    if (
+      !trail.session.active ||
+      agent.paused ||
+      !live ||
+      !draft ||
+      Date.now() - trail.grown < LIVE_EVERY_MS
+    )
+      return;
+    const step = stepOf(draft, agent, trail.steps.length + 1, Date.now());
+    trail.steps.push(step);
+    trail.grown = Date.now();
+    trail.session.last_step_at = step.created_at;
+    trail.session.steps = trail.steps.length;
+    trail.session.refusals += step.outcome === 'ok' ? 0 : 1;
+  };
+  function sessions(
+    agent: Agent,
+    rest: string[],
+    query: URLSearchParams,
+  ): unknown {
+    const all = trailsOf(agent);
+    const [sessionId, sub] = rest;
+    if (!sessionId) {
+      const limit = Number(query.get('limit') ?? 50);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200)
+        fail('validation', 'Limit must be 1..=200');
+      const start = Number(query.get('cursor') ?? 0);
+      return {
+        items: all.slice(start, start + limit).map((trail) => trail.session),
+        next_cursor: start + limit < all.length ? String(start + limit) : null,
+      };
+    }
+    const trail = all.find((item) => item.session.id === sessionId);
+    if (!trail || sub !== 'steps')
+      return fail('not_found', 'Resource not found', 404);
+    const after = Number(query.get('after') ?? 0),
+      limit = Number(query.get('limit') ?? 200);
+    if (
+      !Number.isInteger(after) ||
+      after < 0 ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 500
+    )
+      fail('validation', '`after` must be 0 or more and `limit` 1..=500');
+    grow(agent, trail);
+    const waiting = trail.steps.filter((step) => step.n > after);
+    const items = waiting.slice(0, limit);
+    return {
+      session: trail.session,
+      items,
+      after: items.at(-1)?.n ?? after,
+      more: waiting.length > limit,
+    };
+  }
   const logins = new Map<string, Extract<AgentLogin, { configured: true }>>();
   const reachable = (ids: unknown): string[] => {
     const list = Array.isArray(ids) ? [...new Set(ids.map(String))] : [];
@@ -110,6 +364,7 @@ export function createAgents(context: {
       return agent;
     }
     const [agent, owner] = find(id, user);
+    if (sub === 'sessions') return sessions(agent, segments.slice(3), query);
     if (sub === 'tokens') {
       if (method === 'POST') {
         if (!owner) fail('forbidden', 'Access denied', 403);
@@ -151,6 +406,7 @@ export function createAgents(context: {
     }
     if (method === 'GET') return agent;
     if (method === 'DELETE') {
+      trails.delete(agent.id);
       agents.splice(agents.indexOf(agent), 1);
       audit('agent.delete', 'agent', agent.id, { name: agent.name });
       return undefined;

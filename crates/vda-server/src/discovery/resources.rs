@@ -284,6 +284,7 @@ pub(super) async fn sync(
         .await?;
     tx.commit().await?;
     state.core.pools.invalidate(cluster).await;
+    state.forget_held(cluster);
     state.schema_cache.invalidate(&cluster).await;
     Ok(Json(
         crate::clusters::view(&state, &user, db::cluster(&state.db, cluster).await?).await?,
