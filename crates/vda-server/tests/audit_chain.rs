@@ -564,7 +564,10 @@ async fn two_nodes_never_fork_the_chain() {
         shares.push(task.await.unwrap());
     }
     assert_eq!(assert_sound(&f.db, f.crypto()).await, 300);
-    assert_eq!(shares.iter().sum::<u64>(), 300, "{shares:?}");
+    // No row was sealed twice. The helper above is a third sealer, so the
+    // two nodes together can have sealed a few rows fewer than all.
+    let by_nodes = shares.iter().sum::<u64>();
+    assert!(by_nodes > 0 && by_nodes <= 300, "{shares:?}");
     // While one session seals, the other gets nothing to do: it does not
     // wait and does not read the head.
     let mut holder = f.db.begin().await.unwrap();

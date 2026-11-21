@@ -1,8 +1,8 @@
 # ============================================================================
 #  DEMO ONLY. Do not use this file for anything but a look at the product.
 #
-#  It uses well-known passwords, plain HTTP, made-up shop data and a master
-#  key that lives in a Docker volume. Everything listens on 127.0.0.1 only.
+#  It uses well-known passwords, plain HTTP, made-up shop data, and a master
+#  key and a metadata password that live in a Docker volume. Everything listens on 127.0.0.1 only.
 #  For a real installation see docs/DEPLOYMENT.md.
 #
 #  Start:   docker compose -f deploy/demo/docker-compose.yml up --build
@@ -42,15 +42,25 @@ services:
           head -c 32 /dev/urandom | base64 > /state/master-key
         fi
         chmod 0444 /state/master-key
+        # The password of the metadata database is made here too, so that
+        # none is written in this file.
+        if [ ! -s /state/metadata-password ]; then
+          head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > /state/metadata-password
+        fi
+        chmod 0444 /state/metadata-password
 
   metadata:
     image: postgres:17
     attach: false
     environment:
       POSTGRES_USER: vda
-      POSTGRES_PASSWORD: ${VDA_DEMO_METADATA_PASSWORD:-vda-local-only}
+      POSTGRES_PASSWORD_FILE: /demo-state/metadata-password
       POSTGRES_DB: vda
-    volumes: ['metadata:/var/lib/postgresql/data']
+    volumes:
+      - metadata:/var/lib/postgresql/data
+      - state:/demo-state:ro
+    depends_on:
+      init: {condition: service_completed_successfully}
     healthcheck:
       test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U vda -d vda']
       interval: 2s
@@ -83,20 +93,20 @@ services:
     attach: false
     ports: ['127.0.0.1:${VDA_DEMO_PORT:-8080}:8080']
     environment:
-      VDA_DATABASE_URL: postgres://vda:${VDA_DEMO_METADATA_PASSWORD:-vda-local-only}@metadata:5432/vda
       VDA_BOOTSTRAP_ADMIN_EMAIL: admin@example.com
       VDA_BOOTSTRAP_ADMIN_PASSWORD: demo-admin-local-only
       VDA_COOKIE_SECURE: 'false'
       VDA_PUBLIC_URL: http://localhost:${VDA_DEMO_PORT:-8080}
       VDA_LOG_FORMAT: text
-    # The gateway takes its master key from the environment only, and its
-    # image has no shell. The static shell that `init` put into the volume
-    # reads the key that was made at the first start, then starts the gateway.
+    # The gateway takes its master key and its database URL from the
+    # environment only, and its image has no shell. The static shell that
+    # `init` put into the volume reads the key and the metadata password that
+    # were made at the first start, then starts the gateway.
     entrypoint:
       - /demo-state/bin/busybox
       - sh
       - -c
-      - 'read -r VDA_MASTER_KEY < /demo-state/master-key && export VDA_MASTER_KEY && exec /usr/local/bin/visp-db-access serve'
+      - 'read -r VDA_MASTER_KEY < /demo-state/master-key && read -r metadata_password < /demo-state/metadata-password && export VDA_MASTER_KEY VDA_DATABASE_URL="postgres://vda:$${metadata_password}@metadata:5432/vda" && exec /usr/local/bin/visp-db-access serve'
     volumes: ['state:/demo-state:ro']
     healthcheck:
       test: [CMD, /demo-state/bin/busybox, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/readyz']
