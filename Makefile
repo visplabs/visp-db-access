@@ -14,4 +14,4 @@ lint:
 docker:
 	docker build -t visp-db-access:local .
 demo:
-	docker compose --profile demo up --build
+	docker compose -f deploy/demo/docker-compose.yml up --build

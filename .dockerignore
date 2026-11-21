@@ -1,0 +1,16 @@
+# Keep local build output, dependencies and private files out of the image
+# build. A fresh clone has none of them; a working copy does. The image needs
+# no file or folder at the top level whose name starts with a dot.
+.*
+*.log
+target
+target-*
+crates/vda-guard/fuzz/target
+crates/vda-guard/fuzz/corpus
+crates/vda-guard/fuzz/artifacts
+web/node_modules
+web/dist
+web/screenshots
+web/test-results
+web/playwright-report
+web/*.tsbuildinfo

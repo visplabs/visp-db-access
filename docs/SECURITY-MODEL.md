@@ -1,8 +1,10 @@
 # Security model
 
-visp-db-access sits between people and production databases. This document
-describes what it guarantees, how, and where its limits are. To report a
-vulnerability, see [SECURITY.md](../SECURITY.md).
+visp-db-access sits between people, AI agents and production databases. This
+document describes what it guarantees, how, and where its limits are. The
+[threat model](THREAT-MODEL.md) looks at the same system from the attacker's
+side: who can attack it, what the gate does about each attack, and what is
+left over. To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 
 ## What a query goes through
 

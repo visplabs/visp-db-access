@@ -83,6 +83,21 @@ docker compose up --build            # gateway + metadata Postgres
 docker compose --profile demo up     # plus demo PostgreSQL and MySQL targets
 ```
 
+`docker compose` needs `VDA_MASTER_KEY` and `VDA_BOOTSTRAP_ADMIN_PASSWORD` in
+the environment. The `demo` profile only starts two databases with sample
+shop data; you add them as clusters yourself, with **TLS mode** `disable`
+(they have no certificate the gateway can verify) and an environment other
+than production if you want to try writes:
+
+| Engine     | Host            | Port | Database | User   | Password          |
+| ---------- | --------------- | ---- | -------- | ------ | ----------------- |
+| PostgreSQL | `demo-postgres` | 5432 | `shop`   | `demo` | `demo-local-only` |
+| MySQL      | `demo-mysql`    | 3306 | `shop`   | `demo` | `demo-local-only` |
+
+For a demo that sets itself up, with an agent and a policy, use
+`deploy/demo/docker-compose.yml` instead: see [Demo](DEMO.md). It is for a
+look at the product only.
+
 ## Kubernetes (Helm)
 
 `deploy/helm/visp-db-access` provides a two-replica Deployment, Service,

@@ -64,6 +64,9 @@ spec:
             - {name: VDA_ALLOW_PRIVATE_TARGETS, value: {{ .Values.config.allowPrivateTargets | quote }}}
             - {name: VDA_METADATA_POOL_SIZE, value: {{ .Values.config.metadataPoolSize | quote }}}
             - {name: VDA_PUBLIC_URL, value: {{ .Values.config.publicUrl | quote }}}
+            - {name: VDA_AGENT_STEPS_RETENTION_DAYS, value: {{ .Values.config.agentStepsRetentionDays | int64 | quote }}}
+            - {name: VDA_HELD_RESULTS_MAX_BYTES, value: {{ .Values.config.heldResultsMaxBytes | int64 | quote }}}
+            - {name: VDA_HELD_RESULTS_AGENT_MAX_BYTES, value: {{ .Values.config.heldResultsAgentMaxBytes | int64 | quote }}}
             - {name: VDA_LOG_FORMAT, value: json}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
