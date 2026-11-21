@@ -106,7 +106,7 @@ functions what it can do; `judge::require` refuses an agent's query when the
 answer is more than the policy. The gateway holds no administrative power on
 the target. The text guard stays as the fast first check.
 
-### crates/vda-server (binary `visp-db-access`)
+### crates/vda-server (binary `visp-gate`)
 
 axum HTTP API + embedded SPA. Metadata in Postgres (sqlx migrations). Owns
 authn/z, pool cache, policies, approvals, audit, health and discovery
@@ -348,7 +348,7 @@ another: they are compared on every page, with values that
 `crates/vda-discovery` defines a `Provider` trait (`test`, `scan`) returning
 normalized `DiscoveredDb` records; the AWS implementation uses `aws-config`
 (default credential chain) + `aws-sdk-sts` (AssumeRole with external ID,
-session name `visp-db-access`, 1 h) + `aws-sdk-rds` (`DescribeDBInstances`,
+session name `visp-gate`, 1 h) + `aws-sdk-rds` (`DescribeDBInstances`,
 `DescribeDBClusters`, paginated, regions scanned concurrently with a small
 bound). The server stores sources, scan runs and discovered resources; the
 leader node (same advisory-lock pattern as health checks) runs due scans.

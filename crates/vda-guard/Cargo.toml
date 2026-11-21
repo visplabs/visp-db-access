@@ -1,6 +1,6 @@
 [package]
 name = "vda-guard"
-description = "SQL safety analysis and rewriting for visp-db-access"
+description = "SQL safety analysis and rewriting for visp-gate"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

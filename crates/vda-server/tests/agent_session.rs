@@ -60,10 +60,12 @@ impl Fixture {
     }
     async fn with(configure: impl FnOnce(&mut Config)) -> Option<Self> {
         let (Ok(url), Ok(target_url)) = (
-            std::env::var("VDA_TEST_DATABASE_URL"),
-            std::env::var("VDA_TEST_POSTGRES_URL"),
+            std::env::var("VISP_GATE_TEST_DATABASE_URL"),
+            std::env::var("VISP_GATE_TEST_POSTGRES_URL"),
         ) else {
-            eprintln!("skipped: VDA_TEST_DATABASE_URL and VDA_TEST_POSTGRES_URL are not set");
+            eprintln!(
+                "skipped: VISP_GATE_TEST_DATABASE_URL and VISP_GATE_TEST_POSTGRES_URL are not set"
+            );
             return None;
         };
         let root = sqlx::PgPool::connect(&url).await.unwrap();

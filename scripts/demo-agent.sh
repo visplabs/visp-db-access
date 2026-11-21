@@ -5,7 +5,7 @@
 # behave as the demo says.
 #
 #   docker compose -f deploy/demo/docker-compose.yml run --rm agent [--follow]
-#   VDA_AGENT_TOKEN=… VDA_DEMO_URL=http://127.0.0.1:8080 scripts/demo-agent.sh [--follow]
+#   VISP_GATE_AGENT_TOKEN=… VISP_GATE_DEMO_URL=http://127.0.0.1:8080 scripts/demo-agent.sh [--follow]
 #
 # --follow  after the write is asked for, wait until a person has approved and
 #           run it, or rejected it, in the console, and print the outcome.
@@ -26,16 +26,16 @@ for argument in "$@"; do
   esac
 done
 
-base_url=${VDA_DEMO_URL:-http://127.0.0.1:8080}
-public_url=${VDA_DEMO_PUBLIC_URL:-$base_url}
-database_name=${VDA_DEMO_DATABASE:-shop-production}
-follow_seconds=${VDA_DEMO_FOLLOW_SECONDS:-900}
-token=${VDA_AGENT_TOKEN:-}
-if [[ -z $token && -n ${VDA_AGENT_TOKEN_FILE:-} && -r ${VDA_AGENT_TOKEN_FILE:-} ]]; then
-  token=$(head -n 1 -- "$VDA_AGENT_TOKEN_FILE")
+base_url=${VISP_GATE_DEMO_URL:-http://127.0.0.1:8080}
+public_url=${VISP_GATE_DEMO_PUBLIC_URL:-$base_url}
+database_name=${VISP_GATE_DEMO_DATABASE:-shop-production}
+follow_seconds=${VISP_GATE_DEMO_FOLLOW_SECONDS:-900}
+token=${VISP_GATE_AGENT_TOKEN:-}
+if [[ -z $token && -n ${VISP_GATE_AGENT_TOKEN_FILE:-} && -r ${VISP_GATE_AGENT_TOKEN_FILE:-} ]]; then
+  token=$(head -n 1 -- "$VISP_GATE_AGENT_TOKEN_FILE")
 fi
 if [[ -z $token ]]; then
-  printf 'No agent token. Set VDA_AGENT_TOKEN, or VDA_AGENT_TOKEN_FILE to a file that holds one.\n' >&2
+  printf 'No agent token. Set VISP_GATE_AGENT_TOKEN, or VISP_GATE_AGENT_TOKEN_FILE to a file that holds one.\n' >&2
   exit 2
 fi
 
@@ -105,7 +105,7 @@ printf '%sAn agent at the gate%s  %s%s/api/v1/mcp%s\n' "$bold" "$plain" "$dim" "
 step 'Connect and read the list of tools'
 rpc initialize '{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"demo-agent","version":"1"}}'
 jq '.result' "$raw" > "$answer"
-claim '.serverInfo.name == "visp-db-access" and (.instructions | length) > 0' 'the server did not introduce itself'
+claim '.serverInfo.name == "visp-gate" and (.instructions | length) > 0' 'the server did not introduce itself'
 line server "$(value '.serverInfo.name + " " + .serverInfo.version + ", protocol " + .protocolVersion')"
 rpc tools/list '{}'
 jq '.result' "$raw" > "$answer"

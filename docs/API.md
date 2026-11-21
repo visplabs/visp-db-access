@@ -387,7 +387,7 @@ interface SchemaTree {
 
 - `GET /healthz` → `200 "ok"` — process alive.
 - `GET /readyz` → `200` when metadata DB reachable, else `503`.
-- `GET /metrics` → Prometheus text with `Authorization: Bearer <VDA_METRICS_TOKEN>`;
+- `GET /metrics` → Prometheus text with `Authorization: Bearer <VISP_GATE_METRICS_TOKEN>`;
   403 if the token is absent, incorrect, or metrics access is not configured.
 
 ### Auth
@@ -767,7 +767,7 @@ What is recorded, and what is not:
   the same moment cannot give two steps the same number or the token two sessions. Steps
   of one node are numbered in the order its calls ended; the steps of two nodes
   interleave in the order their batches were written.
-- Steps older than `VDA_AGENT_STEPS_RETENTION_DAYS` (default 30) are deleted by the
+- Steps older than `VISP_GATE_AGENT_STEPS_RETENTION_DAYS` (default 30) are deleted by the
   maintenance cycle of the leader node, 5,000 at a time, also in a session that is still
   going on; a session is deleted when it has no step left. `steps` and `refusals` of a
   session keep counting what was written.
@@ -1046,8 +1046,8 @@ clusters: [{id, name, engine, provider, region, environment, level, enforced_by}
     disk. A cursor is refused from 5 minutes after the query or the last page; the
     memory is freed by a sweep up to 30 seconds later. Held rows also end when the
     gateway stops, and when the node needs the memory: all held rows of a node stay under
-    `VDA_HELD_RESULTS_MAX_BYTES` (default 256 MiB) and those of one agent under
-    `VDA_HELD_RESULTS_AGENT_MAX_BYTES` (default 64 MiB), counted as the rows' JSON text
+    `VISP_GATE_HELD_RESULTS_MAX_BYTES` (default 256 MiB) and those of one agent under
+    `VISP_GATE_HELD_RESULTS_AGENT_MAX_BYTES` (default 64 MiB), counted as the rows' JSON text
     plus a fixed cost per value, and the columns' names and types; an agent holds at most 32 results. The oldest are
     dropped first: the agent's own, then anyone's. A result that alone is over the
     agent's cap is not held at all (no `next_cursor`).
@@ -1245,8 +1245,9 @@ every transaction that could still commit an event before it has ended.
 An independent verifier needs the metadata database, the master key and this section.
 
 - **Key.** `chain_key = SHA-256("visp-db-access audit chain key v1" || 0x00 || master_key)`,
-  where `master_key` is the 32 bytes that `VDA_MASTER_KEY` encodes.
+  where `master_key` is the 32 bytes that `VISP_GATE_MASTER_KEY` encodes.
   `key_id` is the first 8 bytes of `HMAC-SHA256(chain_key, "audit chain key id")` in hex.
+  The label keeps the product's earlier name: it is part of the stored format.
 - **Row.** The bytes of an event are the label `vda-audit-row-v1` (16 bytes, ASCII)
   followed by ten fields in this order: `id`, `actor_id`, `action`, `target_type`,
   `target_id`, `ip`, `details`, `created_at`, `seq`, `txid`. A field that is NULL is the
@@ -1332,7 +1333,7 @@ With the master key of 32 bytes `0x03`, the event `id` `11111111-2222-4333-8444-
 `1795255200123456`, `seq` `7` and `txid` `4242` at position 1, with `segment_start` 1 and
 64 zeros as `prev_hash`, has the hash
 `a34e37a372f82349c4c347bb41689fe7c8374cfb725df9580d8a81f093a9ee04`, and the `key_id` is
-`4a1886b932e8ae81`. The command `visp-db-access verify-audit` does all of this.
+`4a1886b932e8ae81`. The command `visp-gate verify-audit` does all of this.
 
 ### Settings
 
@@ -1365,7 +1366,7 @@ interface NoticeSettings {
   events: NoticeEvent[]; // default ["approval.created"]
   include_reason: boolean; // default false
   include_row_count: boolean; // default false
-  links: boolean; // VDA_PUBLIC_URL is set, so notices link to the request
+  links: boolean; // VISP_GATE_PUBLIC_URL is set, so notices link to the request
   delivery: {
     pending: number; // notices that wait or are being retried
     dead: number; // notices that were given up
@@ -1383,7 +1384,7 @@ interface NoticeSettings {
   removes it. An address must be `https`, without a user name, password or fragment,
   at most 2048 bytes, and must not be an address inside the network (see
   [the security model](SECURITY-MODEL.md)). Plain `http` is accepted only to loopback,
-  and only with `VDA_ALLOW_PRIVATE_TARGETS`. A host name is not resolved when it is
+  and only with `VISP_GATE_ALLOW_PRIVATE_TARGETS`. A host name is not resolved when it is
   saved; it is resolved and checked for every delivery. Turning notices on needs an
   address, at least one event and, for the `webhook` format, a signing secret (400
   `validation` otherwise).
@@ -1453,7 +1454,7 @@ interface Notice {
   // names are emails. For an agent's request it is the agent's owner.
   requester: string;
   agent: string | null; // the agent's name when an agent asked
-  url?: string; // link to the request; only when VDA_PUBLIC_URL is set
+  url?: string; // link to the request; only when VISP_GATE_PUBLIC_URL is set
   error_code?: string | null; // only for approval.failed, e.g. "effect_changed"
   reason?: string; // only with include_reason; one line, at most 500 characters
   affected_rows?: number; // only with include_row_count, and when known
@@ -1471,21 +1472,21 @@ sent as one plain line each: control characters and line breaks become a space, 
 of spaces collapse, characters that change the direction of text are removed, and a
 name is cut at 200 characters.
 
-| Header            | Value                                                      |
-| ----------------- | ---------------------------------------------------------- |
-| `X-VDA-Event`     | the event name                                             |
-| `X-VDA-Delivery`  | the notice's id; the same on every attempt                 |
-| `X-VDA-Timestamp` | Unix seconds when this attempt was signed                  |
-| `X-VDA-Signature` | `v1=` + hex HMAC-SHA256 of `<timestamp>.<delivery>.<body>` |
-| `Content-Type`    | `application/json`                                         |
-| `User-Agent`      | `vda-notices/1`                                            |
+| Header                  | Value                                                      |
+| ----------------------- | ---------------------------------------------------------- |
+| `X-Visp-Gate-Event`     | the event name                                             |
+| `X-Visp-Gate-Delivery`  | the notice's id; the same on every attempt                 |
+| `X-Visp-Gate-Timestamp` | Unix seconds when this attempt was signed                  |
+| `X-Visp-Gate-Signature` | `v1=` + hex HMAC-SHA256 of `<timestamp>.<delivery>.<body>` |
+| `Content-Type`          | `application/json`                                         |
+| `User-Agent`            | `visp-gate-notices/1`                                      |
 
 The key of the HMAC is the secret exactly as it was shown, prefix included, as UTF-8
-bytes. The message is the `X-VDA-Timestamp` value, a dot, the `X-VDA-Delivery` value,
+bytes. The message is the `X-Visp-Gate-Timestamp` value, a dot, the `X-Visp-Gate-Delivery` value,
 a dot, and the raw bytes of the body. `v1` names this scheme; a later scheme will have
 another prefix. A receiver must: compute the signature over the bytes it received (not
 over re-encoded JSON), compare in constant time, refuse a timestamp that is more than
-five minutes from its own clock, and remember recent `X-VDA-Delivery` values to drop a
+five minutes from its own clock, and remember recent `X-Visp-Gate-Delivery` values to drop a
 repeat. Because the delivery id is signed, a captured notice cannot be replayed under
 another id.
 
@@ -1501,9 +1502,9 @@ def verify(secret: str, headers, body: bytes) -> bool:
 
     `headers` is the request's header mapping (its `get` ignores case in the
     usual web frameworks); `body` is the raw request body, as bytes."""
-    timestamp = headers.get("X-VDA-Timestamp") or ""
-    delivery = headers.get("X-VDA-Delivery") or ""
-    given = headers.get("X-VDA-Signature") or ""
+    timestamp = headers.get("X-Visp-Gate-Timestamp") or ""
+    delivery = headers.get("X-Visp-Gate-Delivery") or ""
+    given = headers.get("X-Visp-Gate-Signature") or ""
     # Unix seconds have 10 digits. A longer number is not a time, and a very
     # long one cannot be compared with the clock at all.
     if not (timestamp.isascii() and timestamp.isdigit() and len(timestamp) <= 12):
@@ -1532,7 +1533,7 @@ one sentence about the event, the link when there is one, and, with the switches
 reason and the row count. Every value is one plain line (as above) and the characters
 `&`, `<` and `>` are escaped in it, so a name or a reason cannot make a mention, a
 link or a second line. The sentence is cut to stay under Slack's 3000-character limit
-for a section; the link is never cut. Slack does not check signatures, so no `X-VDA-*`
+for a section; the link is never cut. Slack does not check signatures, so no `X-Visp-Gate-*`
 header is sent; the address itself is the secret.
 
 **Delivery.** A 2xx answer is a delivery. Anything else is tried again: six attempts
@@ -1545,7 +1546,7 @@ given-up ones after 30. The gateway counts `vda_notices_sent_total`,
 a notice is not sent while an earlier notice of the same request still waits, also
 while that earlier one is being retried. If the earlier one is given up, the later
 ones go. Notices of different requests are sent side by side and can arrive in any
-order. Delivery is at least once: a receiver can get the same `X-VDA-Delivery` again
+order. Delivery is at least once: a receiver can get the same `X-Visp-Gate-Delivery` again
 after a later notice of the same request (a node that stopped before it recorded a
 delivery sends it again). A receiver that needs the latest state keeps the largest
 `sequence` it has seen for an `approval_id` and ignores smaller ones.

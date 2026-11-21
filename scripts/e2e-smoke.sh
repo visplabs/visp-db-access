@@ -3,16 +3,16 @@
 set -euo pipefail
 umask 077
 for tool in curl jq; do command -v "$tool" >/dev/null || { printf 'Missing tool: %s\n' "$tool" >&2; exit 1; }; done
-base_url=${VDA_SMOKE_BASE_URL:-http://127.0.0.1:8080}
-admin_email=${VDA_SMOKE_ADMIN_EMAIL:-admin@local.test}
-admin_password=${VDA_SMOKE_ADMIN_PASSWORD:-local-admin-password}
-target_host=${VDA_SMOKE_TARGET_HOST:-127.0.0.1}
-target_port=${VDA_SMOKE_TARGET_PORT:-55432}
-target_db=${VDA_SMOKE_TARGET_DATABASE:-shop}
-reader=${VDA_SMOKE_READER:-shop_reader}
-reader_password=${VDA_SMOKE_READER_PASSWORD:-shop_reader_pw}
-writer=${VDA_SMOKE_WRITER:-shop_writer}
-writer_password=${VDA_SMOKE_WRITER_PASSWORD:-shop_writer_pw}
+base_url=${VISP_GATE_SMOKE_BASE_URL:-http://127.0.0.1:8080}
+admin_email=${VISP_GATE_SMOKE_ADMIN_EMAIL:-admin@local.test}
+admin_password=${VISP_GATE_SMOKE_ADMIN_PASSWORD:-local-admin-password}
+target_host=${VISP_GATE_SMOKE_TARGET_HOST:-127.0.0.1}
+target_port=${VISP_GATE_SMOKE_TARGET_PORT:-55432}
+target_db=${VISP_GATE_SMOKE_TARGET_DATABASE:-shop}
+reader=${VISP_GATE_SMOKE_READER:-shop_reader}
+reader_password=${VISP_GATE_SMOKE_READER_PASSWORD:-shop_reader_pw}
+writer=${VISP_GATE_SMOKE_WRITER:-shop_writer}
+writer_password=${VISP_GATE_SMOKE_WRITER_PASSWORD:-shop_writer_pw}
 run_id="$(date +%s)-$$"
 work_dir=$(mktemp -d)
 cleanup() {
@@ -23,7 +23,7 @@ cleanup() {
     wait "$mysql_request_pid" 2>/dev/null || true
   fi
   if [[ -n ${discovery_fixture_backup:-} ]]; then
-    cat -- "$discovery_fixture_backup" > "$VDA_DISCOVERY_FAKE_FIXTURE"
+    cat -- "$discovery_fixture_backup" > "$VISP_GATE_DISCOVERY_FAKE_FIXTURE"
   fi
   rm -rf -- "$work_dir"
 }
@@ -291,18 +291,18 @@ check '.verdict == "requires_approval" and .preflight.state == "needs_approval" 
 call POST "/clusters/$cluster_id/analyze" 200 "$admin_jar" '{"sql":"SELECT 1; SELECT 2"}'
 check '.verdict == "deny" and .preflight.state == "blocked" and .preflight.action == "apply_fix" and .preflight.fix.sql == "SELECT 1"'
 pass 'pre-flight states: safe with the guard change, needs approval, blocked with a fix'
-if [[ -n ${VDA_SMOKE_MYSQL_HOST:-} ]]; then
+if [[ -n ${VISP_GATE_SMOKE_MYSQL_HOST:-} ]]; then
   # shellcheck source=/dev/null
   source "$(dirname -- "${BASH_SOURCE[0]}")/mysql-smoke.sh"
 else
-  printf 'SKIP MySQL: VDA_SMOKE_MYSQL_HOST is unset.\n'
+  printf 'SKIP MySQL: VISP_GATE_SMOKE_MYSQL_HOST is unset.\n'
 fi
-if [[ -n ${VDA_DISCOVERY_FAKE_FIXTURE:-} ]]; then
+if [[ -n ${VISP_GATE_DISCOVERY_FAKE_FIXTURE:-} ]]; then
   # The running fake provider must use this same writable temporary fixture.
   # shellcheck source=/dev/null
   source "$(dirname -- "${BASH_SOURCE[0]}")/discovery-smoke.sh"
 else
-  printf 'SKIP discovery: VDA_DISCOVERY_FAKE_FIXTURE is unset.\n'
+  printf 'SKIP discovery: VISP_GATE_DISCOVERY_FAKE_FIXTURE is unset.\n'
 fi
 # The audit hash chain. Everything this run wrote is sealed within a few ticks
 # of the sealer (it waits for transactions that are still open), every event

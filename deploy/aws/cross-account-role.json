@@ -5,7 +5,7 @@
       "Sid": "TrustGatewayWithExternalId",
       "Effect": "Allow",
       "Principal": {
-        "AWS": "arn:aws:iam::111111111111:role/visp-db-access"
+        "AWS": "arn:aws:iam::111111111111:role/visp-gate"
       },
       "Action": "sts:AssumeRole",
       "Condition": {

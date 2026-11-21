@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 
 /// Command-line entry point.
 #[derive(Debug, Parser)]
-#[command(name = "visp-db-access", version)]
+#[command(name = "visp-gate", version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -26,7 +26,7 @@ pub enum Command {
         email: String,
         #[arg(long)]
         name: String,
-        #[arg(long, env = "VDA_ADMIN_PASSWORD", hide_env_values = true)]
+        #[arg(long, env = "VISP_GATE_ADMIN_PASSWORD", hide_env_values = true)]
         password: SecretString,
     },
     /// Generate a base64 master key without connecting to any database.
@@ -56,58 +56,70 @@ pub enum Command {
 /// Gateway configuration. Secrets are redacted by their types.
 #[derive(Debug, Clone, clap::Args)]
 pub struct Config {
-    #[arg(long, env = "VDA_DATABASE_URL", hide_env_values = true)]
+    #[arg(long, env = "VISP_GATE_DATABASE_URL", hide_env_values = true)]
     pub database_url: Option<SecretString>,
-    #[arg(long, env = "VDA_MASTER_KEY", hide_env_values = true)]
+    #[arg(long, env = "VISP_GATE_MASTER_KEY", hide_env_values = true)]
     pub master_key: Option<SecretString>,
-    #[arg(long, env = "VDA_BIND", default_value = "0.0.0.0:8080")]
+    #[arg(long, env = "VISP_GATE_BIND", default_value = "0.0.0.0:8080")]
     pub bind: SocketAddr,
-    #[arg(long, env = "VDA_METADATA_POOL_SIZE", default_value = "20")]
+    #[arg(long, env = "VISP_GATE_METADATA_POOL_SIZE", default_value = "20")]
     pub metadata_pool_size: u32,
-    #[arg(long, env = "VDA_BOOTSTRAP_ADMIN_EMAIL")]
+    #[arg(long, env = "VISP_GATE_BOOTSTRAP_ADMIN_EMAIL")]
     pub bootstrap_admin_email: Option<String>,
-    #[arg(long, env = "VDA_BOOTSTRAP_ADMIN_PASSWORD", hide_env_values = true)]
+    #[arg(
+        long,
+        env = "VISP_GATE_BOOTSTRAP_ADMIN_PASSWORD",
+        hide_env_values = true
+    )]
     pub bootstrap_admin_password: Option<SecretString>,
-    #[arg(long, env="VDA_COOKIE_SECURE", default_value="true", action=clap::ArgAction::Set)]
+    #[arg(long, env="VISP_GATE_COOKIE_SECURE", default_value="true", action=clap::ArgAction::Set)]
     pub cookie_secure: bool,
-    #[arg(long, env = "VDA_ALLOWED_CIDRS", default_value = "")]
+    #[arg(long, env = "VISP_GATE_ALLOWED_CIDRS", default_value = "")]
     pub allowed_cidrs: Cidrs,
     #[arg(
         long,
-        env = "VDA_TRUSTED_PROXIES",
+        env = "VISP_GATE_TRUSTED_PROXIES",
         alias = "trusted-proxies",
         default_value = ""
     )]
     pub trusted_proxy_cidrs: Cidrs,
-    /// Backward-compatible deployment variable; merged with VDA_TRUSTED_PROXIES.
-    #[arg(long, env = "VDA_TRUSTED_PROXY_CIDRS", default_value = "")]
+    /// Backward-compatible deployment variable; merged with VISP_GATE_TRUSTED_PROXIES.
+    #[arg(long, env = "VISP_GATE_TRUSTED_PROXY_CIDRS", default_value = "")]
     pub legacy_trusted_proxy_cidrs: Cidrs,
-    #[arg(long, env="VDA_TRUST_PROXY_HEADERS", default_value="false", action=clap::ArgAction::Set)]
+    #[arg(long, env="VISP_GATE_TRUST_PROXY_HEADERS", default_value="false", action=clap::ArgAction::Set)]
     pub trust_proxy_headers: bool,
-    #[arg(long, env="VDA_ALLOW_PRIVATE_TARGETS", default_value="false", action=clap::ArgAction::Set)]
+    #[arg(long, env="VISP_GATE_ALLOW_PRIVATE_TARGETS", default_value="false", action=clap::ArgAction::Set)]
     pub allow_private_targets: bool,
-    #[arg(long, env="VDA_LOG_FORMAT", default_value="text", value_parser=["text","json"])]
+    #[arg(long, env="VISP_GATE_LOG_FORMAT", default_value="text", value_parser=["text","json"])]
     pub log_format: String,
-    #[arg(long, env = "VDA_METRICS_TOKEN", hide_env_values = true)]
+    #[arg(long, env = "VISP_GATE_METRICS_TOKEN", hide_env_values = true)]
     pub metrics_token: Option<SecretString>,
     /// The address people open the console at, such as
     /// `https://gate.example.com`. Notices link to a request only when this
     /// is set; an empty value counts as not set.
-    #[arg(long, env = "VDA_PUBLIC_URL")]
+    #[arg(long, env = "VISP_GATE_PUBLIC_URL")]
     pub public_url: Option<String>,
     /// Days the record of agent steps and sessions is kept. Older steps are
     /// deleted by the maintenance cycle.
-    #[arg(long, env = "VDA_AGENT_STEPS_RETENTION_DAYS", default_value = "30")]
+    #[arg(
+        long,
+        env = "VISP_GATE_AGENT_STEPS_RETENTION_DAYS",
+        default_value = "30"
+    )]
     pub agent_steps_retention_days: u32,
     /// Memory, in bytes, that this node may use for rows it holds for
     /// `fetch_rows`, for all agents together. 0 holds nothing: an agent then
     /// gets no cursor and narrows its query instead.
-    #[arg(long, env = "VDA_HELD_RESULTS_MAX_BYTES", default_value = "268435456")]
+    #[arg(
+        long,
+        env = "VISP_GATE_HELD_RESULTS_MAX_BYTES",
+        default_value = "268435456"
+    )]
     pub held_results_max_bytes: u64,
     /// The same bound for the rows held for one agent.
     #[arg(
         long,
-        env = "VDA_HELD_RESULTS_AGENT_MAX_BYTES",
+        env = "VISP_GATE_HELD_RESULTS_AGENT_MAX_BYTES",
         default_value = "67108864"
     )]
     pub held_results_agent_max_bytes: u64,
@@ -115,14 +127,20 @@ pub struct Config {
 impl Config {
     /// Validate options before starting services.
     pub fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(self.database_url.is_some(), "VDA_DATABASE_URL is required");
-        anyhow::ensure!(self.master_key.is_some(), "VDA_MASTER_KEY is required");
+        anyhow::ensure!(
+            self.database_url.is_some(),
+            "VISP_GATE_DATABASE_URL is required"
+        );
+        anyhow::ensure!(
+            self.master_key.is_some(),
+            "VISP_GATE_MASTER_KEY is required"
+        );
         use secrecy::ExposeSecret;
         anyhow::ensure!(
             self.metrics_token
                 .as_ref()
                 .is_none_or(|token| !token.expose_secret().is_empty()),
-            "VDA_METRICS_TOKEN must not be empty when set"
+            "VISP_GATE_METRICS_TOKEN must not be empty when set"
         );
         anyhow::ensure!(
             (1..=200).contains(&self.metadata_pool_size),
@@ -134,19 +152,19 @@ impl Config {
         );
         anyhow::ensure!(
             (1..=3650).contains(&self.agent_steps_retention_days),
-            "VDA_AGENT_STEPS_RETENTION_DAYS must be 1..=3650"
+            "VISP_GATE_AGENT_STEPS_RETENTION_DAYS must be 1..=3650"
         );
         // The bound for one agent is never more than the bound for the node;
         // a larger value is cut to it when the store is made.
         anyhow::ensure!(
             self.held_results_max_bytes <= MAX_HELD_BYTES
                 && self.held_results_agent_max_bytes <= MAX_HELD_BYTES,
-            "VDA_HELD_RESULTS_MAX_BYTES and VDA_HELD_RESULTS_AGENT_MAX_BYTES must be at most 64 GiB"
+            "VISP_GATE_HELD_RESULTS_MAX_BYTES and VISP_GATE_HELD_RESULTS_AGENT_MAX_BYTES must be at most 64 GiB"
         );
         if let Some(value) = self.public_url.as_deref().filter(|v| !v.trim().is_empty()) {
             anyhow::ensure!(
                 origin(value).is_some(),
-                "VDA_PUBLIC_URL must be an http(s) origin, such as https://gate.example.com"
+                "VISP_GATE_PUBLIC_URL must be an http(s) origin, such as https://gate.example.com"
             );
         }
         Ok(())

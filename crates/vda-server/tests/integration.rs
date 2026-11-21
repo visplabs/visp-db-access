@@ -4,7 +4,7 @@
     clippy::panic,
     clippy::indexing_slicing
 )]
-//! Runs against an isolated temporary schema only when VDA_TEST_DATABASE_URL is set.
+//! Runs against an isolated temporary schema only when VISP_GATE_TEST_DATABASE_URL is set.
 use axum::{
     body::{to_bytes, Body},
     extract::ConnectInfo,
@@ -77,8 +77,8 @@ async fn login(router: &Router, email: &str) -> String {
 
 #[tokio::test]
 async fn authenticated_crud_policy_authorization_and_four_eyes() {
-    let Ok(url) = std::env::var("VDA_TEST_DATABASE_URL") else {
-        eprintln!("skipped: VDA_TEST_DATABASE_URL is not set");
+    let Ok(url) = std::env::var("VISP_GATE_TEST_DATABASE_URL") else {
+        eprintln!("skipped: VISP_GATE_TEST_DATABASE_URL is not set");
         return;
     };
     let admin_db = sqlx::PgPool::connect(&url).await.unwrap();
@@ -210,7 +210,7 @@ async fn authenticated_crud_policy_authorization_and_four_eyes() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    if let Ok(target_url) = std::env::var("VDA_TEST_POSTGRES_URL") {
+    if let Ok(target_url) = std::env::var("VISP_GATE_TEST_POSTGRES_URL") {
         let target = sqlx::PgPool::connect(&target_url).await.unwrap();
         let options = target.connect_options();
         let table = format!("vda_pipeline_{}", Uuid::new_v4().simple());
@@ -575,7 +575,7 @@ async fn authenticated_crud_policy_authorization_and_four_eyes() {
         .unwrap();
     assert!(audit_count > 10);
     // Snapshot identities survive target deletion while FK references are cleared.
-    if std::env::var_os("VDA_TEST_POSTGRES_URL").is_some() {
+    if std::env::var_os("VISP_GATE_TEST_POSTGRES_URL").is_some() {
         let (history_count, deleted_refs): (i64, i64) = sqlx::query_as(
             "SELECT count(*),count(*) FILTER(WHERE cluster_ref IS NULL) FROM query_history",
         )

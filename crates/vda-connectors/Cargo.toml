@@ -1,6 +1,6 @@
 [package]
 name = "vda-connectors"
-description = "Guarded execution against target databases for visp-db-access"
+description = "Guarded execution against target databases for visp-gate"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

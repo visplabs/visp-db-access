@@ -1,6 +1,6 @@
 # Deployment and operations
 
-visp-db-access ships as one binary (`visp-db-access`) with the web console
+visp-gate ships as one binary (`visp-gate`) with the web console
 embedded. Nodes are stateless; all state lives in a PostgreSQL metadata
 database. Run as many replicas as you need behind any HTTP load balancer.
 
@@ -10,27 +10,27 @@ All settings are environment variables (each also has a matching CLI flag).
 The binary does not load `.env` files itself; see [.env.example](../.env.example)
 and [deploy/config.env.example](../deploy/config.env.example).
 
-| Variable                           | Default        | Purpose                                                                                                                                                                                                    |
-| ---------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VDA_DATABASE_URL`                 | required       | PostgreSQL metadata URL, version 14 or newer. Migration privileges are needed on first start.                                                                                                              |
-| `VDA_MASTER_KEY`                   | required       | Standard-base64 32-byte key that encrypts stored credentials. The keys that sign receipts and seal the audit log are derived from it. Generate with `openssl rand -base64 32` or `visp-db-access gen-key`. |
-| `VDA_BIND`                         | `0.0.0.0:8080` | Listening address.                                                                                                                                                                                         |
-| `VDA_METADATA_POOL_SIZE`           | `20`           | Metadata connections per node (1–200). Health and discovery schedulers each use one more.                                                                                                                  |
-| `VDA_BOOTSTRAP_ADMIN_EMAIL`        | unset          | First administrator, created only when no users exist. Set with the password.                                                                                                                              |
-| `VDA_BOOTSTRAP_ADMIN_PASSWORD`     | unset          | First administrator's password, at least 12 bytes.                                                                                                                                                         |
-| `VDA_ADMIN_PASSWORD`               | unset          | Password for the `create-admin` command.                                                                                                                                                                   |
-| `VDA_COOKIE_SECURE`                | `true`         | Secure session cookie and HSTS. Set `false` only for local plain-HTTP development (a startup warning is logged).                                                                                           |
-| `VDA_ALLOWED_CIDRS`                | empty          | Comma-separated client allowlist; intersected with the allowlist set in the console. Empty allows all.                                                                                                     |
-| `VDA_TRUST_PROXY_HEADERS`          | `false`        | Use `X-Forwarded-For` for client attribution.                                                                                                                                                              |
-| `VDA_TRUSTED_PROXIES`              | empty          | Comma-separated CIDRs of your proxies. With forwarding on and no list, only the direct peer is trusted. `VDA_TRUSTED_PROXY_CIDRS` is accepted as an alias.                                                 |
-| `VDA_ALLOW_PRIVATE_TARGETS`        | `false`        | Allow loopback database targets (development). RFC 1918 targets are always allowed. For notices it also allows a webhook on a private address, and plain `http` to loopback.                               |
-| `VDA_METRICS_TOKEN`                | unset          | When set, `/metrics` requires `Authorization: Bearer <token>`.                                                                                                                                             |
-| `VDA_PUBLIC_URL`                   | unset          | The address people open the console at, such as `https://gate.example.com`: an `http(s)` origin with no path. Notices link to the request only when it is set.                                             |
-| `VDA_AGENT_STEPS_RETENTION_DAYS`   | `30`           | Days the record of agent steps and sessions is kept (1–3650). Steps hold the SQL text of agent calls.                                                                                                      |
-| `VDA_HELD_RESULTS_MAX_BYTES`       | `268435456`    | Memory, in bytes, that one node may use for rows it holds for `fetch_rows`, for all agents together. `0` holds nothing: agents then get no cursor and narrow their queries.                                |
-| `VDA_HELD_RESULTS_AGENT_MAX_BYTES` | `67108864`     | The same bound for the rows held for one agent. Not more than the bound for the node.                                                                                                                      |
-| `VDA_LOG_FORMAT`                   | `text`         | `text` or `json`.                                                                                                                                                                                          |
-| `RUST_LOG`                         | `info`         | Log filter.                                                                                                                                                                                                |
+| Variable                                 | Default        | Purpose                                                                                                                                                                                               |
+| ---------------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VISP_GATE_DATABASE_URL`                 | required       | PostgreSQL metadata URL, version 14 or newer. Migration privileges are needed on first start.                                                                                                         |
+| `VISP_GATE_MASTER_KEY`                   | required       | Standard-base64 32-byte key that encrypts stored credentials. The keys that sign receipts and seal the audit log are derived from it. Generate with `openssl rand -base64 32` or `visp-gate gen-key`. |
+| `VISP_GATE_BIND`                         | `0.0.0.0:8080` | Listening address.                                                                                                                                                                                    |
+| `VISP_GATE_METADATA_POOL_SIZE`           | `20`           | Metadata connections per node (1–200). Health and discovery schedulers each use one more.                                                                                                             |
+| `VISP_GATE_BOOTSTRAP_ADMIN_EMAIL`        | unset          | First administrator, created only when no users exist. Set with the password.                                                                                                                         |
+| `VISP_GATE_BOOTSTRAP_ADMIN_PASSWORD`     | unset          | First administrator's password, at least 12 bytes.                                                                                                                                                    |
+| `VISP_GATE_ADMIN_PASSWORD`               | unset          | Password for the `create-admin` command.                                                                                                                                                              |
+| `VISP_GATE_COOKIE_SECURE`                | `true`         | Secure session cookie and HSTS. Set `false` only for local plain-HTTP development (a startup warning is logged).                                                                                      |
+| `VISP_GATE_ALLOWED_CIDRS`                | empty          | Comma-separated client allowlist; intersected with the allowlist set in the console. Empty allows all.                                                                                                |
+| `VISP_GATE_TRUST_PROXY_HEADERS`          | `false`        | Use `X-Forwarded-For` for client attribution.                                                                                                                                                         |
+| `VISP_GATE_TRUSTED_PROXIES`              | empty          | Comma-separated CIDRs of your proxies. With forwarding on and no list, only the direct peer is trusted. `VISP_GATE_TRUSTED_PROXY_CIDRS` is accepted as an alias.                                      |
+| `VISP_GATE_ALLOW_PRIVATE_TARGETS`        | `false`        | Allow loopback database targets (development). RFC 1918 targets are always allowed. For notices it also allows a webhook on a private address, and plain `http` to loopback.                          |
+| `VISP_GATE_METRICS_TOKEN`                | unset          | When set, `/metrics` requires `Authorization: Bearer <token>`.                                                                                                                                        |
+| `VISP_GATE_PUBLIC_URL`                   | unset          | The address people open the console at, such as `https://gate.example.com`: an `http(s)` origin with no path. Notices link to the request only when it is set.                                        |
+| `VISP_GATE_AGENT_STEPS_RETENTION_DAYS`   | `30`           | Days the record of agent steps and sessions is kept (1–3650). Steps hold the SQL text of agent calls.                                                                                                 |
+| `VISP_GATE_HELD_RESULTS_MAX_BYTES`       | `268435456`    | Memory, in bytes, that one node may use for rows it holds for `fetch_rows`, for all agents together. `0` holds nothing: agents then get no cursor and narrow their queries.                           |
+| `VISP_GATE_HELD_RESULTS_AGENT_MAX_BYTES` | `67108864`     | The same bound for the rows held for one agent. Not more than the bound for the node.                                                                                                                 |
+| `VISP_GATE_LOG_FORMAT`                   | `text`         | `text` or `json`.                                                                                                                                                                                     |
+| `RUST_LOG`                               | `info`         | Log filter.                                                                                                                                                                                           |
 
 Back up the master key together with the metadata database. Stored credentials
 can't be decrypted with a different key; if the key is lost, re-enter each
@@ -58,11 +58,11 @@ Both use a 2-second lock timeout, four concurrent queries per node, a
 ## Commands
 
 ```sh
-visp-db-access serve          # default; applies migrations, then serves
-visp-db-access migrate        # apply metadata migrations only
-visp-db-access gen-key        # print a new master key
-visp-db-access verify-audit   # check the audit hash chain; reads only
-VDA_ADMIN_PASSWORD=… visp-db-access create-admin --email you@example.com --name "Your Name"
+visp-gate serve          # default; applies migrations, then serves
+visp-gate migrate        # apply metadata migrations only
+visp-gate gen-key        # print a new master key
+visp-gate verify-audit   # check the audit hash chain; reads only
+VISP_GATE_ADMIN_PASSWORD=… visp-gate create-admin --email you@example.com --name "Your Name"
 ```
 
 Startup applies migrations and creates the bootstrap admin only if there are no
@@ -71,19 +71,19 @@ users, under an advisory lock so concurrent replicas don't race.
 ## Docker
 
 Each release publishes an image to
-`ghcr.io/djkeshawa/visp-db-access:<version>`, plus a Linux x86_64 binary on the
-[releases page](https://github.com/djkeshawa/visp-db-access/releases). The image
+`ghcr.io/visplabs/visp-gate:<version>`, plus a Linux x86_64 binary on the
+[releases page](https://github.com/visplabs/visp-gate/releases). The image
 builds the console and the Rust binary in separate stages and runs as a
 non-root user on a distroless base.
 
 ```sh
-docker pull ghcr.io/djkeshawa/visp-db-access:0.1.0
-docker build -t visp-db-access .     # or build from source
+docker pull ghcr.io/visplabs/visp-gate:0.1.0
+docker build -t visp-gate .     # or build from source
 docker compose up --build            # gateway + metadata Postgres
 docker compose --profile demo up     # plus demo PostgreSQL and MySQL targets
 ```
 
-`docker compose` needs `VDA_MASTER_KEY` and `VDA_BOOTSTRAP_ADMIN_PASSWORD` in
+`docker compose` needs `VISP_GATE_MASTER_KEY` and `VISP_GATE_BOOTSTRAP_ADMIN_PASSWORD` in
 the environment. The `demo` profile only starts two databases with sample
 shop data; you add them as clusters yourself, with **TLS mode** `disable`
 (they have no certificate the gateway can verify) and an environment other
@@ -100,14 +100,14 @@ look at the product only.
 
 ## Kubernetes (Helm)
 
-`deploy/helm/visp-db-access` provides a two-replica Deployment, Service,
+`deploy/helm/visp-gate` provides a two-replica Deployment, Service,
 optional TLS Ingress, HorizontalPodAutoscaler and PodDisruptionBudget. Provide
 an existing Secret with `database-url` and `master-key`, and optionally
 `bootstrap-admin-email` and `bootstrap-admin-password`.
 
 ```sh
-helm upgrade --install vda deploy/helm/visp-db-access \
-  --set existingSecret=vda-secrets
+helm upgrade --install visp-gate deploy/helm/visp-gate \
+  --set existingSecret=visp-gate-secrets
 ```
 
 The chart uses the published image for its version; set `image.repository`
@@ -121,7 +121,7 @@ For AWS discovery on EKS, see [IRSA setup](DISCOVERY.md#eks-irsa).
   with a short deadline.
 - `/metrics` exports Prometheus request counters, query durations, blocked
   queries and pool gauges. Restrict it at your ingress or set
-  `VDA_METRICS_TOKEN`.
+  `VISP_GATE_METRICS_TOKEN`.
 - Cluster health probes run every 30 seconds on one node (elected through a
   PostgreSQL advisory lock), with up to 16 probes in parallel. Health history is
   kept for seven days.
@@ -146,7 +146,7 @@ For AWS discovery on EKS, see [IRSA setup](DISCOVERY.md#eks-irsa).
   `changed`, because the agent lost its `access` to the database, or because
   the agent or the gateway `stopped`. Many `memory`
   drops mean that agents page through more than the node may hold: raise
-  `VDA_HELD_RESULTS_MAX_BYTES` or lower the policies' `max_rows`.
+  `VISP_GATE_HELD_RESULTS_MAX_BYTES` or lower the policies' `max_rows`.
 
 ## Agents on several nodes
 
@@ -173,8 +173,8 @@ hourly query budget; and its sessions. The steps of one token are in one
 session whichever nodes they went through, because the session is decided in
 the metadata database.
 
-Size the memory for held rows with `VDA_HELD_RESULTS_MAX_BYTES` (per node,
-default 256 MiB) and `VDA_HELD_RESULTS_AGENT_MAX_BYTES` (per agent, default
+Size the memory for held rows with `VISP_GATE_HELD_RESULTS_MAX_BYTES` (per node,
+default 256 MiB) and `VISP_GATE_HELD_RESULTS_AGENT_MAX_BYTES` (per agent, default
 64 MiB). One held result is at most what one query may fetch: the policy's
 `max_rows`, and never more than 32 MiB of row data as the database sent it;
 held as JSON values it can take about twice that. A result that is larger
@@ -183,7 +183,7 @@ query, as before `fetch_rows` existed.
 
 The record of agent steps grows by one row per tool call: at most 150 a
 minute per agent and node (120 calls, and 30 calls refused before a tool
-ran), each at most about 20 KiB. Steps older than `VDA_AGENT_STEPS_RETENTION_DAYS`
+ran), each at most about 20 KiB. Steps older than `VISP_GATE_AGENT_STEPS_RETENTION_DAYS`
 are deleted by the node that runs health checks, 5,000 per half minute.
 
 ## Audit hash chain
@@ -226,8 +226,8 @@ chain that only says "cannot be verified".
 **Checking offline.**
 
 ```sh
-VDA_DATABASE_URL=… VDA_MASTER_KEY=… visp-db-access verify-audit
-VDA_DATABASE_URL=… VDA_MASTER_KEY=… visp-db-access verify-audit \
+VISP_GATE_DATABASE_URL=… VISP_GATE_MASTER_KEY=… visp-gate verify-audit
+VISP_GATE_DATABASE_URL=… VISP_GATE_MASTER_KEY=… visp-gate verify-audit \
   --expect-position 48211 --expect-hash 5f0c…9a1e --expect-key-id 4a1886b932e8ae81
 ```
 

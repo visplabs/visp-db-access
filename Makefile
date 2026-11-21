@@ -12,6 +12,6 @@ lint:
 	cargo clippy --workspace --all-targets -- -D warnings
 	cd web && npm ci && npm run lint
 docker:
-	docker build -t visp-db-access:local .
+	docker build -t visp-gate:local .
 demo:
 	docker compose -f deploy/demo/docker-compose.yml up --build

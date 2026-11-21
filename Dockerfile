@@ -14,7 +14,7 @@ COPY --from=web /app/web/dist ./web/dist
 RUN cargo build --locked --release -p vda-server
 
 FROM gcr.io/distroless/cc-debian12:nonroot
-COPY --from=builder /app/target/release/visp-db-access /usr/local/bin/visp-db-access
+COPY --from=builder /app/target/release/visp-gate /usr/local/bin/visp-gate
 EXPOSE 8080
 USER nonroot:nonroot
-ENTRYPOINT ["/usr/local/bin/visp-db-access"]
+ENTRYPOINT ["/usr/local/bin/visp-gate"]

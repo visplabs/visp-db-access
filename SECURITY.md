@@ -1,12 +1,12 @@
 # Security policy
 
-visp-db-access controls access to production databases, so we take security
+visp-gate controls access to production databases, so we take security
 reports seriously.
 
 ## Reporting a vulnerability
 
 Please report vulnerabilities privately through GitHub's
-[private vulnerability reporting](https://github.com/djkeshawa/visp-db-access/security/advisories/new)
+[private vulnerability reporting](https://github.com/visplabs/visp-gate/security/advisories/new)
 rather than in public issues or pull requests.
 
 Include what you found, how to reproduce it, the affected version or commit,

@@ -168,7 +168,7 @@ export function createMockDiscovery({
       ok: regions.every((r) => r.ok),
       account_id,
       identity_arn: account_id
-        ? `arn:aws:sts::${account_id}:assumed-role/${source.role_arn?.split('/').at(-1) ?? 'Gateway'}/visp-db-access`
+        ? `arn:aws:sts::${account_id}:assumed-role/${source.role_arn?.split('/').at(-1) ?? 'Gateway'}/visp-gate`
         : null,
       regions,
     };

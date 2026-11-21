@@ -13,8 +13,8 @@ use vda_connectors::{ConnectorError, Engine, ExecLimits, TargetPool};
 
 async fn pool(engine: Engine) -> Option<TargetPool> {
     let variable = match engine {
-        Engine::Postgres => "VDA_TEST_PG_URL",
-        Engine::Mysql => "VDA_TEST_MYSQL_URL",
+        Engine::Postgres => "VISP_GATE_TEST_PG_URL",
+        Engine::Mysql => "VISP_GATE_TEST_MYSQL_URL",
     };
     let Ok(url) = std::env::var(variable) else {
         eprintln!("Skipping {engine:?}: {variable} is unset");
@@ -540,11 +540,11 @@ async fn mysql_stored_types_and_guarded_literals() {
 
 #[tokio::test]
 async fn mysql_factory_health_replica_and_cancellation_discard() {
-    let Ok(url) = std::env::var("VDA_TEST_MYSQL_URL") else {
+    let Ok(url) = std::env::var("VISP_GATE_TEST_MYSQL_URL") else {
         return;
     };
-    let Ok(password) = std::env::var("VDA_TEST_MYSQL_PASSWORD") else {
-        eprintln!("Skipping factory credential test: VDA_TEST_MYSQL_PASSWORD is unset");
+    let Ok(password) = std::env::var("VISP_GATE_TEST_MYSQL_PASSWORD") else {
+        eprintln!("Skipping factory credential test: VISP_GATE_TEST_MYSQL_PASSWORD is unset");
         return;
     };
     let options: sqlx::mysql::MySqlConnectOptions = url.parse().unwrap();
@@ -623,11 +623,11 @@ async fn mysql_server_execution_timeout_really_interrupts_work() {
 }
 
 /// Production factory pool (with its session hooks) for the URL in the engine's variable.
-/// PostgreSQL may omit `VDA_TEST_PG_PASSWORD` for trust-auth fixtures.
+/// PostgreSQL may omit `VISP_GATE_TEST_PG_PASSWORD` for trust-auth fixtures.
 fn factory(engine: Engine) -> Option<(String, TargetPool)> {
     let (variable, secret) = match engine {
-        Engine::Postgres => ("VDA_TEST_PG_URL", "VDA_TEST_PG_PASSWORD"),
-        Engine::Mysql => ("VDA_TEST_MYSQL_URL", "VDA_TEST_MYSQL_PASSWORD"),
+        Engine::Postgres => ("VISP_GATE_TEST_PG_URL", "VISP_GATE_TEST_PG_PASSWORD"),
+        Engine::Mysql => ("VISP_GATE_TEST_MYSQL_URL", "VISP_GATE_TEST_MYSQL_PASSWORD"),
     };
     let url = std::env::var(variable).ok()?;
     let password = match (engine, std::env::var(secret)) {

@@ -192,7 +192,7 @@ pub async fn connection_spec(
             .into(),
         tls,
         ca_cert_pem: None,
-        application_name: "visp-db-access".into(),
+        application_name: "visp-gate".into(),
     })
 }
 

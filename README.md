@@ -1,4 +1,4 @@
-# visp-db-access
+# visp-gate
 
 A free, self-hosted safety gate between AI agents and production PostgreSQL
 and MySQL databases. An agent gets a set of tools instead of a connection
@@ -113,8 +113,8 @@ choose an administrator password and a master key (the server refuses to
 start without a valid 32-byte key):
 
 ```sh
-export VDA_MASTER_KEY="$(openssl rand -base64 32)"
-export VDA_BOOTSTRAP_ADMIN_PASSWORD='choose-a-long-random-password'
+export VISP_GATE_MASTER_KEY="$(openssl rand -base64 32)"
+export VISP_GATE_BOOTSTRAP_ADMIN_PASSWORD='choose-a-long-random-password'
 docker compose up --build
 ```
 
@@ -160,7 +160,7 @@ scripts/                Local development, smoke-test and demo scripts
 
 ## Status
 
-visp-db-access is pre-1.0. The API and storage schema may still change between
+visp-gate is pre-1.0. The API and storage schema may still change between
 releases. Supported targets are PostgreSQL and MySQL (including MariaDB and their
 managed variants such as RDS, Aurora, Cloud SQL and Azure Database).
 

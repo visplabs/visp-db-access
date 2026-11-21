@@ -1,9 +1,9 @@
 apiVersion: v2
-name: visp-db-access
+name: visp-gate
 description: Guarded production database access gateway
 type: application
 version: 0.1.0
 appVersion: 0.1.0
-home: https://github.com/djkeshawa/visp-db-access
+home: https://github.com/visplabs/visp-gate
 sources:
-  - https://github.com/djkeshawa/visp-db-access
+  - https://github.com/visplabs/visp-gate

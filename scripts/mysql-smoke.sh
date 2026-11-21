@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Optional section sourced by e2e-smoke.sh; uses its auth, project and helper functions.
-# Enable with VDA_SMOKE_MYSQL_HOST (defaults: port 33306, database shop,
+# Enable with VISP_GATE_SMOKE_MYSQL_HOST (defaults: port 33306, database shop,
 # shop_reader/shop_reader_pw, shop_writer/shop_writer_pw). No mysql CLI required.
 # The variables it reads are assigned in e2e-smoke.sh.
 # shellcheck disable=SC2154
-mysql_body=$(jq -n --arg project "$project_id" --arg host "$VDA_SMOKE_MYSQL_HOST" \
-  --argjson port "${VDA_SMOKE_MYSQL_PORT:-33306}" --arg database "${VDA_SMOKE_MYSQL_DATABASE:-shop}" \
-  --arg username "${VDA_SMOKE_MYSQL_READER:-shop_reader}" --arg password "${VDA_SMOKE_MYSQL_READER_PASSWORD:-shop_reader_pw}" \
+mysql_body=$(jq -n --arg project "$project_id" --arg host "$VISP_GATE_SMOKE_MYSQL_HOST" \
+  --argjson port "${VISP_GATE_SMOKE_MYSQL_PORT:-33306}" --arg database "${VISP_GATE_SMOKE_MYSQL_DATABASE:-shop}" \
+  --arg username "${VISP_GATE_SMOKE_MYSQL_READER:-shop_reader}" --arg password "${VISP_GATE_SMOKE_MYSQL_READER_PASSWORD:-shop_reader_pw}" \
   '{project_id:$project,name:"Smoke MySQL",engine:"mysql",provider:"onprem",region:"local",environment:"development",host:$host,port:$port,database:$database,username:$username,password:$password,tls_mode:"disable"}')
 call POST /clusters 200 "$admin_jar" "$mysql_body"
 mysql_cluster=$(jq -er '.id' "$response")
@@ -64,7 +64,7 @@ call POST "/approvals/$mysql_approval/approve" 200 "$reviewer_jar" '{}'
 call POST "/approvals/$mysql_approval/execute" 502 "$member_jar"
 call GET "/approvals/$mysql_approval" 200 "$member_jar"
 check '.status == "failed"'
-call PATCH "/clusters/$mysql_cluster" 200 "$admin_jar" "$(jq -n --arg user "${VDA_SMOKE_MYSQL_WRITER:-shop_writer}" --arg password "${VDA_SMOKE_MYSQL_WRITER_PASSWORD:-shop_writer_pw}" '{username:$user,password:$password}')"
+call PATCH "/clusters/$mysql_cluster" 200 "$admin_jar" "$(jq -n --arg user "${VISP_GATE_SMOKE_MYSQL_WRITER:-shop_writer}" --arg password "${VISP_GATE_SMOKE_MYSQL_WRITER_PASSWORD:-shop_writer_pw}" '{username:$user,password:$password}')"
 call POST "/clusters/$mysql_cluster/query" 409 "$member_jar" '{"sql":"UPDATE products SET price=price WHERE id=1"}'
 for cap_test in success rollback; do
   if [[ $cap_test == success ]]; then mysql_sql='UPDATE products SET price=price WHERE id=1'; else mysql_sql='UPDATE products SET price=price+100 WHERE id IN (1,2)'; fi

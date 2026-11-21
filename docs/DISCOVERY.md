@@ -41,7 +41,7 @@ the Helm release's service account, then set:
 serviceAccount:
   create: true
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/visp-db-access
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/visp-gate
 ```
 
 To reuse an existing annotated account, set `serviceAccount.create: false` and
@@ -84,7 +84,7 @@ never enable it in production.
 
 ```sh
 cp scripts/fixtures/rds-discovery.json /tmp/vda-rds-discovery.json
-export VDA_DISCOVERY_FAKE_FIXTURE=/tmp/vda-rds-discovery.json
+export VISP_GATE_DISCOVERY_FAKE_FIXTURE=/tmp/vda-rds-discovery.json
 scripts/dev-local.sh
 # In another shell, with the same variable exported:
 scripts/e2e-smoke.sh

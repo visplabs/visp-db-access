@@ -73,7 +73,7 @@ describe('TLS guidance', () => {
       'set TLS mode to “disable”',
     );
     expect(localTlsSuggestion('127.0.0.1', 'require')).toContain(
-      'VDA_ALLOW_PRIVATE_TARGETS',
+      'VISP_GATE_ALLOW_PRIVATE_TARGETS',
     );
     expect(localTlsSuggestion('localhost', 'disable')).toBeNull();
     expect(localTlsSuggestion('localhost', 'prefer')).toBeNull();

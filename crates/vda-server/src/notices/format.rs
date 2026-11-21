@@ -72,13 +72,13 @@ pub fn render(
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let mut headers = vec![
-                ("x-vda-event", event.to_owned()),
-                ("x-vda-delivery", delivery.to_string()),
-                ("x-vda-timestamp", timestamp.to_string()),
+                ("x-visp-gate-event", event.to_owned()),
+                ("x-visp-gate-delivery", delivery.to_string()),
+                ("x-visp-gate-timestamp", timestamp.to_string()),
             ];
             if let Some(secret) = secret {
                 headers.push((
-                    "x-vda-signature",
+                    "x-visp-gate-signature",
                     signature(secret.as_bytes(), timestamp, delivery, &body),
                 ));
             }
@@ -309,11 +309,14 @@ mod tests {
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| value.clone())
         };
-        assert_eq!(header("x-vda-event").as_deref(), Some("approval.created"));
-        assert_eq!(header("x-vda-delivery"), Some(delivery.to_string()));
-        assert_eq!(header("x-vda-timestamp").as_deref(), Some("1700"));
         assert_eq!(
-            header("x-vda-signature"),
+            header("x-visp-gate-event").as_deref(),
+            Some("approval.created")
+        );
+        assert_eq!(header("x-visp-gate-delivery"), Some(delivery.to_string()));
+        assert_eq!(header("x-visp-gate-timestamp").as_deref(), Some("1700"));
+        assert_eq!(
+            header("x-visp-gate-signature"),
             Some(signature(b"s3cret", 1700, delivery, &sent.body))
         );
         // The secret itself is never in what is sent.

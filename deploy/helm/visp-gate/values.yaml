@@ -1,9 +1,9 @@
 replicaCount: 2
 image:
-  repository: ghcr.io/djkeshawa/visp-db-access
+  repository: ghcr.io/visplabs/visp-gate
   tag: '0.1.0'
   pullPolicy: IfNotPresent
-existingSecret: vda-secrets
+existingSecret: visp-gate-secrets
 # Required keys: database-url, master-key. Optional bootstrap keys below.
 bootstrapAdmin: false
 serviceAccount:
@@ -12,7 +12,7 @@ serviceAccount:
   annotations: {}
   # For EKS IRSA, annotate the account with eks.amazonaws.com/role-arn.
   # annotations:
-  #   eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/visp-db-access
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/visp-gate
 config:
   cookieSecure: true
   allowedCidrs: ''
@@ -43,7 +43,7 @@ ingress:
   className: nginx
   host: db-access.example.com
   annotations: {}
-  tlsSecretName: vda-tls
+  tlsSecretName: visp-gate-tls
 autoscaling:
   enabled: false
   minReplicas: 2

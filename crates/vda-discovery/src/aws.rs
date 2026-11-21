@@ -55,7 +55,7 @@ impl AwsProvider {
         };
         let mut role_provider = AssumeRoleProvider::builder(role)
             .configure(&base)
-            .session_name("visp-db-access")
+            .session_name("visp-gate")
             .session_length(Duration::from_secs(3600));
         if let Some(external_id) = &source.external_id {
             role_provider = role_provider.external_id(external_id.expose_secret());

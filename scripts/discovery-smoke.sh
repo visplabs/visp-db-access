@@ -2,7 +2,7 @@
 # Sourced by e2e-smoke.sh after its authenticated core checks.
 # The variables it reads are assigned in e2e-smoke.sh.
 # shellcheck disable=SC2154
-fixture=$VDA_DISCOVERY_FAKE_FIXTURE
+fixture=$VISP_GATE_DISCOVERY_FAKE_FIXTURE
 checked_in_fixture="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/fixtures/rds-discovery.json"
 if [[ ! -f $fixture || ! -w $fixture || $fixture -ef $checked_in_fixture ]]; then
   printf 'Discovery smoke needs a writable temporary fixture copy shared with the server.\n' >&2
@@ -18,7 +18,7 @@ check '.external_id_set == true and .last_test.ok == true and .last_test.tested_
 source_id=$(jq -er '.id' "$response")
 call GET /discovery/sources 403 "$member_jar"
 call POST "/discovery/sources/$source_id/test" 200 "$admin_jar"
-check '.ok == true and .identity_arn == "arn:aws:sts::123456789012:assumed-role/visp-db-access-fake/discovery" and ([.regions[].ok] | all)'
+check '.ok == true and .identity_arn == "arn:aws:sts::123456789012:assumed-role/visp-gate-fake/discovery" and ([.regions[].ok] | all)'
 call POST "/discovery/sources/$source_id/scan" 200 "$admin_jar"
 check '.status == "succeeded" and .found >= 4 and .new >= 4'
 call GET "/discovery/resources?source_id=$source_id&limit=100" 200 "$admin_jar"

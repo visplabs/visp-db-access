@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in visp-db-access. Bug reports, fixes, documentation
+Thanks for your interest in visp-gate. Bug reports, fixes, documentation
 improvements and feature proposals are all welcome.
 
 ## Before you start

@@ -8,7 +8,7 @@
 set -euo pipefail
 umask 077
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-base=${VDA_LOCAL_PG_DIR:-$HOME/.local/share/vda-postgres}
+base=${VISP_GATE_LOCAL_PG_DIR:-$HOME/.local/share/vda-postgres}
 root="$base/root"
 bin="$root/usr/lib/postgresql/14/bin"
 data="$base/data"

@@ -82,7 +82,7 @@ impl AppState {
             .extend(config.legacy_trusted_proxy_cidrs.0.iter().copied());
         #[cfg(feature = "fake-discovery")]
         let discovery: Arc<dyn vda_discovery::Provider> = if std::env::var_os(
-            "VDA_DISCOVERY_FAKE_FIXTURE",
+            "VISP_GATE_DISCOVERY_FAKE_FIXTURE",
         )
         .is_some()
         {

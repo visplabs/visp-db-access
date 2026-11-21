@@ -477,7 +477,7 @@ export function createAgents(context: {
         query.get('username') ?? stored?.username ?? 'vda_agent',
       );
       return [
-        '-- visp-db-access: agent login for PostgreSQL.',
+        '-- visp-gate: agent login for PostgreSQL.',
         '-- Run this as a database administrator, in the database named below.',
         'BEGIN;',
         `ALTER ROLE "${name}" SET default_transaction_read_only = on;`,

@@ -47,7 +47,7 @@ Linux archives. Each script supports `start`, `stop`, `status` and `seed`.
 `admin@local.test` / `local-admin-password` on first run, allows loopback
 targets and plain-HTTP cookies, and keeps a generated master key in
 `.dev/master-key`. Keep that file while you keep the metadata: stored cluster
-passwords can't be decrypted without it. Override any `VDA_*` variable to
+passwords can't be decrypted without it. Override any `VISP_GATE_*` variable to
 change the defaults.
 
 Demo database accounts:
@@ -63,7 +63,7 @@ In the console, add a cluster for `127.0.0.1:55432` (PostgreSQL) or
 environment `development` and TLS mode `disable`. The local databases have no
 certificate the gateway can verify, so the default `verify full` fails the
 connection test. Loopback
-hosts work here only because `dev-local.sh` sets `VDA_ALLOW_PRIVATE_TARGETS`.
+hosts work here only because `dev-local.sh` sets `VISP_GATE_ALLOW_PRIVATE_TARGETS`.
 
 To work on the UI against the real server with hot reload, keep `dev-local.sh`
 running and start `npm run dev` in `web/`; it proxies API requests to port 8080.
@@ -83,16 +83,16 @@ Tests that need a database skip themselves unless their URL is set. To run
 everything against the local databases:
 
 ```sh
-export VDA_TEST_DATABASE_URL=postgres://vda@127.0.0.1:55432/postgres
-export VDA_TEST_POSTGRES_URL=postgres://vda@127.0.0.1:55432/postgres
-export VDA_TEST_PG_URL=postgres://vda@127.0.0.1:55432/shop
-export VDA_TEST_MYSQL_URL=mysql://vda:vda_local_pw@127.0.0.1:33306/shop
-export VDA_TEST_MYSQL_PASSWORD=vda_local_pw
+export VISP_GATE_TEST_DATABASE_URL=postgres://vda@127.0.0.1:55432/postgres
+export VISP_GATE_TEST_POSTGRES_URL=postgres://vda@127.0.0.1:55432/postgres
+export VISP_GATE_TEST_PG_URL=postgres://vda@127.0.0.1:55432/shop
+export VISP_GATE_TEST_MYSQL_URL=mysql://vda:vda_local_pw@127.0.0.1:33306/shop
+export VISP_GATE_TEST_MYSQL_PASSWORD=vda_local_pw
 cargo test --workspace --all-features
 ```
 
 Use disposable databases: tests create uniquely named schemas and tables and
-drop them on success. Point `VDA_TEST_MYSQL_URL` at port 33307 to run the
+drop them on success. Point `VISP_GATE_TEST_MYSQL_URL` at port 33307 to run the
 connector tests against MariaDB. With Docker instead of the scripts, see
 [connector tests](../crates/vda-connectors/tests/README.md).
 
@@ -124,10 +124,10 @@ statements, scoped grants, the full approval lifecycle, history and audit, an
 agent session with its steps and one `fetch_rows` page, the pre-flight answer,
 and at its end that every audit row of the run is sealed and the hash chain is
 intact. Set
-`VDA_SMOKE_MYSQL_HOST=127.0.0.1` (and `VDA_SMOKE_MYSQL_PORT=33307` for MariaDB)
-to add the MySQL section, and `VDA_DISCOVERY_FAKE_FIXTURE` to add discovery (see
+`VISP_GATE_SMOKE_MYSQL_HOST=127.0.0.1` (and `VISP_GATE_SMOKE_MYSQL_PORT=33307` for MariaDB)
+to add the MySQL section, and `VISP_GATE_DISCOVERY_FAKE_FIXTURE` to add discovery (see
 [AWS discovery](DISCOVERY.md#developing-without-aws)). The script creates
-uniquely named records and leaves them for inspection. All `VDA_SMOKE_*`
+uniquely named records and leaves them for inspection. All `VISP_GATE_SMOKE_*`
 settings are listed at the top of the script.
 
 ### Demo walkthrough
@@ -161,7 +161,7 @@ docker compose -f deploy/demo/docker-compose.yml down -v
 3. Commit, then tag and push: `git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0`.
 
 The `Release` workflow checks that the tag matches these versions, publishes
-the image to `ghcr.io/djkeshawa/visp-db-access`, and creates a GitHub release
+the image to `ghcr.io/visplabs/visp-gate`, and creates a GitHub release
 with the changelog section and a Linux x86_64 binary.
 
 ## Conventions

@@ -1,6 +1,6 @@
 # Security model
 
-visp-db-access sits between people, AI agents and production databases. This
+visp-gate sits between people, AI agents and production databases. This
 document describes what it guarantees, how, and where its limits are. The
 [threat model](THREAT-MODEL.md) looks at the same system from the attacker's
 side: who can attack it, what the gate does about each attack, and what is
@@ -40,7 +40,7 @@ left over. To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 ## Credentials
 
 - Target database passwords are encrypted with AES-256-GCM under
-  `VDA_MASTER_KEY`, authenticated against their cluster's UUID. They are
+  `VISP_GATE_MASTER_KEY`, authenticated against their cluster's UUID. They are
   write-only in the API and never shown in the console.
 - Changing any connection endpoint field requires re-entering the password,
   including connection tests that would otherwise reuse stored credentials.
@@ -62,7 +62,7 @@ detectable.
 
 The guard does not resolve search paths, inspect user-defined function bodies,
 or estimate plans. Database privileges remain the primary control: give
-visp-db-access the least-privileged database roles that fit each cluster.
+visp-gate the least-privileged database roles that fit each cluster.
 
 ## Masking
 
@@ -85,12 +85,12 @@ are denied.
   address `168.63.129.16`, and every IPv6 form of a prohibited IPv4 address
   (mapped, compatible, translated `::ffff:0:a.b.c.d`, NAT64 including
   local-use `64:ff9b:1::a.b.c.d`, 6to4) are always blocked.
-  Loopback targets require `VDA_ALLOW_PRIVATE_TARGETS`.
+  Loopback targets require `VISP_GATE_ALLOW_PRIVATE_TARGETS`.
 - The database driver can't separate the connected IP from the TLS hostname, so
   a DNS change between validation and connection remains a rebinding risk.
   Enforce outbound firewall rules as well.
 - `/metrics` uses the same network gate as the API and, when
-  `VDA_METRICS_TOKEN` is set, requires `Authorization: Bearer <token>`.
+  `VISP_GATE_METRICS_TOKEN` is set, requires `Authorization: Bearer <token>`.
 
 ## Notices to approvers
 
@@ -101,7 +101,7 @@ administrator turns them on.
 
 **What a notice contains.** The event, the time, the request's id and state,
 the cluster's name, environment and engine, the display name of the person who
-asked, the agent's name when an agent asked, a link when `VDA_PUBLIC_URL` is
+asked, the agent's name when an agent asked, a link when `VISP_GATE_PUBLIC_URL` is
 set, and the error code of a failed write. Never the SQL, a row, a preview, a
 result or the text of a database error: the code that builds a notice has no
 access to them. Two fields are off by default, each with its own switch: the
@@ -139,7 +139,7 @@ this happens, and a state change or a worker that writes or claims a notice
 holds the same row shared, so no notice slips past the change.
 
 **What the sender refuses.** The address must be `https` (plain `http` only
-to loopback, and only with `VDA_ALLOW_PRIVATE_TARGETS`), with no user name or
+to loopback, and only with `VISP_GATE_ALLOW_PRIVATE_TARGETS`), with no user name or
 password. For every delivery the gateway resolves the host once and refuses
 the delivery unless every address of the answer is public. For IPv4 that
 excludes loopback, RFC 1918, carrier-grade NAT, link-local and metadata
@@ -156,7 +156,7 @@ address it checked, so a second DNS answer cannot move the request, and checks
 the certificate against the host name. It follows no redirect, uses no proxy
 from the environment, gives up after ten seconds (five to connect), and reads
 at most a few kilobytes of the answer, of which it keeps only the status code.
-`VDA_ALLOW_PRIVATE_TARGETS` lifts the private ranges for local development;
+`VISP_GATE_ALLOW_PRIVATE_TARGETS` lifts the private ranges for local development;
 metadata and link-local addresses stay refused. Enforce outbound firewall
 rules as well.
 
@@ -172,11 +172,11 @@ minute, for all administrators together (429 after that), so it is a slow
 probe at best. The limit is kept per node, not across nodes.
 
 **What the receiver must check.** In the `webhook` format every notice is
-signed: `X-VDA-Signature` is `v1=` and the HMAC-SHA256 of
+signed: `X-Visp-Gate-Signature` is `v1=` and the HMAC-SHA256 of
 `<timestamp>.<delivery id>.<body>` under a secret that the gateway made and
 showed once. A receiver must check the signature over the raw body in constant
 time, refuse a timestamp more than five minutes from its clock, and drop a
-repeated `X-VDA-Delivery`. The delivery id is part of what is signed, so a
+repeated `X-Visp-Gate-Delivery`. The delivery id is part of what is signed, so a
 captured notice cannot be sent again under another id to get past that check.
 The secret is stored encrypted and is never returned again, logged or audited;
 rotate it if it may have leaked. The Slack format is not signed: there the
@@ -222,7 +222,7 @@ them, and the API for people refuses an agent token. A step names a database
 by its id only; the console shows a name only for a database the reader can
 see.
 
-**How long.** Steps older than `VDA_AGENT_STEPS_RETENTION_DAYS` (default 30)
+**How long.** Steps older than `VISP_GATE_AGENT_STEPS_RETENTION_DAYS` (default 30)
 are deleted. Deleting an agent deletes its sessions and steps at once; the
 `agent.tool` audit events and query history stay.
 
@@ -258,7 +258,7 @@ fetched and one answer could not hold. It gives no new access:
   Until then the rows stay in that node's memory until the sweep after five
   minutes without use.
 - A person with a memory dump of a node can read held rows, as they can read
-  a result that is being sent. Set `VDA_HELD_RESULTS_MAX_BYTES=0` to hold
+  a result that is being sent. Set `VISP_GATE_HELD_RESULTS_MAX_BYTES=0` to hold
   nothing.
 
 ## Audit
@@ -283,7 +283,7 @@ Every audit row gets a link in `audit_chain`, and each link holds
 link before it, with a key derived from the master key
 ([API](API.md#the-audit-hash-chain) has the exact bytes). The chain is checked
 in three ways: all the time in the background, on request from the Audit
-screen, and offline with `visp-db-access verify-audit`
+screen, and offline with `visp-gate verify-audit`
 ([Deployment](DEPLOYMENT.md#audit-hash-chain)).
 
 **What it detects.** Done by someone who has the metadata database but not

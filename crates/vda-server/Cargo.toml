@@ -1,13 +1,13 @@
 [package]
 name = "vda-server"
-description = "visp-db-access server: safe production database access gateway"
+description = "visp-gate server: safe production database access gateway"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "visp-db-access"
+name = "visp-gate"
 path = "src/main.rs"
 
 [features]

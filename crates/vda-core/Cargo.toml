@@ -1,6 +1,6 @@
 [package]
 name = "vda-core"
-description = "visp-db-access query pipeline: policy, access, masking, audit and guarded execution, with no router or request handlers"
+description = "visp-gate query pipeline: policy, access, masking, audit and guarded execution, with no router or request handlers"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

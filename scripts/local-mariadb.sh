@@ -5,7 +5,7 @@
 set -euo pipefail
 umask 077
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-base=${VDA_LOCAL_MYSQL_DIR:-$HOME/.local/share/vda-mysql}/mariadb
+base=${VISP_GATE_LOCAL_MYSQL_DIR:-$HOME/.local/share/vda-mysql}/mariadb
 version=11.4.5
 install="$base/mariadb-$version-linux-systemd-x86_64"
 client() { "$install/bin/mariadb" --no-defaults --socket="$base/mariadb.sock" -uroot "$@"; }

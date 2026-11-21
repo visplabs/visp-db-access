@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.91.1"
 license = "Apache-2.0"
-repository = "https://github.com/djkeshawa/visp-db-access"
+repository = "https://github.com/visplabs/visp-gate"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

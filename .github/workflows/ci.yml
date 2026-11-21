@@ -20,12 +20,12 @@ jobs:
         options: --health-cmd "mysqladmin ping -h localhost -ptest-password" --health-interval 5s --health-timeout 3s --health-retries 20
     env:
       CARGO_TARGET_DIR: target-server
-      VDA_TEST_DATABASE_URL: postgres://vda:test-password@localhost:5432/vda
-      VDA_TEST_POSTGRES_URL: postgres://vda:test-password@localhost:5432/vda
-      VDA_TEST_PG_URL: postgres://vda:test-password@localhost:5432/vda
-      VDA_TEST_MYSQL_URL: mysql://vda:test-password@localhost:3306/vda
-      VDA_TEST_PG_PASSWORD: test-password
-      VDA_TEST_MYSQL_PASSWORD: test-password
+      VISP_GATE_TEST_DATABASE_URL: postgres://vda:test-password@localhost:5432/vda
+      VISP_GATE_TEST_POSTGRES_URL: postgres://vda:test-password@localhost:5432/vda
+      VISP_GATE_TEST_PG_URL: postgres://vda:test-password@localhost:5432/vda
+      VISP_GATE_TEST_MYSQL_URL: mysql://vda:test-password@localhost:3306/vda
+      VISP_GATE_TEST_PG_PASSWORD: test-password
+      VISP_GATE_TEST_MYSQL_PASSWORD: test-password
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -49,14 +49,14 @@ jobs:
         if: matrix.features != ''
         env:
           PGPASSWORD: test-password
-          VDA_DATABASE_URL: postgres://vda:test-password@localhost:5432/vda
-          VDA_BIND: 127.0.0.1:8080
-          VDA_COOKIE_SECURE: 'false'
-          VDA_ALLOW_PRIVATE_TARGETS: 'true'
-          VDA_BOOTSTRAP_ADMIN_EMAIL: admin@local.test
-          VDA_BOOTSTRAP_ADMIN_PASSWORD: local-admin-password
-          VDA_DISCOVERY_FAKE_FIXTURE: /tmp/vda-rds-discovery.json
-          VDA_SMOKE_TARGET_PORT: '5432'
+          VISP_GATE_DATABASE_URL: postgres://vda:test-password@localhost:5432/vda
+          VISP_GATE_BIND: 127.0.0.1:8080
+          VISP_GATE_COOKIE_SECURE: 'false'
+          VISP_GATE_ALLOW_PRIVATE_TARGETS: 'true'
+          VISP_GATE_BOOTSTRAP_ADMIN_EMAIL: admin@local.test
+          VISP_GATE_BOOTSTRAP_ADMIN_PASSWORD: local-admin-password
+          VISP_GATE_DISCOVERY_FAKE_FIXTURE: /tmp/vda-rds-discovery.json
+          VISP_GATE_SMOKE_TARGET_PORT: '5432'
         run: |
           psql -h localhost -U vda -d vda -v ON_ERROR_STOP=1 -c 'CREATE DATABASE shop'
           psql -h localhost -U vda -d shop -v ON_ERROR_STOP=1 -f deploy/demo/postgres.sql
@@ -68,10 +68,10 @@ jobs:
           GRANT SELECT ON ALL TABLES IN SCHEMA public TO shop_reader;
           GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO shop_writer;
           SQL
-          jq '(.resources[] | select(.identifier == "local-shop-aurora") | .port) = 5432' scripts/fixtures/rds-discovery.json > "$VDA_DISCOVERY_FAKE_FIXTURE"
-          VDA_MASTER_KEY="$(target-server/debug/visp-db-access gen-key)"
-          export VDA_MASTER_KEY
-          target-server/debug/visp-db-access serve > /tmp/vda-smoke-server.log 2>&1 &
+          jq '(.resources[] | select(.identifier == "local-shop-aurora") | .port) = 5432' scripts/fixtures/rds-discovery.json > "$VISP_GATE_DISCOVERY_FAKE_FIXTURE"
+          VISP_GATE_MASTER_KEY="$(target-server/debug/visp-gate gen-key)"
+          export VISP_GATE_MASTER_KEY
+          target-server/debug/visp-gate serve > /tmp/vda-smoke-server.log 2>&1 &
           gateway_pid=$!
           trap 'kill "$gateway_pid" 2>/dev/null || true; wait "$gateway_pid" 2>/dev/null || true' EXIT
           ready=false
@@ -86,11 +86,11 @@ jobs:
           # scripted agent at the agent door. It fails when the gate does
           # not behave as the demo says.
           psql -h localhost -U vda -d shop -v ON_ERROR_STOP=1 -f deploy/demo/postgres-gate.sql
-          VDA_DEMO_ADMIN_EMAIL="$VDA_BOOTSTRAP_ADMIN_EMAIL" VDA_DEMO_ADMIN_PASSWORD="$VDA_BOOTSTRAP_ADMIN_PASSWORD" \
-            VDA_DEMO_REVIEWER_PASSWORD=local-reviewer-password VDA_DEMO_TARGET_HOST=127.0.0.1 \
-            VDA_DEMO_TARGET_PASSWORD=demo-local-only VDA_DEMO_TOKEN_FILE=/tmp/vda-demo-agent-token \
+          VISP_GATE_DEMO_ADMIN_EMAIL="$VISP_GATE_BOOTSTRAP_ADMIN_EMAIL" VISP_GATE_DEMO_ADMIN_PASSWORD="$VISP_GATE_BOOTSTRAP_ADMIN_PASSWORD" \
+            VISP_GATE_DEMO_REVIEWER_PASSWORD=local-reviewer-password VISP_GATE_DEMO_TARGET_HOST=127.0.0.1 \
+            VISP_GATE_DEMO_TARGET_PASSWORD=demo-local-only VISP_GATE_DEMO_TOKEN_FILE=/tmp/vda-demo-agent-token \
             bash scripts/demo-seed.sh
-          VDA_AGENT_TOKEN_FILE=/tmp/vda-demo-agent-token bash scripts/demo-agent.sh
+          VISP_GATE_AGENT_TOKEN_FILE=/tmp/vda-demo-agent-token bash scripts/demo-agent.sh
   docker:
     runs-on: ubuntu-latest
     steps:
@@ -180,12 +180,12 @@ jobs:
         ports: ['3306:3306']
         options: --health-cmd "mysqladmin ping -h localhost -ptest-password" --health-interval 5s --health-timeout 3s --health-retries 20
     env:
-      VDA_TEST_DATABASE_URL: postgres://vda:test-password@localhost:5432/vda
-      VDA_TEST_POSTGRES_URL: postgres://vda:test-password@localhost:5432/vda
-      VDA_TEST_PG_URL: postgres://vda:test-password@localhost:5432/vda
-      VDA_TEST_MYSQL_URL: mysql://vda:test-password@localhost:3306/vda
-      VDA_TEST_PG_PASSWORD: test-password
-      VDA_TEST_MYSQL_PASSWORD: test-password
+      VISP_GATE_TEST_DATABASE_URL: postgres://vda:test-password@localhost:5432/vda
+      VISP_GATE_TEST_POSTGRES_URL: postgres://vda:test-password@localhost:5432/vda
+      VISP_GATE_TEST_PG_URL: postgres://vda:test-password@localhost:5432/vda
+      VISP_GATE_TEST_MYSQL_URL: mysql://vda:test-password@localhost:3306/vda
+      VISP_GATE_TEST_PG_PASSWORD: test-password
+      VISP_GATE_TEST_MYSQL_PASSWORD: test-password
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable

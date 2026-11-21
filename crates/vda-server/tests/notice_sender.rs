@@ -166,8 +166,8 @@ async fn a_notice_is_one_post_with_the_given_headers_and_body() {
     let (port, seen) = plain(OK.to_vec()).await;
     let sender = Sender::new(true).unwrap();
     let headers = [
-        ("x-vda-event", "approval.created".to_owned()),
-        ("x-vda-signature", "sha256=abc".to_owned()),
+        ("x-visp-gate-event", "approval.created".to_owned()),
+        ("x-visp-gate-signature", "sha256=abc".to_owned()),
     ];
     let status = sender
         .send(
@@ -188,10 +188,10 @@ async fn a_notice_is_one_post_with_the_given_headers_and_body() {
         format!("host: 127.0.0.1:{port}\r\n"),
         "content-type: application/json\r\n".into(),
         "content-length: 13\r\n".into(),
-        "user-agent: vda-notices/1\r\n".into(),
+        "user-agent: visp-gate-notices/1\r\n".into(),
         "connection: close\r\n".into(),
-        "x-vda-event: approval.created\r\n".into(),
-        "x-vda-signature: sha256=abc\r\n".into(),
+        "x-visp-gate-event: approval.created\r\n".into(),
+        "x-visp-gate-signature: sha256=abc\r\n".into(),
     ] {
         assert!(request.contains(&line), "{line:?} in {request}");
     }

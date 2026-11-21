@@ -65,7 +65,7 @@ async fn view(state: &AppState, settings: &Settings) -> Result<Value, ApiError> 
         "events": settings.events,
         "include_reason": settings.include_reason,
         "include_row_count": settings.include_row_count,
-        // Whether a notice can link to the request (VDA_PUBLIC_URL is set).
+        // Whether a notice can link to the request (VISP_GATE_PUBLIC_URL is set).
         "links": state.config.public_origin().is_some(),
         "delivery": {
             "pending": pending,

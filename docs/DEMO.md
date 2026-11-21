@@ -49,7 +49,7 @@ in the background, add `-d`, and read the output of the setup step with
 is taken, choose another one and use it in every command of this page:
 
 ```sh
-VDA_DEMO_PORT=18480 docker compose -f deploy/demo/docker-compose.yml up --build
+VISP_GATE_DEMO_PORT=18480 docker compose -f deploy/demo/docker-compose.yml up --build
 ```
 
 What the setup step made:
@@ -229,16 +229,16 @@ The two scripts work against any running gateway, for example the one that
 ```sh
 # Set up: needs the administrator's password and a database with the shop
 # data (deploy/demo/postgres.sql, then deploy/demo/postgres-gate.sql).
-VDA_DEMO_URL=http://127.0.0.1:8080 \
-VDA_DEMO_ADMIN_EMAIL=admin@local.test VDA_DEMO_ADMIN_PASSWORD=… \
-VDA_DEMO_REVIEWER_PASSWORD=… \
-VDA_DEMO_TARGET_HOST=127.0.0.1 VDA_DEMO_TARGET_PORT=55432 \
-VDA_DEMO_TARGET_USER=shop_gate VDA_DEMO_TARGET_PASSWORD=… \
-VDA_DEMO_TOKEN_FILE=/tmp/demo-agent-token \
+VISP_GATE_DEMO_URL=http://127.0.0.1:8080 \
+VISP_GATE_DEMO_ADMIN_EMAIL=admin@local.test VISP_GATE_DEMO_ADMIN_PASSWORD=… \
+VISP_GATE_DEMO_REVIEWER_PASSWORD=… \
+VISP_GATE_DEMO_TARGET_HOST=127.0.0.1 VISP_GATE_DEMO_TARGET_PORT=55432 \
+VISP_GATE_DEMO_TARGET_USER=shop_gate VISP_GATE_DEMO_TARGET_PASSWORD=… \
+VISP_GATE_DEMO_TOKEN_FILE=/tmp/demo-agent-token \
   scripts/demo-seed.sh
 
 # The agent.
-VDA_DEMO_URL=http://127.0.0.1:8080 VDA_AGENT_TOKEN_FILE=/tmp/demo-agent-token \
+VISP_GATE_DEMO_URL=http://127.0.0.1:8080 VISP_GATE_AGENT_TOKEN_FILE=/tmp/demo-agent-token \
   scripts/demo-agent.sh --follow
 ```
 
@@ -249,7 +249,7 @@ when one did not, and 2 for a wrong command line or a missing token.
 
 - **The setup step says the gateway did not become ready.** Read the
   gateway's log: `docker compose -f deploy/demo/docker-compose.yml logs gateway`.
-- **"port is already allocated".** Set `VDA_DEMO_PORT` as shown in step 1.
+- **"port is already allocated".** Set `VISP_GATE_DEMO_PORT` as shown in step 1.
 - **The agent is refused with `too_many_denials`.** Five refused queries in a
   row stop an agent for up to ten minutes. That is the gate working. Wait, or
   restart the gateway: `docker compose -f deploy/demo/docker-compose.yml restart gateway`.

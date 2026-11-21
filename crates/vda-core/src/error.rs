@@ -64,13 +64,13 @@ impl ApiError {
     pub fn credentials_unreadable(cluster: uuid::Uuid) -> Self {
         tracing::error!(
             cluster_id = %cluster,
-            "stored credentials cannot be decrypted; VDA_MASTER_KEY differs from the key they were encrypted with"
+            "stored credentials cannot be decrypted; VISP_GATE_MASTER_KEY differs from the key they were encrypted with"
         );
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "credentials_unreadable",
             "Stored credentials for this cluster can't be decrypted. Restore the previous \
-             VDA_MASTER_KEY, or re-enter the cluster password in its settings.",
+             VISP_GATE_MASTER_KEY, or re-enter the cluster password in its settings.",
         )
     }
     /// Internal failure with a generic message.
