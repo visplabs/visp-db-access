@@ -82,7 +82,7 @@ export function createAuditChain({
       const waiting = events().filter((event) => !event.sealed);
       const oldest = waiting
         .map((event) => event.created_at)
-        .sort()
+        .sort((a, b) => a.localeCompare(b))
         .at(0);
       const links = sealed().length;
       return {

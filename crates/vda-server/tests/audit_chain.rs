@@ -911,7 +911,7 @@ async fn each_kind_of_tampering_is_found_with_its_kind_and_position() {
         ("segment_start", "segment_start=5", Kind::RowChanged),
         ("segment_start back", "segment_start=0", Kind::RowChanged),
         // The name of the key is not; the run it stands in gives it away.
-        ("key_id", "key_id='0123456789abcdef'", Kind::ChainBroken),
+        ("key_id", "key_id='aaaaaaaaaaaaaaaa'", Kind::ChainBroken),
     ] {
         let (outcome, _, _) = check(vec![format!(
             "UPDATE audit_chain SET {change} WHERE position=5"
@@ -1481,7 +1481,7 @@ async fn a_node_notices_when_the_head_it_remembers_names_another_key() {
         "ALTER TABLE audit_log DISABLE TRIGGER audit_immutable;
          ALTER TABLE audit_chain DISABLE TRIGGER audit_chain_immutable;
          UPDATE audit_log SET action='changed' WHERE id='{}';
-         UPDATE audit_chain SET key_id='0123456789abcdef',segment_start=4 WHERE position>=4;
+         UPDATE audit_chain SET key_id='aaaaaaaaaaaaaaaa',segment_start=4 WHERE position>=4;
          ALTER TABLE audit_log ENABLE TRIGGER audit_immutable;
          ALTER TABLE audit_chain ENABLE TRIGGER audit_chain_immutable;",
         ids[3]
