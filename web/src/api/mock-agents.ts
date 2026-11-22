@@ -144,7 +144,7 @@ export function createAgents(context: {
   const agents: Agent[] = [];
   // Demo sessions of an agent that has a token: one that ended yesterday,
   // and one that is going on and gets a new step while someone reads it.
-  type Trail = { session: AgentSession; steps: AgentStep[]; grown: number };
+  type Trail = { session: AgentSession; steps: AgentStep[]; grown?: number };
   const trails = new Map<string, Trail[]>();
   const stepOf = (
     draft: Draft,
@@ -205,15 +205,16 @@ export function createAgents(context: {
       {
         session: summary(agent, token, live, true),
         steps: live,
-        grown: Date.now(),
       },
-      { session: summary(agent, token, past, false), steps: past, grown: 0 },
+      { session: summary(agent, token, past, false), steps: past },
     ];
     trails.set(agent.id, made);
     return made;
   };
   /** The live session goes on while its agent may act and someone reads it. */
   const grow = (agent: Agent, trail: Trail) => {
+    const time = Date.now();
+    trail.grown ??= time;
     const live = agent.tokens.some(
       (token) =>
         !token.revoked_at && new Date(token.expires_at).getTime() > Date.now(),
@@ -224,12 +225,12 @@ export function createAgents(context: {
       agent.paused ||
       !live ||
       !draft ||
-      Date.now() - trail.grown < LIVE_EVERY_MS
+      time - trail.grown < LIVE_EVERY_MS
     )
       return;
-    const step = stepOf(draft, agent, trail.steps.length + 1, Date.now());
+    const step = stepOf(draft, agent, trail.steps.length + 1, time);
     trail.steps.push(step);
-    trail.grown = Date.now();
+    trail.grown = time;
     trail.session.last_step_at = step.created_at;
     trail.session.steps = trail.steps.length;
     trail.session.refusals += step.outcome === 'ok' ? 0 : 1;
@@ -264,7 +265,9 @@ export function createAgents(context: {
       limit > 500
     )
       fail('validation', '`after` must be 0 or more and `limit` 1..=500');
-    grow(agent, trail);
+    // A metadata probe reads beyond the last step. Start the demo clock
+    // when the first step page opens, even if the list was open for a while.
+    if (after <= trail.session.steps) grow(agent, trail);
     const waiting = trail.steps.filter((step) => step.n > after);
     const items = waiting.slice(0, limit);
     return {

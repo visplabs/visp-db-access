@@ -213,13 +213,17 @@ export function AuditPage() {
         />
       </div>
       <p className="loaded-note" role="status">
-        UTC date range · {items.length} matching of {loaded.length} loaded
-        events. Export includes these rows only.
+        UTC date range ·{' '}
+        {query.isPending
+          ? 'Loading events…'
+          : !query.data
+            ? 'Count unavailable.'
+            : `${items.length} matching of ${loaded.length} loaded events. Export includes these rows only.`}
       </p>
       {query.isPending ? (
         <Skeleton />
       ) : query.error ? (
-        <ErrorPanel error={query.error} />
+        <ErrorPanel error={query.error} retry={() => void query.refetch()} />
       ) : items.length === 0 ? (
         <Empty
           title="No matching audit events"

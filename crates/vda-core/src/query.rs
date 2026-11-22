@@ -252,7 +252,7 @@ pub async fn dry_run(
         crate::access::require_level_effective(&core.db, actor, cluster_id, AccessLevel::Write)
             .await?;
         return Ok(crate::preview::Preview::unsupported(
-            "Writes on MySQL are not previewed. The approval is bound to nothing.",
+            "Writes on MySQL are not previewed, so this review cannot show which rows will change. If approved, the statement runs exactly as written, on the rows that match when it runs.",
         ));
     }
     let result = run_inner(

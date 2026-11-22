@@ -12,11 +12,11 @@ export function AboutConsole() {
         <dd>v1</dd>
       </dl>
       <p>
-        <a href="/docs/api.md" target="_blank" rel="noreferrer">
+        <a href="/help/api" target="_blank" rel="noreferrer">
           API documentation
         </a>{' '}
         ·{' '}
-        <a href="/docs/architecture.md" target="_blank" rel="noreferrer">
+        <a href="/help/architecture" target="_blank" rel="noreferrer">
           Architecture
         </a>
       </p>

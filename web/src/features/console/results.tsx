@@ -481,6 +481,11 @@ export const Results = memo(function Results({
         <div className="inline wrap">
           <strong>Results</strong>
           <Badge variant="status">Completed</Badge>
+          {result.simulated && (
+            <Tip text="The demo makes up these rows. They do not come from a database.">
+              <Badge tone="warning">Sample data</Badge>
+            </Tip>
+          )}
         </div>
         <div className="inline wrap">
           <Dropdown.Root modal={false}>
@@ -635,7 +640,8 @@ export const Results = memo(function Results({
       )}
       <div className="result-status" role="status">
         <span>
-          {result.row_count.toLocaleString()} rows fetched
+          {result.row_count.toLocaleString()}{' '}
+          {result.row_count === 1 ? 'row' : 'rows'} fetched
           {filter ? ` · ${rows.length} matching` : ''} · {result.elapsed_ms} ms
         </span>
         <span>

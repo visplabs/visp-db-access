@@ -289,7 +289,7 @@ test('a MySQL request says it has no preview, and a changed effect says what to 
   await go(page, `/approvals?tab=all&id=${MYSQL_PENDING}`);
   const changes = detail(page).getByRole('region', { name: 'What changes' });
   await expect(changes).toContainText(
-    'No preview. Writes on MySQL are not previewed. The approval is bound to nothing.',
+    'No preview. Writes on MySQL are not previewed, so this review cannot show which rows will change. If approved, the statement runs exactly as written, on the rows that match when it runs.',
   );
   await expect(changes).not.toContainText('Nothing is bound');
   await expect(
