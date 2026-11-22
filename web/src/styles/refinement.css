@@ -2072,6 +2072,12 @@ body {
 .markdown .table-wrap {
   margin: 0 0 14px;
 }
+/* An empty corner cell in the header row sizes like a header cell. */
+.markdown thead td {
+  height: 32px;
+  padding: 4px 12px;
+  border: 0;
+}
 .markdown ul,
 .markdown ol {
   padding-left: 22px;

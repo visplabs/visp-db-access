@@ -24,7 +24,7 @@ export function docHref(href: string): string {
 }
 
 const INLINE =
-  /(`+)([\s\S]*?)\1|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|_([^_\s][^_]*)_|\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|<(https?:\/\/[^>\s]+)>/g;
+  /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|_([^_\s][^_]*)_|\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|<(https?:\/\/[^>\s]+)>/g;
 
 export function inline(text: string, key = 'i'): ReactNode[] {
   const out: ReactNode[] = [];
@@ -34,7 +34,7 @@ export function inline(text: string, key = 'i'): ReactNode[] {
     const at = match.index ?? 0;
     if (at > last) out.push(text.slice(last, at));
     const id = `${key}-${n++}`;
-    const [, , code, strong1, strong2, em1, em2, label, href, auto] = match;
+    const [, code, strong1, strong2, em1, em2, label, href, auto] = match;
     if (code !== undefined) out.push(<code key={id}>{code.trim()}</code>);
     else if (strong1 ?? strong2)
       out.push(
@@ -75,13 +75,32 @@ type Block =
   | { kind: 'quote'; lines: string[] }
   | { kind: 'rule' };
 
-const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s(.*)$/;
 const cells = (line: string) =>
   line
     .trim()
     .replace(/^\||\|$/g, '')
     .split(/(?<!\\)\|/)
     .map((cell) => cell.trim().replaceAll('\\|', '|'));
+/** A table's second line, such as `|---|:--:|`. */
+const isTableRule = (line: string) =>
+  line.includes('-') &&
+  line
+    .trim()
+    .replace(/^\||\|$/g, '')
+    .split('|')
+    .every((cell) => /^:?-{2,}:?$/.test(cell.trim()));
+/** The text of an ATX heading, without the closing `#`s. */
+function headingText(raw: string): string {
+  const text = raw.trim();
+  let end = text.length;
+  while (end > 0 && text[end - 1] === '#') end--;
+  if (end === text.length) return text;
+  // A closing run counts only after a space (`## C#` keeps its `#`).
+  return end === 0 || /\s/.test(text[end - 1] ?? '')
+    ? text.slice(0, end).trim()
+    : text;
+}
 
 export function parse(source: string): Block[] {
   const lines = source.replace(/\r\n?/g, '\n').split('\n');
@@ -109,9 +128,9 @@ export function parse(source: string): Block[] {
       });
       continue;
     }
-    const heading = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
+    const heading = /^(#{1,6})\s(.*)$/.exec(line);
     if (heading) {
-      const text = heading[2] ?? '';
+      const text = headingText(heading[2] ?? '');
       const base = slug(text) || 'section';
       const count = used.get(base) ?? 0;
       used.set(base, count + 1);
@@ -129,12 +148,7 @@ export function parse(source: string): Block[] {
       i++;
       continue;
     }
-    if (
-      line.includes('|') &&
-      /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(
-        lines[i + 1] ?? '',
-      )
-    ) {
+    if (line.includes('|') && isTableRule(lines[i + 1] ?? '')) {
       const head = cells(line);
       const rows: string[][] = [];
       i += 2;
@@ -163,7 +177,7 @@ export function parse(source: string): Block[] {
         const current = lines[i] ?? '';
         const next = LIST_ITEM.exec(current);
         if (next && (next[1]?.length ?? 0) <= indent) {
-          items.push([next[3] ?? '']);
+          items.push([(next[3] ?? '').trim()]);
           i++;
         } else if (current.trim() && /^\s+/.test(current) && items.length) {
           // A nested item or a continuation line belongs to the last item.
@@ -215,7 +229,25 @@ function listItem(lines: string[], key: string): ReactNode {
   );
 }
 
+/** A distinct name for each table's scroll region, from the heading above it. */
+function tableLabels(blocks: Block[]): Map<number, string> {
+  const labels = new Map<number, string>();
+  const used = new Set<string>();
+  let section = '';
+  blocks.forEach((block, n) => {
+    if (block.kind === 'heading') section = block.text.replaceAll('`', '');
+    if (block.kind !== 'table') return;
+    const base = section ? `${section} table` : 'Table';
+    let label = base;
+    for (let k = 2; used.has(label); k++) label = `${base} ${k}`;
+    used.add(label);
+    labels.set(n, label);
+  });
+  return labels;
+}
+
 export function Markdown({ blocks }: { blocks: Block[] }) {
+  const labels = tableLabels(blocks);
   return (
     <>
       {blocks.map((block, n) => {
@@ -247,15 +279,31 @@ export function Markdown({ blocks }: { blocks: Block[] }) {
           }
           case 'table':
             return (
-              <div className="table-wrap" key={key} tabIndex={0}>
+              <div
+                className="table-wrap"
+                key={key}
+                role="region"
+                aria-label={labels.get(n) ?? 'Table'}
+                tabIndex={0}
+              >
                 <table>
-                  <thead>
-                    <tr>
-                      {block.head.map((cell, m) => (
-                        <th key={m}>{inline(cell, `${key}-h${m}`)}</th>
-                      ))}
-                    </tr>
-                  </thead>
+                  {/* A layout table with no header text has no header row. */}
+                  {block.head.some(Boolean) && (
+                    <thead>
+                      <tr>
+                        {block.head.map((cell, m) =>
+                          // An empty corner cell is not a header.
+                          cell ? (
+                            <th key={m} scope="col">
+                              {inline(cell, `${key}-h${m}`)}
+                            </th>
+                          ) : (
+                            <td key={m} />
+                          ),
+                        )}
+                      </tr>
+                    </thead>
+                  )}
                   <tbody>
                     {block.rows.map((row, r) => (
                       <tr key={r}>

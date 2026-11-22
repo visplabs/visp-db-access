@@ -22,6 +22,14 @@ describe('demo constant SELECT (review item 02)', () => {
     ]);
     expect(result?.row).toEqual([1, "it's", true]);
   });
+  it('splits an alias at the last AS, outside a string', () => {
+    expect(
+      constantSelect(`select 'a as b', 2 AS "my col"`)?.columns.map(
+        (c) => c.name,
+      ),
+    ).toEqual(['?column?', 'my col']);
+    expect(constantSelect(`select 'a as b'`)?.row).toEqual(['a as b']);
+  });
   it('leaves statements that read a table to the sample data', () => {
     expect(constantSelect('SELECT * FROM customers')).toBeUndefined();
     expect(constantSelect("SELECT 'from' FROM t")).toBeUndefined();
@@ -125,6 +133,15 @@ describe('Markdown reader (review item 17)', () => {
       lang: 'sh',
       text: '# not a heading',
     });
+  });
+  it('strips only a closing run of # after a space, and reads table rules', () => {
+    const titles = headings(parse('## C#\n\n## Closed ##')).map((h) => h.text);
+    expect(titles).toEqual(['C#', 'Closed']);
+    const table = (rule: string) =>
+      parse(`| A | B |\n${rule}\n| 1 | 2 |`)[0]?.kind;
+    expect(table('|:--|--:|')).toBe('table');
+    expect(table('--- | ---')).toBe('table');
+    expect(table('| - | - |')).not.toBe('table');
   });
   it('sends sibling documents to the reader and keeps other links', () => {
     expect(docHref('security-model.md#audit')).toBe(

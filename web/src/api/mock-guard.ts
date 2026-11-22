@@ -421,6 +421,17 @@ function constantValue(expression: string): {
     };
   return { value: text, type_name: 'text', name: call ?? '?column?' };
 }
+/** `expr AS name` or `expr AS "name"`: the last ` AS ` splits the item. */
+function splitAlias(item: string): { value: string; name: string } | undefined {
+  const last = [...item.matchAll(/\sas\s/gi)].at(-1);
+  if (last?.index === undefined) return;
+  const value = item.slice(0, last.index).trim();
+  const rest = item.slice(last.index + last[0].length).trim();
+  const quoted = rest.length > 1 && rest.startsWith('"') && rest.endsWith('"');
+  const name = quoted ? rest.slice(1, -1) : rest;
+  if (!value || !/^[\w ]+$/.test(name)) return;
+  return { value, name };
+}
 /**
  * A SELECT that reads no table, such as `SELECT 1`, returns exactly one row
  * of its constant values in the demo, as a database would.
@@ -436,18 +447,19 @@ export function constantSelect(sql: string):
     .trim()
     .replace(/;\s*$/, '')
     .trim();
-  const match = /^select\s+([\s\S]+)$/i.exec(clean);
-  if (!match?.[1]) return;
-  const body = match[1].replace(/'(?:''|[^'])*'/g, (token) =>
+  if (!/^select\s/i.test(clean)) return;
+  const list = clean.slice('select'.length).trim();
+  if (!list) return;
+  const body = list.replace(/'(?:''|[^'])*'/g, (token) =>
     ' '.repeat(token.length),
   );
   if (/\b(from|into|union|intersect|except|where)\b|;/i.test(body)) return;
-  const items = splitItems(match[1]);
+  const items = splitItems(list);
   if (items.some((item) => !item || item === '*')) return;
   const parsed = items.map((item) => {
-    const alias = /^([\s\S]+?)\s+as\s+("?)([\w ]+)\2$/i.exec(item);
-    const value = constantValue(alias?.[1] ?? item);
-    return { ...value, name: alias?.[3] ?? value.name };
+    const alias = splitAlias(item);
+    const value = constantValue(alias?.value ?? item);
+    return { ...value, name: alias?.name ?? value.name };
   });
   return {
     columns: parsed.map(({ name, type_name }) => ({
