@@ -1,7 +1,8 @@
 # Contributing
 
 Thanks for your interest in visp-gate. Bug reports, fixes, documentation
-improvements and feature proposals are all welcome.
+improvements and feature proposals are all welcome. Everyone who takes part
+follows the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Before you start
 

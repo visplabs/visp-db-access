@@ -2943,7 +2943,7 @@ td small {
   max-height: var(--receipt-max-height);
 }
 
-/* Round 2: a viewport shell and bounded query workspace. */
+/* A viewport shell and bounded query workspace. */
 .app {
   height: 100dvh;
   min-height: 0;

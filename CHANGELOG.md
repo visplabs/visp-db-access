@@ -7,6 +7,15 @@ change the API and storage schema; migrations run automatically at startup.
 
 ## [Unreleased]
 
+### Added
+
+- A code of conduct, issue templates and a pull request template.
+
+### Fixed
+
+- `NOTICE` named the Inter typeface, which the console no longer bundles. It
+  now names Geist and Geist Mono and their license.
+
 ## [0.2.0] - 2026-11-22
 
 ### Added
