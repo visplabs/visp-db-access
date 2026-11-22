@@ -23,8 +23,10 @@ export function docHref(href: string): string {
   return href;
 }
 
+// Each quantified class excludes the characters that start a match, so a
+// global scan stays linear (no rescans on `[[[[` or `<http://<http://`).
 const INLINE =
-  /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|_([^_\s][^_]*)_|\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|<(https?:\/\/[^>\s]+)>/g;
+  /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|_([^_\s][^_]*)_|\[([^[\]]+)\]\(([^()\s[\]<>"]+)(?:\s+"[^"[\]]*")?\)|<(https?:\/\/[^<>\s]+)>/g;
 
 export function inline(text: string, key = 'i'): ReactNode[] {
   const out: ReactNode[] = [];
