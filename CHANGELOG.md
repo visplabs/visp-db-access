@@ -7,18 +7,14 @@ change the API and storage schema; migrations run automatically at startup.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-23
+
 ### Added
 
 - A code of conduct, issue templates and a pull request template.
-
-### Fixed
-
-- `NOTICE` named the Inter typeface, which the console no longer bundles. It
-  now names Geist and Geist Mono and their license.
-
-## [0.2.0] - 2026-11-22
-
-### Added
+- The console reads its own documents at `/help/<name>` (for example
+  `/help/api`), with a list of sections; About links there in place of the raw
+  Markdown files.
 
 - Notices to approvers: an outbound webhook, signed or in Slack's format, that
   says a request waits. Off by default; set up under Settings → Notices. A
@@ -122,6 +118,40 @@ change the API and storage schema; migrations run automatically at startup.
   console, with two new ones: an agent's session and the preview of a write.
   The details of the `demo` profile of `docker-compose.yml` moved to
   `docs/DEPLOYMENT.md`.
+- The reason a MySQL write has no preview now says what it means: the review
+  cannot show which rows will change, and an approved statement runs as
+  written on the rows that match when it runs. Agents read this text.
+
+### Fixed
+
+- The console, from a UI review of the 0.2.0 demo:
+  - The project button shows the project in use, and Clusters keeps it.
+  - On short screens the console page scrolls and the results stay usable.
+    Below 1100 px the schema and safety panels open as drawers, one at a
+    time, and keyboard shortcuts do not reach a query behind an open drawer.
+  - The phone menu keeps the keyboard inside it, has a Close button, and
+    returns focus to the menu button. Tablets get a 64 px rail.
+  - Shortcut labels say Ctrl on Linux and Windows and ⌘ on Apple systems.
+  - The approval timeline says "Awaiting execution" or "Not executed", and
+    counts say "Loading…" while they load and "unavailable" after an error,
+    with Retry.
+  - Row actions stay in view on phones, filters wrap cleanly, the search
+    icon no longer covers the text, and a filtered cluster list says
+    "X of Y".
+  - Empty states are centred; dialogs without a description no longer point
+    to one; password forms carry the account name for password managers.
+  - Text colour contrast in the editor and while the pre-flight check runs.
+- The demo (`npm run dev:mock`) returns one real row for a query that reads
+  no table, such as `SELECT 1`, marks sample table data as "Sample data", and
+  suggests a `LIMIT` only for a query that reads a table.
+- `NOTICE` named the Inter typeface, which the console no longer bundles. It
+  now names Geist and Geist Mono and their license.
+
+### Security
+
+- `url` 2.5.9 for RUSTSEC-2026-0592 (stack overflow in `Url::origin()` on
+  nested `blob:` URLs). The gateway calls it only on `http` and `https`
+  addresses from its own settings.
 
 ## [0.1.0] - 2026-10-10
 
