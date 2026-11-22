@@ -32,7 +32,16 @@ import { BrandMark } from './ui/brand';
 import { CommandPalette } from './command-palette';
 import { SessionRecovery } from './session-recovery';
 import { PopoverLayerContext } from '../lib/popover-layer';
-import { Button, Field, Modal, RouteBoundary, Skeleton } from './ui';
+import { useMedia } from '../lib/media';
+import { modifierLabel } from '../lib/platform';
+import {
+  AccountName,
+  Button,
+  Field,
+  Modal,
+  RouteBoundary,
+  Skeleton,
+} from './ui';
 const navigation = [
   { to: '/overview', text: 'Overview', icon: Activity },
   { to: '/clusters', text: 'Clusters', icon: Database },
@@ -48,6 +57,8 @@ const administration = [
   { to: '/settings', text: 'Settings', icon: Settings },
 ];
 const noClusters: Cluster[] = [];
+const focusableSelector =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 export function Shell() {
   const cache = useQueryClient();
   const [popoverLayer, setPopoverLayer] = useState<HTMLElement | null>(null);
@@ -59,6 +70,10 @@ export function Shell() {
     [mobileOpen, setMobileOpen] = useState(false),
     [shortcuts, setShortcuts] = useState(false),
     [password, setPassword] = useState(false);
+  const phone = useMedia('(max-width: 600px)');
+  useEffect(() => {
+    if (!phone) setMobileOpen(false);
+  }, [phone]);
   const { theme, setTheme } = useTheme();
   const projects = useResource<{ items: Project[] }>('/projects');
   const clusters = useResource<{ items: Cluster[] }>('/clusters');
@@ -85,11 +100,20 @@ export function Shell() {
     [adminLinks, isAdmin],
   );
   const overview = useResource<{ pending_approvals: number }>('/overview');
-  const [project, setProject] = useState('all');
+  const mod = modifierLabel();
+  const [rememberedProject, setRememberedProject] = useState('all');
   const logout = useAction(''),
     changePassword = useAction('Password changed');
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
+      const dialog =
+        event.target instanceof Element &&
+        event.target.closest('[role="dialog"]');
+      if (
+        mobileOpen ||
+        (dialog && !dialog.classList.contains('palette-dialog'))
+      )
+        return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         setCommand((value) => !value);
@@ -108,25 +132,68 @@ export function Shell() {
     };
     window.addEventListener('keydown', listener);
     return () => window.removeEventListener('keydown', listener);
-  }, []);
+  }, [mobileOpen]);
+  const closeMobileNav = () => {
+    setMobileOpen(false);
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>('.mobile-menu')?.focus(),
+    );
+  };
   useEffect(() => {
     if (!mobileOpen) return;
     document.querySelector<HTMLElement>('.sidebar nav a')?.focus();
-    const close = (event: KeyboardEvent) => {
+    const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        setMobileOpen(false);
-        document.querySelector<HTMLElement>('.mobile-menu')?.focus();
+        closeMobileNav();
+        return;
       }
+      if (event.key !== 'Tab') return;
+      // Keep focus on visible controls inside the drawer.
+      const focusable = [
+        ...document.querySelectorAll<HTMLElement>(
+          `.sidebar :is(${focusableSelector})`,
+        ),
+      ].filter((element) => element.getClientRects().length > 0);
+      if (focusable.length === 0) return;
+      const index = focusable.indexOf(document.activeElement as HTMLElement);
+      const next = event.shiftKey
+        ? index <= 0
+          ? focusable.length - 1
+          : index - 1
+        : index === -1 || index === focusable.length - 1
+          ? 0
+          : index + 1;
+      event.preventDefault();
+      focusable[next]?.focus();
     };
-    window.addEventListener('keydown', close);
-    return () => window.removeEventListener('keydown', close);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, [mobileOpen]);
   const current = clusters.data?.items.find(
     (cluster) =>
       location.pathname.includes(cluster.id) ||
       new URLSearchParams(location.search).get('cluster_id') === cluster.id,
   );
+  // The header shows the scope of the page on screen. The cluster list is
+  // filtered by project; a cluster page belongs to one project; every other
+  // page is workspace-wide and shows all projects.
+  const onClusterList = location.pathname === '/clusters';
+  const listProject = onClusterList
+    ? (new URLSearchParams(location.search).get('project_id') ?? 'all')
+    : null;
+  const project = listProject ?? current?.project_id ?? 'all';
+  const projectName =
+    projects.data?.items.find((item) => item.id === project)?.name ??
+    'All projects';
+  const workspaceWide = listProject === null && !current;
+  useEffect(() => {
+    if (listProject !== null) setRememberedProject(listProject);
+  }, [listProject]);
+  const clustersLink =
+    rememberedProject === 'all'
+      ? '/clusters'
+      : `/clusters?project_id=${encodeURIComponent(rememberedProject)}`;
   const detailTab =
     new URLSearchParams(location.search).get('tab') ?? 'console';
   const workspace =
@@ -161,15 +228,19 @@ export function Shell() {
         {mobileOpen && (
           <button
             className="nav-backdrop"
-            aria-label="Close navigation"
-            onClick={() => setMobileOpen(false)}
+            aria-hidden="true"
+            tabIndex={-1}
+            onClick={closeMobileNav}
           />
         )}
-        <aside
+        <div
           className="sidebar"
+          role={mobileOpen ? 'dialog' : 'complementary'}
+          aria-label={mobileOpen ? 'Workspace navigation' : undefined}
+          aria-modal={mobileOpen || undefined}
           onClick={(event) => {
-            if ((event.target as HTMLElement).closest('a'))
-              setMobileOpen(false);
+            if (mobileOpen && (event.target as HTMLElement).closest('a'))
+              closeMobileNav();
           }}
         >
           <NavLink className="brand" to="/overview" aria-label="visp overview">
@@ -181,7 +252,11 @@ export function Shell() {
           <div className="workspace-label">Workspace</div>
           <nav aria-label="Main navigation">
             {navigation.map((item) => (
-              <NavLink to={item.to} key={item.to} title={item.text}>
+              <NavLink
+                to={item.to === '/clusters' ? clustersLink : item.to}
+                key={item.to}
+                title={item.text}
+              >
                 <item.icon size={16} strokeWidth={1.5} />
                 <span>{item.text}</span>
                 {item.to === '/approvals' &&
@@ -213,36 +288,52 @@ export function Shell() {
             </nav>
           )}
           <div className="sidebar-bottom">
-            <Button
-              variant="ghost"
-              aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              onClick={() => setCollapsed((value) => !value)}
-            >
-              {collapsed ? (
-                <PanelLeftOpen size={18} />
-              ) : (
-                <PanelLeftClose size={18} />
-              )}
-              <span>Collapse sidebar</span>
-            </Button>
+            {phone ? (
+              <Button variant="ghost" onClick={closeMobileNav}>
+                <X size={18} /> Close navigation
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                onClick={() => setCollapsed((value) => !value)}
+              >
+                {collapsed ? (
+                  <PanelLeftOpen size={18} />
+                ) : (
+                  <PanelLeftClose size={18} />
+                )}
+                <span>Collapse sidebar</span>
+              </Button>
+            )}
           </div>
-        </aside>
-        <div className="main-shell">
+        </div>
+        <div className="main-shell" inert={mobileOpen && phone}>
           <header className="topbar">
             <Button
               variant="ghost"
               className="mobile-menu"
-              aria-label={mobileOpen ? 'Close navigation' : 'Open navigation'}
+              aria-label="Open navigation"
               aria-expanded={mobileOpen}
-              onClick={() => setMobileOpen((value) => !value)}
+              onClick={() =>
+                mobileOpen ? closeMobileNav() : setMobileOpen(true)
+              }
             >
               {mobileOpen ? <X size={20} /> : <Menu size={20} />}
             </Button>
             <Dropdown.Root modal={false}>
               <Dropdown.Trigger asChild>
-                <Button variant="ghost" className="project-switcher">
-                  {projects.data?.items.find((item) => item.id === project)
-                    ?.name ?? 'All projects'}
+                <Button
+                  variant="ghost"
+                  className="project-switcher"
+                  aria-label={`Project: ${projectName}${workspaceWide ? ' (this page shows every project)' : ''}`}
+                  title={
+                    workspaceWide
+                      ? 'This page shows every project'
+                      : `Showing ${projectName}`
+                  }
+                >
+                  {projectName}
                   <ChevronDown size={14} />
                 </Button>
               </Dropdown.Trigger>
@@ -251,7 +342,7 @@ export function Shell() {
                   <Dropdown.RadioGroup
                     value={project}
                     onValueChange={(value) => {
-                      setProject(value);
+                      setRememberedProject(value);
                       navigate(
                         value === 'all'
                           ? '/clusters'
@@ -278,11 +369,11 @@ export function Shell() {
             <div className="topbar-right">
               <Button
                 className="search-trigger"
-                aria-label="Jump to a page or cluster (⌘ / Ctrl K)"
+                aria-label={`Jump to a page or cluster (${mod} K)`}
                 onClick={() => setCommand(true)}
               >
                 <Search size={15} />
-                <kbd>⌘ K</kbd>
+                <kbd>{mod} K</kbd>
               </Button>
               <Dropdown.Root modal={false}>
                 <Dropdown.Trigger asChild>
@@ -391,16 +482,16 @@ export function Shell() {
           open={shortcuts}
           onOpenChange={setShortcuts}
           title="Keyboard shortcuts"
-          description="Use ⌘ on macOS or Ctrl on Windows and Linux."
+          description={`Shortcuts use the ${mod === '⌘' ? 'Command (⌘)' : 'Ctrl'} key on this computer.`}
         >
           <dl className="review-policy">
             <dt>Jump to a page or action</dt>
             <dd>
-              <kbd>⌘ / Ctrl K</kbd>
+              <kbd>{mod} K</kbd>
             </dd>
             <dt>Run SQL / request approval</dt>
             <dd>
-              <kbd>⌘ / Ctrl Enter</kbd>
+              <kbd>{mod} Enter</kbd>
             </dd>
             <dt>Cancel running query / close dialog</dt>
             <dd>
@@ -408,7 +499,7 @@ export function Shell() {
             </dd>
             <dt>New query tab</dt>
             <dd>
-              <kbd>⌘ / Ctrl Alt T</kbd>
+              <kbd>{mod} Alt T</kbd>
             </dd>
             <dt>Results</dt>
             <dd>Arrow keys to move, Enter to inspect</dd>
@@ -439,6 +530,7 @@ export function Shell() {
               );
             }}
           >
+            <AccountName email={user?.email} />
             <Field label="Current password">
               <input
                 name="current_password"

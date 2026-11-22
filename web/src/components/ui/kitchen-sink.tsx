@@ -1,3 +1,4 @@
+import { modifierLabel } from '../../lib/platform';
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -64,7 +65,7 @@ export function KitchenSink() {
             ),
           )}
           <Button disabled>Saving…</Button>
-          <Tip text="Keyboard: ⌘ / Ctrl K">
+          <Tip text={`Keyboard: ${modifierLabel()} K`}>
             <Button>Tooltip</Button>
           </Tip>
         </div>

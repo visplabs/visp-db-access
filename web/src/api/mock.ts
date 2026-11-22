@@ -1,6 +1,6 @@
 import { ApiError, type Transport } from './errors';
 import { fixtures, defaultPolicy, demoSchema, now, uuid } from './fixtures';
-import { analyzeDemo, preflightDemo } from './mock-guard';
+import { analyzeDemo, constantSelect, preflightDemo } from './mock-guard';
 import { createMockDiscovery } from './mock-discovery';
 import { endpointChanged } from '../lib/connection';
 import { isCidr } from '../lib/utils';
@@ -192,6 +192,23 @@ export function createMockTransport({
     const limit = Number(
       analysis.rewritten_sql?.match(/\blimit\s+(\d+)/i)?.[1] ?? 100,
     );
+    const constant = write ? undefined : constantSelect(sql);
+    if (constant)
+      return {
+        query_id,
+        columns: constant.columns,
+        rows: [constant.row],
+        row_count: 1,
+        truncated: false,
+        affected_rows: null,
+        elapsed_ms: 2,
+        routed_to:
+          cluster.replica_host && policy.route_reads_to_replica
+            ? 'replica'
+            : 'primary',
+        executed_sql: analysis.rewritten_sql ?? sql,
+        analysis,
+      };
     const names = [
       'Maya Patel',
       'Oliver Davis',
@@ -225,6 +242,7 @@ export function createMockTransport({
           ],
       rows: write ? [] : rows,
       row_count: write ? 0 : rows.length,
+      simulated: !write,
       truncated: !write && limit > policy.max_rows,
       affected_rows: write ? 1 : null,
       elapsed_ms: 37,

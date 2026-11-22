@@ -153,6 +153,23 @@ export function SegmentedControl({
     </div>
   );
 }
+/**
+ * Names the account a password form belongs to, for browsers and password
+ * managers. It has no name, so the form never submits it.
+ */
+export function AccountName({ email }: { email: string | undefined }) {
+  return (
+    <input
+      type="email"
+      autoComplete="username"
+      value={email ?? ''}
+      readOnly
+      hidden
+      tabIndex={-1}
+      aria-hidden="true"
+    />
+  );
+}
 /** Row commands share a quiet disclosure; destructive actions confirm in their caller. */
 export function RowMenu({
   label,
@@ -165,7 +182,7 @@ export function RowMenu({
   return (
     <Dropdown.Root modal={false}>
       <Dropdown.Trigger asChild>
-        <Button variant="ghost" aria-label={label}>
+        <Button variant="ghost" className="row-menu" aria-label={label}>
           <MoreHorizontal size={16} />
         </Button>
       </Dropdown.Trigger>
@@ -194,6 +211,7 @@ export function Modal({
   wide = false,
   drawer = false,
   className = '',
+  closeLabel = 'Close dialog',
   dismissible = true,
 }: {
   open: boolean;
@@ -203,6 +221,7 @@ export function Modal({
   children: ReactNode;
   wide?: boolean;
   drawer?: boolean;
+  closeLabel?: string;
   className?: string;
   /** False while the dialog shows something that cannot be shown again:
    * Escape, a click outside and the close button do nothing, so only a
@@ -232,6 +251,8 @@ export function Modal({
         <Dialog.Overlay className="overlay" />
         <Dialog.Content
           className={`dialog ${wide ? 'wide' : ''} ${drawer ? 'drawer' : ''} ${className}`}
+          // Without a description, nothing repeats the title for screen readers.
+          {...(description ? {} : { 'aria-describedby': undefined })}
           onEscapeKeyDown={stay}
           onPointerDownOutside={stay}
           onInteractOutside={stay}
@@ -251,15 +272,22 @@ export function Modal({
           <div className="dialog-heading">
             <div>
               <Dialog.Title>{title}</Dialog.Title>
-              <Dialog.Description className={description ? 'muted' : 'sr-only'}>
-                {description ?? title}
-              </Dialog.Description>
+              {description && (
+                <Dialog.Description className="muted">
+                  {description}
+                </Dialog.Description>
+              )}
             </div>
             {dismissible && (
               <Dialog.Close asChild>
-                <Button variant="ghost" aria-label="Close dialog">
+                <button
+                  type="button"
+                  className="button ghost icon-button default"
+                  aria-label={closeLabel}
+                  title={closeLabel}
+                >
                   <X size={18} />
-                </Button>
+                </button>
               </Dialog.Close>
             )}
           </div>
@@ -590,7 +618,7 @@ export function Empty({
     <div className="empty">
       <Inbox size={16} strokeWidth={1.5} aria-hidden="true" />
       <h2>{title}</h2>
-      <p className="sr-only">{description}</p>
+      <p>{description}</p>
       {action}
     </div>
   );

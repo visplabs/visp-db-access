@@ -123,11 +123,20 @@ export function ApprovalsPage() {
           ]}
         />
       </div>
-      <p className="loaded-note">
-        {items.length} matching of {loaded.length} loaded requests
-        {query.hasNextPage ? ' · More available' : ''}. Filter counts cover{' '}
-        {counts.data?.items.length ?? '—'} loaded accessible requests. You
-        cannot approve your own request.
+      <p className="loaded-note" role="status">
+        {query.isPending ? (
+          'Loading requests…'
+        ) : !query.data ? (
+          'Request count unavailable.'
+        ) : (
+          <>
+            {items.length} matching of {loaded.length} loaded requests
+            {query.hasNextPage ? ' · More available' : ''}.
+            {counts.data &&
+              ` Filter counts cover ${counts.data.items.length} loaded accessible requests.`}
+          </>
+        )}{' '}
+        You cannot approve your own request.
         {counts.error ? ' Filter counts are unavailable.' : ''}
       </p>
       <TabBar
@@ -159,7 +168,10 @@ export function ApprovalsPage() {
             ) : query.error ? (
               <ErrorPanel
                 error={query.error}
-                retry={() => void query.refetch()}
+                retry={() => {
+                  void query.refetch();
+                  if (counts.isError) void counts.refetch();
+                }}
               />
             ) : items.length === 0 ? (
               <Empty
@@ -627,7 +639,11 @@ function ApprovalDetail({
                     ? 'Withdrawn'
                     : data.status === 'expired'
                       ? 'Expired'
-                      : 'Executed'}
+                      : data.executed_at
+                        ? 'Executed'
+                        : data.status === 'rejected'
+                          ? 'Not executed'
+                          : 'Awaiting execution'}
             </strong>
             <span>
               {data.executed_at ? (
@@ -640,10 +656,16 @@ function ApprovalDetail({
                 'Running now'
               ) : data.status === 'rejected' ? (
                 'It will not run.'
+              ) : data.status === 'approved' ? (
+                'Approved. It has not run yet.'
               ) : (
-                `Valid until ${formatTime(data.expires_at)}`
+                'It runs only after a reviewer approves it.'
               )}
             </span>
+            {!data.executed_at &&
+              (data.status === 'pending' || data.status === 'approved') && (
+                <p>Request valid until {formatTime(data.expires_at)}</p>
+              )}
           </li>
         </ol>
       </div>

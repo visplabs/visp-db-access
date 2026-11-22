@@ -182,6 +182,8 @@ export interface QueryResult {
   row_count: number;
   truncated: boolean;
   affected_rows: number | null;
+  /** Set only by the demo transport: the rows are made-up sample data. */
+  simulated?: boolean;
   elapsed_ms: number;
   executed_sql: string;
   routed_to: 'primary' | 'replica';

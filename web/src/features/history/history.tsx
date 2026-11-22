@@ -367,9 +367,13 @@ export function HistoryPage() {
           onTo={(value) => update('to', value)}
         />
       </div>
-      <p className="loaded-note">
-        UTC date range · {items.length} matching of {loaded.length} loaded
-        queries. Load more to include older rows.
+      <p className="loaded-note" role="status">
+        UTC date range ·{' '}
+        {query.isPending
+          ? 'Loading queries…'
+          : !query.data
+            ? 'Count unavailable.'
+            : `${items.length} matching of ${loaded.length} loaded queries. Load more to include older rows.`}
       </p>
       {searchParams.get('entry') &&
         !loaded.some((entry) => entry.id === searchParams.get('entry')) &&

@@ -8,7 +8,7 @@ import { demoSchema, uuid } from './fixtures';
 const SAMPLE_ROWS = 20;
 const HIDDEN = '••••••';
 export const MYSQL_REASON =
-  'Writes on MySQL are not previewed. The approval is bound to nothing.';
+  'Writes on MySQL are not previewed, so this review cannot show which rows will change. If approved, the statement runs exactly as written, on the rows that match when it runs.';
 const NOTE_COUNT_ONLY =
   'This statement is previewed by its row count only: it is not a single plain INSERT, UPDATE or DELETE.';
 const NOTE_RETURNING =

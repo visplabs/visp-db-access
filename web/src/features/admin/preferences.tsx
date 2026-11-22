@@ -4,7 +4,12 @@ import { usePreferences } from '../../lib/preferences';
 import { useTheme } from '../../lib/theme';
 import { useUser } from '../auth/session';
 import { useAction } from '../../lib/query';
-import { Button, Field, SegmentedControl } from '../../components/ui';
+import {
+  AccountName,
+  Button,
+  Field,
+  SegmentedControl,
+} from '../../components/ui';
 export function PersonalSettings() {
   const user = useUser(),
     { preferences, setPreferences } = usePreferences(),
@@ -77,6 +82,7 @@ export function PersonalSettings() {
             );
           }}
         >
+          <AccountName email={user?.email} />
           <Field label="Current password">
             <input
               name="current_password"

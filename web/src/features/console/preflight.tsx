@@ -11,6 +11,7 @@ import {
 import type { Environment, GuardChange, Preflight } from '../../api/types';
 import { Button } from '../../components/ui';
 import { spoken, stateLabel, type CheckStatus } from '../../lib/preflight';
+import { isApplePlatform, modifierLabel } from '../../lib/platform';
 
 const runLabel = (environment: Environment) =>
   environment === 'production'
@@ -57,7 +58,7 @@ export const PreflightBar = memo(function PreflightBar({
   onRetry: () => void;
   onDetails: () => void;
 }) {
-  // While the next answer loads, the last one stays on screen, dimmed.
+  // While the next answer loads, the last one stays on screen with its updating label.
   const shown = status === 'ready' || status === 'updating' ? preflight : null;
   const tone = !shown
     ? 'neutral'
@@ -172,10 +173,13 @@ export const PreflightBar = memo(function PreflightBar({
             className={`run-${environment}`}
             disabled={!can.run}
             onClick={onRun}
+            aria-keyshortcuts={
+              isApplePlatform() ? 'Meta+Enter' : 'Control+Enter'
+            }
           >
             <Play size={14} />
             {running ? 'Running…' : runLabel(environment)}
-            <kbd>⌘ ↵</kbd>
+            <kbd aria-hidden="true">{modifierLabel()} ↵</kbd>
           </Button>
         )}
       </div>

@@ -403,6 +403,10 @@ describe('mock agent sessions follow the API contract', () => {
       if (step.fix) expect(step.fix.told).toMatch(/^The agent was told /);
     }
     // The live one: three steps at first, one more per read after a moment.
+    vi.advanceTimersByTime(3000);
+    const probe = await steps(live!.id, `?after=${PAST_ALL}&limit=1`);
+    expect(probe.session.steps).toBe(3);
+    vi.advanceTimersByTime(3000);
     const first = await steps(live!.id);
     expect(first.items).toHaveLength(3);
     vi.advanceTimersByTime(2000);

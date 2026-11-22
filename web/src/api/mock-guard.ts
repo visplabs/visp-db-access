@@ -179,6 +179,7 @@ export function analyzeDemo(sql: string, policy: Policy): Analysis {
       });
     if (
       kind === 'select' &&
+      tables.length > 0 &&
       !has_where &&
       !has_limit &&
       !/\b(count|sum|avg|min|max)\s*\(/i.test(code) &&
@@ -356,4 +357,104 @@ export function preflightDemo(
         hint: text,
         code: issue?.code,
       };
+}
+
+/** Split a projection list at top-level commas, outside quotes and brackets. */
+function splitItems(list: string): string[] {
+  const items: string[] = [];
+  let depth = 0,
+    quote = '',
+    start = 0;
+  for (let i = 0; i < list.length; i++) {
+    const char = list[i];
+    if (quote) {
+      if (char === quote) quote = '';
+    } else if (char === "'" || char === '"') quote = char;
+    else if (char === '(') depth++;
+    else if (char === ')') depth--;
+    else if (char === ',' && depth === 0) {
+      items.push(list.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  items.push(list.slice(start).trim());
+  return items;
+}
+function constantValue(expression: string): {
+  value: unknown;
+  type_name: string;
+  name: string;
+} {
+  const text = expression.trim();
+  const call = /^([a-z_][\w]*)\s*\(/i.exec(text)?.[1]?.toLowerCase();
+  if (/^-?\d+$/.test(text))
+    return { value: Number(text), type_name: 'int4', name: '?column?' };
+  if (/^-?\d*\.\d+$/.test(text))
+    return { value: Number(text), type_name: 'numeric', name: '?column?' };
+  if (/^'(?:''|[^'])*'$/.test(text))
+    return {
+      value: text.slice(1, -1).replaceAll("''", "'"),
+      type_name: 'text',
+      name: '?column?',
+    };
+  if (/^(true|false)$/i.test(text))
+    return { value: /^true$/i.test(text), type_name: 'bool', name: 'bool' };
+  if (/^null$/i.test(text))
+    return { value: null, type_name: 'text', name: '?column?' };
+  if (call === 'now' || /^current_timestamp$/i.test(text))
+    return {
+      value: new Date().toISOString(),
+      type_name: 'timestamptz',
+      name: call ?? 'current_timestamp',
+    };
+  if (call === 'version')
+    return {
+      value: 'PostgreSQL 16.4 (visp demo)',
+      type_name: 'text',
+      name: 'version',
+    };
+  if (/^(current_user|user|session_user)$/i.test(text) || call === 'user')
+    return {
+      value: 'visp_reader',
+      type_name: 'name',
+      name: text.toLowerCase(),
+    };
+  return { value: text, type_name: 'text', name: call ?? '?column?' };
+}
+/**
+ * A SELECT that reads no table, such as `SELECT 1`, returns exactly one row
+ * of its constant values in the demo, as a database would.
+ */
+export function constantSelect(sql: string):
+  | {
+      columns: { name: string; type_name: string; masked: boolean }[];
+      row: unknown[];
+    }
+  | undefined {
+  const clean = sql
+    .replace(/--[^\n]*|\/\*[\s\S]*?\*\//g, ' ')
+    .trim()
+    .replace(/;\s*$/, '')
+    .trim();
+  const match = /^select\s+([\s\S]+)$/i.exec(clean);
+  if (!match?.[1]) return;
+  const body = match[1].replace(/'(?:''|[^'])*'/g, (token) =>
+    ' '.repeat(token.length),
+  );
+  if (/\b(from|into|union|intersect|except|where)\b|;/i.test(body)) return;
+  const items = splitItems(match[1]);
+  if (items.some((item) => !item || item === '*')) return;
+  const parsed = items.map((item) => {
+    const alias = /^([\s\S]+?)\s+as\s+("?)([\w ]+)\2$/i.exec(item);
+    const value = constantValue(alias?.[1] ?? item);
+    return { ...value, name: alias?.[3] ?? value.name };
+  });
+  return {
+    columns: parsed.map(({ name, type_name }) => ({
+      name,
+      type_name,
+      masked: false,
+    })),
+    row: parsed.map(({ value }) => value),
+  };
 }

@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
 } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'sql-formatter';
@@ -54,6 +55,13 @@ import {
 } from '../../lib/workspace';
 import { useUser } from '../auth/session';
 import { withClientFixes } from '../../lib/optimize';
+import { useMedia } from '../../lib/media';
+/** The width at which the schema and safety panels become drawers. */
+const DRAWER_QUERY = '(max-width: 1100px)';
+// Window shortcuts apply to the workspace while it owns the keyboard.
+const inOverlay = (event: KeyboardEvent) =>
+  event.target instanceof Element &&
+  !!event.target.closest('[role="dialog"], [role="menu"], [role="listbox"]');
 const newTab = (index: number, engine = 'postgres'): QueryTab => {
   const sql = `SELECT id, name, email\nFROM ${engine === 'postgres' ? 'public.users' : 'users'}\nORDER BY created_at DESC;`;
   return {
@@ -163,10 +171,10 @@ export function ConsoleWorkspace({
       Math.round((innerHeight - 160) * 0.4),
     ),
     [schemaOpen, setSchemaOpen] = useState(
-      () => matchMedia('(min-width: 1100px)').matches,
+      () => !matchMedia(DRAWER_QUERY).matches,
     ),
     [safetyOpen, setSafetyOpen] = useState(
-      () => matchMedia('(min-width: 1100px)').matches,
+      () => !matchMedia(DRAWER_QUERY).matches,
     ),
     [reasonOpen, setReasonOpen] = useState(false),
     [reason, setReason] = useState('');
@@ -342,7 +350,7 @@ export function ConsoleWorkspace({
   });
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
+      if (event.defaultPrevented || inOverlay(event)) return;
       if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
         event.preventDefault();
         runRef.current();
@@ -420,6 +428,7 @@ export function ConsoleWorkspace({
   useEffect(() => {
     const add = () => addTabRef.current();
     const keyboard = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || inOverlay(event)) return;
       if (
         (event.metaKey || event.ctrlKey) &&
         event.altKey &&
@@ -474,7 +483,30 @@ export function ConsoleWorkspace({
   const openReason = useCallback(() => setReasonOpen(true), []);
   const runNow = useCallback(() => runRef.current(), [runRef]);
   const cancelNow = useCallback(() => cancelRef.current(), [cancelRef]);
-  const openSafety = useCallback(() => setSafetyOpen(true), []);
+  // Below 1100 px the side panels are drawers over the editor. Only one
+  // drawer is open at a time, and a narrowing window closes both, so the
+  // editor and Run stay reachable.
+  const drawer = useMedia(DRAWER_QUERY);
+  useEffect(() => {
+    if (!drawer) return;
+    setSchemaOpen(false);
+    setSafetyOpen(false);
+  }, [drawer]);
+  const showSchema = useCallback(
+    (open: boolean) => {
+      setSchemaOpen(open);
+      if (open && drawer) setSafetyOpen(false);
+    },
+    [drawer],
+  );
+  const showSafety = useCallback(
+    (open: boolean) => {
+      setSafetyOpen(open);
+      if (open && drawer) setSchemaOpen(false);
+    },
+    [drawer],
+  );
+  const openSafety = useCallback(() => showSafety(true), [showSafety]);
   const preflightFix = preflight?.fix;
   const applyPreflightFix = useCallback(() => {
     if (preflightFix) applyFix(preflightFix);
@@ -493,15 +525,19 @@ export function ConsoleWorkspace({
         className={`console-layout ${schemaOpen ? '' : 'schema-hidden'} ${safetyOpen ? '' : 'safety-hidden'}`}
       >
         {schemaOpen && (
-          <aside className="schema-column-panel" aria-label="Schema panel">
+          <ConsolePanel
+            name="Schema"
+            drawer={drawer}
+            onClose={() => setSchemaOpen(false)}
+          >
             <SchemaExplorer
-              onClose={() => setSchemaOpen(false)}
+              onClose={drawer ? undefined : () => setSchemaOpen(false)}
               clusterId={cluster.id}
               engine={cluster.engine}
               onInsert={insertSql}
               onQuery={updateSql}
             />
-          </aside>
+          </ConsolePanel>
         )}
         <div className="console-center" ref={center}>
           <QueryTabs
@@ -542,7 +578,7 @@ export function ConsoleWorkspace({
                 variant="ghost"
                 aria-label="Toggle schema panel"
                 aria-expanded={schemaOpen}
-                onClick={() => setSchemaOpen((value) => !value)}
+                onClick={() => showSchema(!schemaOpen)}
               >
                 <PanelLeft size={16} />
               </Button>
@@ -598,7 +634,7 @@ export function ConsoleWorkspace({
                   className="icon"
                   aria-label="Toggle safety panel"
                   aria-expanded={safetyOpen}
-                  onClick={() => setSafetyOpen((value) => !value)}
+                  onClick={() => showSafety(!safetyOpen)}
                 >
                   <PanelRight size={16} />
                 </Button>
@@ -622,7 +658,7 @@ export function ConsoleWorkspace({
               cancelling={cancel.isPending}
               environment={cluster.environment}
               clusterId={cluster.id}
-              detailsOpen={safetyOpen}
+              detailsOpen={safetyOpen && !drawer}
               onRun={runNow}
               onRequest={openReason}
               onApplyFix={applyPreflightFix}
@@ -657,17 +693,23 @@ export function ConsoleWorkspace({
           </div>
         </div>
         {safetyOpen && (
-          <aside className="safety-column" aria-label="Safety panel">
-            <div className="side-panel-close">
-              <Button
-                variant="ghost"
-                className="icon"
-                aria-label="Close safety panel"
-                onClick={() => setSafetyOpen(false)}
-              >
-                <PanelRight size={16} />
-              </Button>
-            </div>
+          <ConsolePanel
+            name="Safety"
+            drawer={drawer}
+            onClose={() => setSafetyOpen(false)}
+          >
+            {!drawer && (
+              <div className="side-panel-close">
+                <Button
+                  variant="ghost"
+                  className="icon"
+                  aria-label="Close safety panel"
+                  onClick={() => setSafetyOpen(false)}
+                >
+                  <PanelRight size={16} />
+                </Button>
+              </div>
+            )}
             <SafetyPanel
               analysis={analysis.data}
               maxRows={policy.data?.max_rows}
@@ -679,7 +721,7 @@ export function ConsoleWorkspace({
               onApplyFix={applyFix}
               showVerdict={false}
             />
-          </aside>
+          </ConsolePanel>
         )}
       </div>
       <Modal open={rename} onOpenChange={setRename} title="Rename query tab">
@@ -804,6 +846,42 @@ export function ConsoleWorkspace({
         </form>
       </Modal>
     </div>
+  );
+}
+function ConsolePanel({
+  name,
+  drawer,
+  onClose,
+  children,
+}: {
+  name: 'Schema' | 'Safety';
+  drawer: boolean;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const panel = (
+    <aside
+      className={name === 'Schema' ? 'schema-column-panel' : 'safety-column'}
+      aria-label={`${name} panel`}
+    >
+      {children}
+    </aside>
+  );
+  return drawer ? (
+    <Modal
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      drawer
+      className="console-panel-dialog"
+      title={`${name} panel`}
+      closeLabel={`Close ${name.toLowerCase()} panel`}
+    >
+      {panel}
+    </Modal>
+  ) : (
+    panel
   );
 }
 function TerminalPlaceholder({ running }: { running: boolean }) {

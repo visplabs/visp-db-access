@@ -3,6 +3,7 @@ import { MoreHorizontal, Plus, X } from 'lucide-react';
 import { Button, Tip } from '../../components/ui';
 import type { QueryTab } from '../../lib/workspace';
 import { usePopoverLayer } from '../../lib/popover-layer';
+import { modifierLabel } from '../../lib/platform';
 /** The tablist contains only tabs; operations remain separate keyboard controls. */
 export function QueryTabs({
   tabs,
@@ -118,7 +119,7 @@ export function QueryTabs({
           </Dropdown.Content>
         </Dropdown.Portal>
       </Dropdown.Root>
-      <Tip text="New query tab · ⌘ / Ctrl Alt T">
+      <Tip text={`New query tab · ${modifierLabel()} Alt T`}>
         <Button
           variant="ghost"
           aria-label="New query tab"

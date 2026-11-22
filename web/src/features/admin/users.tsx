@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import type { User } from '../../api/types';
 import { useAction, useResource } from '../../lib/query';
 import {
+  AccountName,
   Badge,
   Button,
   Confirm,
@@ -130,6 +131,11 @@ export function UsersPage() {
           if (!open) setEditing(null);
         }}
         title={editing === 'new' ? 'Create user' : 'Edit user'}
+        description={
+          editing === 'new'
+            ? 'Add a person to this workspace and choose their role. They sign in with the email and password you set here.'
+            : undefined
+        }
       >
         {editing && (
           <UserForm
@@ -189,9 +195,10 @@ function UserForm({ user, close }: { user?: User; close: () => void }) {
       </Field>
       {!user && (
         <Field label="Email">
-          <input name="email" type="email" required />
+          <input name="email" type="email" required autoComplete="username" />
         </Field>
       )}
+      {user && <AccountName email={user.email} />}
       <Field label="Organization role">
         <Picker
           value={role}

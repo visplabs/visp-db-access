@@ -114,7 +114,9 @@ export function CommandPalette({
   ]);
   const selected = Math.min(cursor, Math.max(0, items.length - 1));
   const run = (index: number) => {
-    items[index]?.action();
+    const item = items[index];
+    if (!item) return;
+    item.action();
     onOpenChange(false);
   };
   return (

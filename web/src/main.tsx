@@ -1,6 +1,6 @@
 import '@fontsource-variable/geist';
 import '@fontsource-variable/geist-mono';
-import { StrictMode, lazy } from 'react';
+import { StrictMode, Suspense, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -12,9 +12,14 @@ import { PreferencesProvider } from './lib/preferences';
 import { ThemeProvider } from './lib/theme';
 import { Shell } from './components/shell';
 import { ToastProvider } from './components/ui/toast';
-import { Empty, RouteBoundary } from './components/ui';
+import { Empty, RouteBoundary, Skeleton } from './components/ui';
 import { Login } from './features/auth/login';
 import { AdminOnly, Session } from './features/auth/session';
+const HelpDocument = lazy(() =>
+  import('./features/help/doc').then((module) => ({
+    default: module.HelpDocument,
+  })),
+);
 const OverviewPage = lazy(() =>
   import('./features/overview/overview').then((module) => ({
     default: module.OverviewPage,
@@ -101,6 +106,20 @@ if (root)
                   <RouteBoundary>
                     <Routes>
                       <Route path="/login" element={<Login />} />
+                      <Route
+                        path="/help/:name"
+                        element={
+                          <Suspense
+                            fallback={
+                              <main className="help-body">
+                                <Skeleton />
+                              </main>
+                            }
+                          >
+                            <HelpDocument />
+                          </Suspense>
+                        }
+                      />
                       <Route
                         element={
                           <Session>

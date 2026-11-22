@@ -123,7 +123,11 @@ export function Clusters() {
           <h1>
             Clusters{' '}
             <span className="heading-count">
-              {clusters.data?.items.length ?? '—'}
+              {clusters.data
+                ? items.length === clusters.data.items.length
+                  ? clusters.data.items.length
+                  : `${items.length} of ${clusters.data.items.length}`
+                : '—'}
             </span>
           </h1>
           <p>Your databases, with access and health in one place.</p>

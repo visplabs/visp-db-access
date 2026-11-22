@@ -116,6 +116,15 @@ input:not([type='checkbox']),
   border: var(--stroke) solid transparent;
   border-radius: 7px;
 }
+/* Space for the magnifier, so it never covers the placeholder or typed text. */
+.search-input input {
+  padding-left: 36px;
+}
+.search-input svg {
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
 textarea {
   background: var(--control-fill);
   border: var(--stroke) solid transparent;
@@ -692,10 +701,10 @@ td.numeric {
   background: var(--surface);
 }
 .empty {
-  padding: 24px 0;
+  padding: 24px 12px;
   border: 0;
   background: transparent;
-  text-align: left;
+  text-align: center;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -705,9 +714,8 @@ td.numeric {
   font-size: 14px;
   font-weight: 400;
 }
-.empty > .button,
-.empty > a {
-  margin-left: auto;
+.empty p {
+  margin: 0;
 }
 .skeleton {
   background: var(--control-fill);
@@ -1727,17 +1735,6 @@ body {
 .preflight-actions .button {
   flex-shrink: 0;
 }
-.preflight-bar[aria-busy='true'] .preflight-state > :not(.preflight-updating),
-.preflight-bar[aria-busy='true'] .preflight-why {
-  opacity: 0.6;
-  transition: opacity 120ms ease;
-}
-@media (prefers-reduced-motion: reduce) {
-  .preflight-bar[aria-busy='true'] .preflight-state > :not(.preflight-updating),
-  .preflight-bar[aria-busy='true'] .preflight-why {
-    transition: none;
-  }
-}
 /* The editor height is that of the editor and the bar together: the bar is
    never cut, and the editor gives way to it. */
 .console-editor {
@@ -1895,4 +1892,248 @@ body {
   .session-task {
     max-width: 180px;
   }
+}
+/*
+ * Short screens (phones, landscape phones, small windows): the console cannot
+ * fit the editor and the results in one screen. The page scrolls instead, and
+ * the editor and the results each keep a usable height.
+ */
+@media (max-height: 700px) {
+  .main-shell > .workspace-page {
+    overflow-y: auto;
+  }
+  .workspace-page > .cluster-tabs,
+  .workspace-page .cluster-tabs > [role='tabpanel'],
+  .workspace-page .cluster-tab-content,
+  .workspace-page .console-workspace,
+  .workspace-page .console-layout,
+  .workspace-page .console-center {
+    flex: none;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+  .workspace-page .console-editor {
+    height: 200px;
+    max-height: none;
+  }
+  .workspace-page .console-center > .split-handle {
+    display: none;
+  }
+  .workspace-page .console-results {
+    flex: none;
+    height: max(280px, 70dvh);
+  }
+}
+/* Keep the console drawer scrollable independently of the editor. */
+.dialog.drawer.console-panel-dialog {
+  left: auto;
+  width: min(360px, 100%);
+}
+.console-panel-dialog :is(.schema-column-panel, .safety-column) {
+  position: static;
+  width: 100%;
+  box-shadow: none;
+  border: 0;
+}
+/* Tablet widths show an icon-only rail, so the rail is only as wide as an icon. */
+@media (min-width: 601px) and (max-width: 900px) {
+  .app,
+  .app.collapsed {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+}
+/*
+ * Phone widths: tables scroll sideways. A shadow on the right edge shows that
+ * more columns are there, and the row actions stay pinned in view.
+ */
+@media (max-width: 600px) {
+  .table-wrap {
+    background:
+      linear-gradient(to left, var(--bg) 40%, transparent) right / 32px 100%
+        no-repeat local,
+      linear-gradient(to left, rgb(0 0 0 / 0.16), transparent) right / 14px 100%
+        no-repeat scroll;
+  }
+  .table-wrap td:has(> .row-menu),
+  .table-wrap table:has(td > .row-menu) th:last-child {
+    position: sticky;
+    right: 0;
+    z-index: 1;
+    background: var(--bg);
+    box-shadow: -10px 0 10px -10px rgb(0 0 0 / 0.3);
+  }
+}
+/* A picker label stays on one line; the filter row wraps whole controls instead. */
+.select {
+  white-space: nowrap;
+}
+.select > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 900px) {
+  .filterbar > .select {
+    flex: 1 1 auto;
+  }
+}
+/* Documentation reader (/help/:name) */
+.help-page {
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+}
+.help-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 48px;
+  padding: 0 32px;
+  background: var(--material);
+  backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: var(--stroke) solid var(--rule);
+  font-size: 13px;
+}
+.help-back,
+.help-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.help-brand {
+  color: var(--muted);
+}
+.help-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 760px);
+  gap: 48px;
+  justify-content: center;
+  padding: 32px;
+}
+.help-toc {
+  position: sticky;
+  top: 80px;
+  align-self: start;
+  max-height: calc(100dvh - 112px);
+  overflow: auto;
+  font-size: 13px;
+}
+.help-toc ol {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.help-toc a {
+  color: var(--muted);
+}
+.help-toc a:hover {
+  color: var(--ink);
+}
+.help-body {
+  width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 0 64px;
+}
+.markdown {
+  font-size: 15px;
+  line-height: 1.6;
+}
+.markdown h1 {
+  font-size: 28px;
+  margin: 0 0 16px;
+}
+.markdown h2 {
+  font-size: 20px;
+  margin: 40px 0 12px;
+  padding-top: 8px;
+  border-top: var(--stroke) solid var(--rule);
+  scroll-margin-top: 64px;
+}
+.markdown h3,
+.markdown h4 {
+  font-size: 16px;
+  margin: 28px 0 8px;
+  scroll-margin-top: 64px;
+}
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown pre,
+.markdown .table-wrap {
+  margin: 0 0 14px;
+}
+.markdown ul,
+.markdown ol {
+  padding-left: 22px;
+}
+.markdown li + li {
+  margin-top: 4px;
+}
+.markdown ul {
+  list-style: disc;
+}
+.markdown ol {
+  list-style: decimal;
+}
+.markdown code {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.88em;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--control-fill);
+}
+.markdown pre {
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--control-fill);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.markdown pre code {
+  padding: 0;
+  background: transparent;
+}
+.markdown blockquote {
+  padding-left: 14px;
+  border-left: 3px solid var(--rule);
+  color: var(--muted);
+}
+.markdown a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+@media (max-width: 900px) {
+  .help-layout {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 24px 16px;
+  }
+  .help-toc {
+    position: static;
+    max-height: none;
+  }
+  .help-toc summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .help-layout {
+    gap: var(--space-5);
+  }
+  .help-header {
+    padding: 0 16px;
+  }
+}
+.help-toc li[data-level='3'] {
+  padding-left: 12px;
+  font-size: 12px;
 }
