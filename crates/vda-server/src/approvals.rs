@@ -63,6 +63,7 @@ async fn open(
     sql: String,
     reason: String,
     ip: std::net::IpAddr,
+    turn: Option<crate::limits::Held>,
 ) -> Result<Uuid, ApiError> {
     let (c, level) =
         vda_core::access::require_level_effective(&state.db, actor, cluster_id, AccessLevel::Read)
@@ -116,6 +117,11 @@ async fn open(
             "A write inside WITH cannot be previewed or bound. Send each change as its own statement.",
         ));
     }
+    // An agent's proposal holds its turn (see `limits`). A turn that was
+    // lost is not used for target I/O: another call may have it now.
+    if let Some(turn) = &turn {
+        turn.renew(&state.db).await?;
+    }
     if actor.agent.is_some() && dialect(&c) == vda_guard::Dialect::Postgres {
         check_agent_reads(state, actor, c.id, &sql, &reason, ip).await?;
     }
@@ -157,6 +163,16 @@ async fn open(
         None => None,
     };
     let mut tx = state.db.begin().await?;
+    // The agent's limits on requests are checked again where the request is
+    // stored, under the lock of its turn: the counts read before the read
+    // check hold only while the turn is this call's.
+    if let Some(turn) = &turn {
+        turn.lock(&mut tx).await?;
+        if let Some(refused) = agent_request_limits(&mut *tx, turn.agent).await? {
+            tx.rollback().await?;
+            return Err(refused.error(state, turn.agent).await);
+        }
+    }
     sqlx::query(
         "INSERT INTO approvals(id,cluster_id,requester_id,sql,reason,analysis,status,preview,binding,
          agent_id,agent_name) VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,$10)",
@@ -258,6 +274,7 @@ pub async fn create(
         body.sql,
         body.reason,
         ip.0,
+        None,
     )
     .await?;
     Ok(Json(view(&state, id).await?))
@@ -1123,43 +1140,70 @@ pub(crate) async fn propose_for_agent(
     sql: String,
     task: String,
     ip: std::net::IpAddr,
+    turn: crate::limits::Held,
 ) -> Result<Value, ApiError> {
     // Each request costs a person's time, so an agent may have only a few
-    // open at once.
-    let open_requests: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM approvals WHERE agent_id=$1 AND status IN ('pending','approved','executing')
-           AND expires_at>now()",
-    )
-    .bind(identity.agent_id)
-    .fetch_one(&state.db)
-    .await?;
-    let last_hour: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM approvals WHERE agent_id=$1 AND created_at>now()-interval '1 hour'",
-    )
-    .bind(identity.agent_id)
-    .fetch_one(&state.db)
-    .await?;
-    if last_hour >= PROPOSALS_PER_HOUR {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "rate_limited",
-            "Too many writes asked for in one hour",
-        )
-        .details(json!({"retry_after_seconds": 600})));
+    // open at once. Checked before the read check, so a refused request
+    // costs nothing, and again where it is stored.
+    if let Some(refused) = agent_request_limits(&state.db, identity.agent_id).await? {
+        return Err(refused.error(state, identity.agent_id).await);
     }
-    if open_requests >= OPEN_REQUESTS_PER_AGENT {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "too_many_open_requests",
-            "You have too many writes waiting for a person; wait for them or withdraw one",
-        )
-        .details(json!({
-            "limit": OPEN_REQUESTS_PER_AGENT,
-            "requests": open_for_agent(state, identity).await?,
-        })));
-    }
-    let id = open(state, &identity.actor, cluster, sql, task, ip).await?;
+    let id = open(state, &identity.actor, cluster, sql, task, ip, Some(turn)).await?;
     status_for_agent(state, identity, id).await
+}
+/// Which limit on an agent's requests one more request would pass.
+enum RequestLimit {
+    PerHour,
+    Open,
+}
+/// The limit one more request of the agent would pass, if any.
+async fn agent_request_limits<'c, E>(db: E, agent: Uuid) -> Result<Option<RequestLimit>, ApiError>
+where
+    E: sqlx::PgExecutor<'c>,
+{
+    let (open_requests, last_hour): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM approvals WHERE agent_id=$1
+                  AND status IN ('pending','approved','executing') AND expires_at>now()),
+                (SELECT count(*) FROM approvals WHERE agent_id=$1
+                  AND created_at>now()-interval '1 hour')",
+    )
+    .bind(agent)
+    .fetch_one(db)
+    .await?;
+    Ok(if last_hour >= PROPOSALS_PER_HOUR {
+        Some(RequestLimit::PerHour)
+    } else if open_requests >= OPEN_REQUESTS_PER_AGENT {
+        Some(RequestLimit::Open)
+    } else {
+        None
+    })
+}
+impl RequestLimit {
+    async fn error(self, state: &AppState, agent: Uuid) -> ApiError {
+        match self {
+            Self::PerHour => ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "Too many writes asked for in one hour",
+            )
+            .details(json!({"retry_after_seconds": 600})),
+            Self::Open => {
+                let requests = match open_requests_of(state, agent).await {
+                    Ok(requests) => requests,
+                    Err(error) => return error,
+                };
+                ApiError::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too_many_open_requests",
+                    "You have too many writes waiting for a person; wait for them or withdraw one",
+                )
+                .details(json!({
+                    "limit": OPEN_REQUESTS_PER_AGENT,
+                    "requests": requests,
+                }))
+            }
+        }
+    }
 }
 /// The agent's requests that wait for a person or are running, newest
 /// first: the same requests that count toward `OPEN_REQUESTS_PER_AGENT`.
@@ -1167,7 +1211,10 @@ pub(crate) async fn open_for_agent(
     state: &AppState,
     identity: &AgentIdentity,
 ) -> Result<Vec<Value>, ApiError> {
-    expire_due(state, Due::Agent(identity.agent_id)).await?;
+    open_requests_of(state, identity.agent_id).await
+}
+async fn open_requests_of(state: &AppState, agent: Uuid) -> Result<Vec<Value>, ApiError> {
+    expire_due(state, Due::Agent(agent)).await?;
     Ok(sqlx::query_scalar(
         "SELECT jsonb_build_object('approval_id',a.id,'database',a.cluster_id,'status',a.status,
            'task',a.reason,'created_at',a.created_at,'expires_at',a.expires_at)
@@ -1175,7 +1222,7 @@ pub(crate) async fn open_for_agent(
            AND a.expires_at>now()
          ORDER BY a.created_at DESC,a.id DESC LIMIT $2",
     )
-    .bind(identity.agent_id)
+    .bind(agent)
     .bind(OPEN_REQUESTS_LISTED)
     .fetch_all(&state.db)
     .await?)

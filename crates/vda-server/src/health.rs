@@ -255,6 +255,7 @@ async fn cycle(state: &AppState) -> Result<(), ApiError> {
     recover_executions(state).await?;
     crate::notices::worker::prune(&state.db).await?;
     crate::steps::prune(&state.db, state.config.agent_steps_retention_days).await?;
+    crate::limits::prune(&state.db).await?;
     Ok(())
 }
 
