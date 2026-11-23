@@ -68,7 +68,14 @@ await dark.getByRole('grid').waitFor();
 await shot(dark, 'console');
 await go(dark, '/approvals');
 await dark.getByRole('button', { name: 'Review', exact: true }).first().click();
-await dark.getByRole('region', { name: 'Query approval' }).waitFor();
+const review = dark.getByRole('region', { name: 'Query approval' });
+await review.waitFor();
+// Show the whole risk meter and its labels above the sticky review form:
+// at 900 px it sits under the fold.
+await review
+  .locator('.risk-meter')
+  .first()
+  .evaluate((meter) => meter.scrollIntoView({ block: 'center' }));
 await shot(dark, 'approvals');
 
 // An agent's write, previewed: what it changes, measured in a dry run.
