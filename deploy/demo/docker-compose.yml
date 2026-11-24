@@ -109,7 +109,7 @@ services:
       - /demo-state/bin/busybox
       - sh
       - -c
-      - 'read -r VISP_GATE_MASTER_KEY < /demo-state/master-key && read -r metadata_password < /demo-state/metadata-password && export VISP_GATE_MASTER_KEY VISP_GATE_DATABASE_URL="postgres://vda:$${metadata_password}@metadata:5432/vda" && exec /usr/local/bin/visp-gate serve'
+      - 'read -r VISP_GATE_MASTER_KEY < /demo-state/master-key && { read -r metadata_password || [ -n "$${metadata_password}" ]; } < /demo-state/metadata-password && export VISP_GATE_MASTER_KEY VISP_GATE_DATABASE_URL="postgres://vda:$${metadata_password}@metadata:5432/vda" && exec /usr/local/bin/visp-gate serve'
     volumes: ['state:/demo-state:ro']
     healthcheck:
       test: [CMD, /demo-state/bin/busybox, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/readyz']
