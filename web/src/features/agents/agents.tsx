@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Navigate, useSearchParams } from 'react-router-dom';
 import { Bot } from 'lucide-react';
 import type { Agent, Cluster, NewAgentToken } from '../../api/types';
 import { useCopy } from '../../lib/clipboard';
@@ -19,7 +19,8 @@ import { CloudLabel } from '../../components/ui/cluster-heading';
 import { RelativeTime } from '../../components/ui/time';
 import { formatTime } from '../../lib/utils';
 import { useUser } from '../auth/session';
-import { SessionList, SessionView } from './sessions';
+import { SessionList } from './sessions';
+import { sessionPath } from './session-trail';
 
 const levelText = {
   read: 'Read only',
@@ -58,6 +59,10 @@ export function AgentsPage() {
     () => new Map(clusters.data?.items.map((c) => [c.id, c]) ?? []),
     [clusters.data],
   );
+  // An old link to a session opens the session's own page.
+  const legacy = params.get('session');
+  if (legacy && params.get('agent'))
+    return <Navigate replace to={sessionPath(params.get('agent')!, legacy)} />;
   return (
     <>
       <div className="page-heading">
@@ -144,28 +149,15 @@ export function AgentsPage() {
               </tbody>
             </table>
           </div>
-          {selected && params.get('session') ? (
-            <SessionView
-              key={params.get('session')}
+          {selected && (
+            <AgentDetail
+              key={selected.id}
               agent={selected}
-              sessionId={params.get('session') ?? ''}
+              owner={selected.owner.id === user?.id}
               clusters={names}
-              onBack={() => setParams({ agent: selected.id })}
+              onEdit={() => setEditing(selected)}
+              onGone={() => setParams({})}
             />
-          ) : (
-            selected && (
-              <AgentDetail
-                key={selected.id}
-                agent={selected}
-                owner={selected.owner.id === user?.id}
-                clusters={names}
-                onEdit={() => setEditing(selected)}
-                onGone={() => setParams({})}
-                onSession={(session) =>
-                  setParams({ agent: selected.id, session })
-                }
-              />
-            )
           )}
         </div>
       )}
@@ -190,14 +182,12 @@ function AgentDetail({
   clusters,
   onEdit,
   onGone,
-  onSession,
 }: {
   agent: Agent;
   owner: boolean;
   clusters: Map<string, Cluster>;
   onEdit: () => void;
   onGone: () => void;
-  onSession: (session: string) => void;
 }) {
   const pause = useAction<Agent>(
       agent.paused ? 'Agent resumed' : 'Agent paused',
@@ -266,7 +256,7 @@ function AgentDetail({
           running on this gateway were cancelled.
         </p>
       )}
-      <SessionList agent={agent} onOpen={onSession} />
+      <SessionList agent={agent} />
       <h3>What it can reach</h3>
       <ul className="agent-reach">
         {agent.cluster_ids.map((id) => {

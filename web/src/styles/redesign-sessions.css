@@ -1,1 +1,668 @@
-/* Redesign: the sessions screen. Owned by the sessions implementer. */
+/* Redesign: the sessions screen. Owned by the sessions implementer.
+   An agent session is a decision trail: one row per call, on a numbered
+   spine. Calls the gate let through stay quiet; calls it held or refused
+   become cards in their verdict colour, with the reason and the exact words
+   the agent read. A tape of one mark per step sums the session up. */
+
+.trail-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 1120px;
+}
+
+/* Breadcrumb */
+.trail-crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--label-secondary);
+  font-size: var(--text-sm);
+}
+.trail-crumbs li + li::before {
+  content: '/';
+  margin-right: 6px;
+  color: var(--label-tertiary);
+}
+.trail-crumbs a {
+  color: var(--label-secondary);
+  text-decoration: none;
+}
+.trail-crumbs a:hover {
+  color: var(--action);
+  text-decoration: underline;
+}
+.trail-crumbs [aria-current='page'] {
+  color: var(--label-primary);
+  font-weight: 500;
+}
+
+/* Header */
+.trail-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.trail-heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.trail-heading h1 {
+  margin: 0;
+  font-size: var(--text-title);
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  line-height: 1.2;
+}
+.trail-who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  color: var(--label-secondary);
+  font-size: var(--text-sm);
+}
+.trail-who strong {
+  color: var(--label-primary);
+  font-weight: 500;
+}
+.trail-times {
+  margin: 0;
+  color: var(--label-tertiary);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.trail-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* Live state: a dot that breathes slowly while steps can arrive. */
+.trail-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  padding: 0 10px 0 9px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--label-primary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.trail-live::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--label-tertiary);
+}
+.trail-live[data-state='live']::before {
+  background: var(--verdict-allowed-fg);
+}
+/* On the session page the dot pulses twice when the page opens and each
+   time a step arrives, then rests: calm, and never a loop. */
+.trail-head .trail-live[data-state='live']::before {
+  animation: trail-breathe 2.4s ease-out 2;
+}
+.trail-live[data-state='paused']::before {
+  background: var(--verdict-held-fg);
+}
+@keyframes trail-breathe {
+  0% {
+    box-shadow: 0 0 0 0
+      color-mix(in srgb, var(--verdict-allowed-fg) 55%, transparent);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+/* Summary: the tape, then counts that filter the trail. */
+.trail-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 14px 16px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+}
+.trail-tape {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 16px;
+  overflow: hidden;
+}
+.trail-tape > span {
+  flex: 1 1 0;
+  min-width: 1px;
+  height: 6px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--label-tertiary) 35%, transparent);
+  transition: opacity var(--motion-fast);
+}
+.trail-tape > span[data-verdict='allowed'] {
+  height: 10px;
+  background: var(--verdict-allowed-fg);
+}
+.trail-tape > span[data-verdict='held'] {
+  height: 16px;
+  /* Striped, like the dashed chip: held is not final. */
+  background: repeating-linear-gradient(
+    135deg,
+    var(--verdict-held-fg) 0 3px,
+    var(--verdict-held-bg) 3px 6px
+  );
+  box-shadow: inset 0 0 0 1px var(--verdict-held-fg);
+}
+.trail-tape > span[data-verdict='blocked'] {
+  height: 16px;
+  background: var(--verdict-blocked-fg);
+}
+.trail-tape > span[data-verdict='failed'] {
+  height: 8px;
+  background: var(--label-tertiary);
+}
+.trail-tape > span[data-dim] {
+  opacity: 0.18;
+}
+.trail-counts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 4px 20px;
+}
+.trail-counts-set {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.trail-counts-set[data-kind='verdicts'] {
+  padding-left: 20px;
+  border-left: 1px solid var(--rule);
+}
+.trail-count {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 72px;
+  padding: 6px 10px 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--label-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.trail-count:hover {
+  background: var(--hover-fill);
+}
+.trail-count:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.trail-count[aria-pressed='true'] {
+  border-color: var(--label-tertiary);
+  background: var(--control-fill);
+}
+.trail-count-value {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+.trail-count-label {
+  color: var(--label-secondary);
+  font-size: var(--text-xs);
+  line-height: 22px;
+}
+.trail-count[data-filter='allowed'] .trail-count-value {
+  color: var(--verdict-allowed-fg);
+}
+.trail-count[data-filter='held'] .trail-count-value {
+  color: var(--verdict-held-fg);
+}
+.trail-count[data-filter='blocked'] .trail-count-value {
+  color: var(--verdict-blocked-fg);
+}
+.trail-count[data-filter='held'][aria-pressed='true'] {
+  border-color: var(--verdict-held-line);
+  background: var(--verdict-held-bg);
+}
+.trail-count[data-filter='blocked'][aria-pressed='true'] {
+  border-color: var(--verdict-blocked-line);
+  background: var(--verdict-blocked-bg);
+}
+.trail-count[data-filter='allowed'][aria-pressed='true'] {
+  border-color: var(--verdict-allowed-line);
+  background: var(--verdict-allowed-bg);
+}
+.trail-scope {
+  margin: 0;
+  font-size: var(--text-xs);
+}
+/* A call that ended in an error, not in a decision: words, no colour. */
+.trail-failed {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px dashed var(--label-tertiary);
+  border-radius: 6px;
+  color: var(--label-secondary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 1;
+}
+
+.trail-earlier,
+.trail-foot {
+  margin: 0;
+}
+.trail-foot {
+  font-size: var(--text-sm);
+}
+.trail-empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+}
+.trail-empty p {
+  margin: 0;
+}
+
+/* The trail: a numbered spine, oldest step first. */
+.trail {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.trail::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: 16px;
+  width: 1px;
+  background: var(--rule);
+}
+.trail-step {
+  --step-fg: var(--label-secondary);
+  --step-bg: var(--surface);
+  --step-line: var(--rule);
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 14px;
+  padding: 4px 0;
+}
+.trail-step[data-verdict='allowed'] {
+  --step-fg: var(--verdict-allowed-fg);
+  --step-bg: var(--verdict-allowed-bg);
+  --step-line: var(--verdict-allowed-line);
+}
+.trail-step[data-verdict='held'] {
+  --step-fg: var(--verdict-held-fg);
+  --step-bg: var(--verdict-held-bg);
+  --step-line: var(--verdict-held-line);
+}
+.trail-step[data-verdict='blocked'] {
+  --step-fg: var(--verdict-blocked-fg);
+  --step-bg: var(--verdict-blocked-bg);
+  --step-line: var(--verdict-blocked-line);
+}
+.trail-node {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  align-self: start;
+  width: 34px;
+  height: 24px;
+  margin-top: 5px;
+  border: 1px solid var(--step-line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--step-fg);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.trail-step[data-verdict='none'] .trail-node {
+  color: var(--label-tertiary);
+}
+.trail-step[data-verdict='failed'] .trail-node {
+  border-style: dashed;
+  border-color: var(--label-tertiary);
+}
+.trail-step[data-verdict='held'] .trail-node,
+.trail-step[data-verdict='blocked'] .trail-node {
+  background: var(--step-bg);
+}
+.trail-step[data-verdict='held'] .trail-node {
+  border-style: dashed;
+}
+.trail-body {
+  min-width: 0;
+  padding: 6px 2px 10px;
+  border-bottom: 1px solid var(--rule);
+}
+/* Held and refused calls stand out: a card in the verdict's colour. */
+.trail-step[data-verdict='held'] .trail-body,
+.trail-step[data-verdict='blocked'] .trail-body {
+  padding: 12px 16px 14px;
+  border: 1px solid var(--step-line);
+  border-left: 4px solid var(--step-fg);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--step-bg) 62%, var(--surface));
+}
+/* A write that ran after a person approved it: the card's edge turns to
+   the colour of what finally happened. */
+.trail-step[data-ran] .trail-body {
+  border-left-color: var(--verdict-allowed-fg);
+}
+.trail-step[data-new] .trail-node {
+  animation: trail-arrive 1.6s ease-out 1;
+}
+@keyframes trail-arrive {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--action) 50%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 10px transparent;
+  }
+}
+
+.trail-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
+.trail-tool {
+  font-weight: 600;
+}
+.trail-tool code {
+  margin-left: 4px;
+  color: var(--label-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 400;
+}
+.trail-write {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px 0 6px;
+  border: 1px solid var(--label-secondary);
+  border-radius: 5px;
+  color: var(--label-primary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 1;
+}
+.trail-time {
+  margin-left: auto;
+  color: var(--label-tertiary);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.trail-what {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 20px;
+  margin-top: 4px;
+}
+.trail-task {
+  flex: 1 1 320px;
+  min-width: 0;
+  margin: 0;
+  color: var(--label-primary);
+  overflow-wrap: anywhere;
+}
+.trail-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  color: var(--label-secondary);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* SQL: one line, opened on request; held and refused statements open. */
+.trail-sql {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 8px;
+}
+.trail-sql-line,
+.trail-sql-text {
+  min-width: 0;
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--control-fill);
+  color: var(--label-primary);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.trail-sql-line {
+  flex: 1 1 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trail-sql-text {
+  flex: 1 1 100%;
+  max-height: var(--receipt-max-height);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.trail-step[data-verdict='held'] .trail-sql-text,
+.trail-step[data-verdict='blocked'] .trail-sql-text,
+.trail-step[data-verdict='held'] .trail-sql-line,
+.trail-step[data-verdict='blocked'] .trail-sql-line {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--step-line);
+}
+.trail-sql-text:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.trail-sql-toggle {
+  font-size: var(--text-xs);
+}
+.trail-sql > p {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: var(--text-xs);
+}
+
+/* Why, and what the agent read. */
+.trail-decision {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+@media (min-width: 1000px) {
+  .trail-decision:has(.trail-why + .trail-told) {
+    grid-template-columns: minmax(180px, 0.75fr) minmax(0, 1.6fr);
+    align-items: start;
+  }
+}
+.trail-why {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+}
+.trail-why strong {
+  color: var(--step-fg);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.trail-step[data-verdict='none'] .trail-why strong,
+.trail-step[data-verdict='failed'] .trail-why strong {
+  color: var(--label-secondary);
+}
+.trail-told {
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.trail-told figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--ink) 4%, var(--surface));
+  color: var(--label-secondary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.trail-told figcaption > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.trail-told figcaption code {
+  color: var(--step-fg);
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+.trail-step[data-verdict='none'] .trail-told figcaption code,
+.trail-step[data-verdict='failed'] .trail-told figcaption code {
+  color: var(--label-primary);
+}
+.trail-told blockquote {
+  margin: 0;
+  padding: 10px 12px 6px;
+  color: var(--label-primary);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.trail-told-gist {
+  margin: 0;
+  padding: 0 12px 10px;
+  color: var(--label-secondary);
+  font-size: var(--text-xs);
+}
+.trail-request {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  color: var(--label-secondary);
+  font-size: var(--text-xs);
+}
+.trail-links a {
+  color: var(--action);
+}
+.trail-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+  font-size: var(--text-sm);
+}
+
+/* The compact session list on the Agents page. */
+.session-list td {
+  vertical-align: middle;
+}
+
+@media (max-width: 640px) {
+  .trail-step {
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 8px;
+  }
+  .trail::before {
+    left: 13px;
+  }
+  .trail-node {
+    width: 28px;
+  }
+  .trail-step[data-verdict='held'] .trail-body,
+  .trail-step[data-verdict='blocked'] .trail-body {
+    padding: 10px 12px 12px;
+  }
+  .trail-time {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+  .trail-counts-set[data-kind='verdicts'] {
+    padding-left: 0;
+    border-left: 0;
+  }
+  .trail-count {
+    min-width: 0;
+    padding: 6px 8px 7px;
+  }
+  .trail-counts {
+    gap: 4px 12px;
+  }
+  .trail-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trail-head .trail-live[data-state='live']::before,
+  .trail-step[data-new] .trail-node {
+    animation: none;
+  }
+  .trail-tape > span {
+    transition: none;
+  }
+}
+@media (forced-colors: active) {
+  .trail-tape > span {
+    background: CanvasText;
+  }
+  .trail-step[data-verdict='held'] .trail-body,
+  .trail-step[data-verdict='blocked'] .trail-body {
+    border-color: CanvasText;
+  }
+}
