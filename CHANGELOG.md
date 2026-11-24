@@ -7,6 +7,18 @@ change the API and storage schema; migrations run automatically at startup.
 
 ## [Unreleased]
 
+### Changed
+
+- Console redesign. An approval reads as a decision: the next step and the
+  risk, who asked and why, the rows a write changes before and after, the
+  checks, one timeline, and actions that stay in view. An agent's session has
+  its own page, a trail of its steps with what each refused agent was told.
+  "Connect an agent" is a four-step page that makes the token, prints the
+  snippet for Claude Code, Cursor or any MCP client, and shows the first call
+  arrive. The overview shows what the gate allowed, held and blocked in the
+  last 24 hours, and what needs you. Risk, environment and verdicts look the
+  same on every screen.
+
 ## [0.2.1] - 2026-11-25
 
 ### Changed
