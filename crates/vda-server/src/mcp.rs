@@ -482,12 +482,9 @@ async fn answer(
     arguments: Value,
     trace: &mut Trace,
 ) -> Result<Value, ApiError> {
-    let calls = state
-        .agent_calls
-        .get_with(identity.agent_id, async { Default::default() })
-        .await
-        .fetch_add(1, Ordering::Relaxed);
-    if calls >= CALLS_PER_MINUTE {
+    // Counted for the agent on every node; see `limits`.
+    let calls = crate::limits::count_call(&state.db, identity.agent_id).await?;
+    if calls > CALLS_PER_MINUTE {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
@@ -700,17 +697,15 @@ async fn run_tool(
                     "query_denied" | "forbidden" | "not_found" | "cost_exceeded"
                 )
             };
-            // The streak of refusals is kept under a lock per agent. The guard's
-            // decision needs no database I/O, so it is taken while the lock is
-            // held: parallel calls then cannot all slip past a count that none
-            // of them has added to yet. A statement that the guard accepts
-            // runs after the lock is released, so good queries run in parallel.
-            let streak = state
-                .agent_denials
-                .get_with(identity.agent_id, async { Default::default() })
-                .await;
-            let mut refused = streak.lock().await;
-            if *refused >= DENIAL_LIMIT {
+            // The streak of refusals is kept with the agent's turn, one call
+            // at a time on every node (see `limits`). The guard's decision
+            // needs no target I/O, so it is taken in the turn: parallel calls
+            // then cannot all slip past a count that none of them has added
+            // to yet. A statement that the guard accepts runs after the turn
+            // is given back, so good queries run in parallel.
+            let mut turn = crate::limits::QueryTurn::take(state, identity.agent_id).await?;
+            if turn.denials() >= DENIAL_LIMIT {
+                turn.give_back().await;
                 return Err(ApiError::new(
                     StatusCode::TOO_MANY_REQUESTS,
                     "too_many_denials",
@@ -723,8 +718,9 @@ async fn run_tool(
                 Ok((cluster, _)) => cluster,
                 Err(error) => {
                     if counted(error.code) {
-                        *refused += 1;
+                        turn.refused();
                     }
+                    turn.give_back().await;
                     return Err(error);
                 }
             };
@@ -732,12 +728,12 @@ async fn run_tool(
                 .await
                 .is_ok_and(|analysis| analysis.verdict == vda_guard::Verdict::Allow);
             let (history, result) = if accepted {
-                drop(refused);
+                turn.give_back().await;
                 let (history, result) =
                     vda_core::query::run_traced(&state.core, actor, database, input(sql), ip).await;
                 if let Err(error) = &result {
                     if counted(error.code) {
-                        *streak.lock().await += 1;
+                        crate::limits::count_denial(&state.db, identity.agent_id).await;
                     }
                 }
                 (history, result)
@@ -746,15 +742,15 @@ async fn run_tool(
                 let (history, result) =
                     vda_core::query::run_traced(&state.core, actor, database, input(sql), ip).await;
                 if result.as_ref().is_err_and(|error| counted(error.code)) {
-                    *refused += 1;
+                    turn.refused();
                 }
-                drop(refused);
+                turn.give_back().await;
                 (history, result)
             };
             trace.history_id = history;
             // A success ends the streak.
             let mut result = result?;
-            state.agent_denials.invalidate(&identity.agent_id).await;
+            crate::limits::clear_denials(&state.db, identity.agent_id).await;
             trace.verdict(result.analysis.verdict);
             // The rows that one answer cannot hold stay in this node's
             // memory for `fetch_rows`. They are the rows this run fetched
@@ -782,16 +778,14 @@ async fn run_tool(
         }
         "propose_write" => {
             let sql = required(arguments.sql, "sql")?;
-            // One proposal of an agent at a time: the lock is held until it
-            // is decided, since each one runs a read check and costs a
-            // person's time. Refused proposals have their own streak, apart
-            // from run_query's, so a successful read does not reset it.
-            let entry = state
-                .agent_proposals
-                .get_with(identity.agent_id, async { Default::default() })
-                .await;
-            let mut streak = entry.lock().await;
-            if let Some(wait) = streak.stopped_for(Instant::now()) {
+            // One proposal of an agent at a time, on every node: the turn is
+            // held until it is decided, since each one runs a read check and
+            // costs a person's time. Refused proposals have their own streak,
+            // apart from run_query's, so a successful read does not reset it.
+            let mut turn = crate::limits::ProposalTurn::take(state, identity.agent_id).await?;
+            let now = turn.now();
+            if let Some(wait) = turn.streak.stopped_for(now) {
+                turn.give_back().await;
                 return Err(ApiError::new(
                     StatusCode::TOO_MANY_REQUESTS,
                     "too_many_denials",
@@ -808,6 +802,7 @@ async fn run_tool(
                         sql,
                         arguments.task,
                         ip,
+                        turn.held(),
                     )
                     .await
                 }
@@ -815,7 +810,7 @@ async fn run_tool(
             };
             match &result {
                 Ok(request) => {
-                    *streak = ProposalStreak::default();
+                    turn.streak = ProposalStreak::default();
                     // A proposal that was taken is a write that waits for a person.
                     trace.verdict(vda_guard::Verdict::RequiresApproval);
                     trace.approval_id = request
@@ -823,9 +818,13 @@ async fn run_tool(
                         .and_then(Value::as_str)
                         .and_then(|id| id.parse().ok());
                 }
-                Err(error) if refuses_proposal(error) => streak.refuse(Instant::now()),
+                Err(error) if refuses_proposal(error) => {
+                    let now = turn.now();
+                    turn.streak.refuse(now);
+                }
                 Err(_) => {}
             }
+            turn.give_back().await;
             result
         }
         _ => Err(ApiError::internal()),
@@ -925,17 +924,18 @@ fn refuses_proposal(error: &ApiError) -> bool {
 
 /// Refused proposals of one agent in a row, and when they reached the limit.
 /// The stop lasts `DENIAL_WINDOW_SECONDS` from that refusal; calls during the
-/// stop do not make it longer.
+/// stop do not make it longer. It is kept in the database with the agent's
+/// turn to propose (see `limits`), and times are the database's.
 #[derive(Debug, Default)]
 pub(crate) struct ProposalStreak {
-    refused: u32,
-    stopped_at: Option<Instant>,
+    pub(crate) refused: u32,
+    pub(crate) stopped_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 impl ProposalStreak {
     /// Whole seconds the stop still lasts at `now`, or `None` when the agent
     /// may propose. A stop whose time has passed ends here, with its streak.
-    fn stopped_for(&mut self, now: Instant) -> Option<u64> {
-        let since = now.saturating_duration_since(self.stopped_at?);
+    fn stopped_for(&mut self, now: chrono::DateTime<chrono::Utc>) -> Option<u64> {
+        let since = (now - self.stopped_at?).to_std().unwrap_or_default();
         let left = Duration::from_secs(DENIAL_WINDOW_SECONDS).saturating_sub(since);
         if left.is_zero() {
             *self = Self::default();
@@ -943,7 +943,7 @@ impl ProposalStreak {
         }
         Some(left.as_secs() + u64::from(left.subsec_nanos() > 0))
     }
-    fn refuse(&mut self, now: Instant) {
+    fn refuse(&mut self, now: chrono::DateTime<chrono::Utc>) {
         self.refused = self.refused.saturating_add(1);
         if self.refused >= DENIAL_LIMIT && self.stopped_at.is_none() {
             self.stopped_at = Some(now);
@@ -1014,7 +1014,7 @@ mod tests {
 
     #[test]
     fn a_proposal_stop_lasts_the_window_from_the_refusal_that_reached_the_limit() {
-        let start = Instant::now();
+        let start = chrono::Utc::now();
         let at = |seconds: u64| start + Duration::from_secs(seconds);
         let mut streak = ProposalStreak::default();
         for second in 0..u64::from(DENIAL_LIMIT - 1) {
@@ -1089,10 +1089,10 @@ mod tests {
         let mut streak = ProposalStreak::default();
         for _ in 0..DENIAL_LIMIT {
             if refuses_proposal(&unreachable) {
-                streak.refuse(Instant::now());
+                streak.refuse(chrono::Utc::now());
             }
         }
-        assert_eq!(streak.stopped_for(Instant::now()), None);
+        assert_eq!(streak.stopped_for(chrono::Utc::now()), None);
     }
 
     /// Compare a text with a checked-in golden file, or rewrite the file

@@ -2392,3 +2392,385 @@ async fn a_refused_call_cannot_make_a_step_large() {
     );
     f.close().await;
 }
+
+// ---- Limits that hold across nodes ----
+
+/// Backends of the target that wait for a lock on the table.
+async fn lock_waiters(target: &sqlx::PgPool, table: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM pg_locks WHERE relation=$1::text::regclass AND NOT granted",
+    )
+    .bind(table)
+    .fetch_one(target)
+    .await
+    .unwrap()
+}
+/// Wait until this many backends wait for a lock on the table.
+async fn until_waiting(target: &sqlx::PgPool, table: &str, count: i64) {
+    let mut found = 0;
+    for _ in 0..400 {
+        found = lock_waiters(target, table).await;
+        if found == count {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(found, count, "backends waiting for the lock");
+}
+/// Who holds the agent's turn to propose, if anyone.
+async fn proposal_holder(db: &sqlx::PgPool, agent: Uuid) -> Option<Uuid> {
+    sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT proposal_holder FROM agent_limits WHERE agent_id=$1",
+    )
+    .bind(agent)
+    .fetch_optional(db)
+    .await
+    .unwrap()
+    .flatten()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_nodes_share_one_call_rate() {
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    let (_, other) = f.node().await;
+    let nodes = [f.app.clone(), other];
+    let (agent, _, token) = f.agent("Busy", "read").await;
+    // 125 calls at once over both nodes: 120 in the minute for the agent,
+    // not 120 for each node.
+    let calls = (0..125).map(|n| {
+        let (app, token) = (nodes[n % 2].clone(), token.clone());
+        async move { tool_at(&app, &token, "list_databases", json!({"task":"Flood"})).await }
+    });
+    let results = futures::future::join_all(calls).await;
+    let limited: Vec<&Value> = results
+        .iter()
+        .filter(|(failed, _)| *failed)
+        .map(|(_, v)| v)
+        .collect();
+    assert_eq!(limited.len(), 5, "{limited:?}");
+    assert!(limited.iter().all(|v| v["error"]["code"] == "rate_limited"
+        && v["error"]["message"] == "Too many tool calls in one minute"
+        && v["error"]["fix"]["action"] == "retry_later"
+        && v["error"]["fix"]["retry_after_seconds"] == 60));
+    // Each node refuses the next call, whichever node took the earlier ones.
+    for node in &nodes {
+        let (failed, v) = tool_at(node, &token, "list_databases", json!({"task":"More"})).await;
+        assert!(failed && v["error"]["code"] == "rate_limited", "{v}");
+    }
+    // Another agent has its own minute.
+    let (_, _, calm) = f.agent("Calm", "read").await;
+    let (failed, v) = tool_at(&nodes[1], &calm, "list_databases", json!({"task":"Look"})).await;
+    assert!(!failed, "{v}");
+    // The count is one row of the agent, deleted with the agent.
+    let rows = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM agent_limits WHERE agent_id=$1")
+            .bind(agent)
+            .fetch_one(&f.db)
+            .await
+            .unwrap()
+    };
+    assert_eq!(rows().await, 1);
+    let (s, _) = f
+        .request("DELETE", &format!("/agents/{agent}"), &f.owner_cookie, None)
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert_eq!(rows().await, 0);
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_nodes_share_the_streak_of_refused_queries() {
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    let (_, other) = f.node().await;
+    let nodes = [f.app.clone(), other];
+    let db = json!(f.cluster);
+    let vault = format!("SELECT * FROM {}", f.vault);
+    let refused =
+        |n: usize| json!({"task":"Try the vault","database":db,"sql":format!("{vault} -- {n}")});
+    let good = json!({"task":"A good query","database":db,"sql":"SELECT 1"});
+    // Five refusals over both nodes stop the agent on both.
+    let (agent, _, token) = f.agent("Prober", "read").await;
+    for n in 0..5 {
+        let (failed, v) = tool_at(&nodes[n % 2], &token, "run_query", refused(n)).await;
+        assert!(failed);
+        assert_eq!(v["error"]["code"], "query_denied", "{v}");
+    }
+    let before = f.queries(agent).await;
+    for node in &nodes {
+        let (failed, v) = tool_at(node, &token, "run_query", good.clone()).await;
+        assert!(failed);
+        assert_eq!(v["error"]["code"], "too_many_denials", "{v}");
+        assert_eq!(v["error"]["message"], "Too many refused queries in a row");
+        assert_eq!(v["error"]["fix"]["action"], "stop");
+        assert_eq!(v["error"]["fix"]["retry_after_seconds"], 600);
+    }
+    assert_eq!(f.queries(agent).await, before, "a stopped call ran");
+    // Parallel refused calls over both nodes cannot all slip past the
+    // breaker: five get the guard's answer, the rest are stopped.
+    let (_, _, racer) = f.agent("Racer", "read").await;
+    let calls = (0..20).map(|n| {
+        let (app, token, arguments) = (nodes[n % 2].clone(), racer.clone(), refused(n));
+        async move { tool_at(&app, &token, "run_query", arguments).await }
+    });
+    let results = futures::future::join_all(calls).await;
+    let count = |code: &str| {
+        results
+            .iter()
+            .filter(|(_, v)| v["error"]["code"] == code)
+            .count()
+    };
+    assert_eq!((count("query_denied"), count("too_many_denials")), (5, 15));
+    // A success on one node ends the streak on both.
+    let (_, _, careful) = f.agent("Careful", "read").await;
+    for round in 0..2 {
+        for n in 0..4 {
+            let (failed, v) = tool_at(
+                &nodes[n % 2],
+                &careful,
+                "run_query",
+                refused(round * 10 + n),
+            )
+            .await;
+            assert!(failed);
+            assert_eq!(v["error"]["code"], "query_denied", "{v}");
+        }
+        let (failed, v) = tool_at(&nodes[1 - round], &careful, "run_query", good.clone()).await;
+        assert!(!failed, "{v}");
+    }
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_nodes_give_an_agent_one_proposal_at_a_time_and_share_its_stop() {
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    let (_, other) = f.node().await;
+    let nodes = [f.app.clone(), other];
+    // A lock on the target table holds a proposal's read check as long as
+    // the test needs.
+    f.policy(|policy| policy.lock_timeout_ms = 30_000).await;
+    let (agent, _, token) = f.agent("Writer", "write").await;
+    let db = json!(f.cluster);
+    let table = f.table.clone();
+    let write = |id: i32| {
+        json!({"task":"Fix a note","database":db,
+            "sql":format!("UPDATE {table} SET note='fixed' WHERE id={id}")})
+    };
+    let propose = |node: usize, arguments: Value| {
+        let (app, token) = (nodes[node].clone(), token.clone());
+        tokio::spawn(async move { tool_at(&app, &token, "propose_write", arguments).await })
+    };
+    let mut lock = f.target.begin().await.unwrap();
+    sqlx::query(&format!("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE"))
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    // A proposal on the first node is in its read check, and holds the turn.
+    let first = propose(0, write(1));
+    until_waiting(&f.target, &table, 1).await;
+    assert!(proposal_holder(&f.db, agent).await.is_some());
+    // A second proposal on the other node waits for its turn, as it would
+    // on one node: it does not reach the database.
+    let second = propose(1, write(2));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!second.is_finished());
+    assert_eq!(lock_waiters(&f.target, &table).await, 1);
+    lock.commit().await.unwrap();
+    for task in [first, second] {
+        let (failed, v) = task.await.unwrap();
+        assert!(!failed, "{v}");
+        assert_eq!(v["status"], "pending", "{v}");
+    }
+    assert_eq!(proposal_holder(&f.db, agent).await, None);
+    // A proposal that is cancelled while it holds the turn gives it back at
+    // once, not when its lease lapses.
+    let mut lock = f.target.begin().await.unwrap();
+    sqlx::query(&format!("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE"))
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    let cancelled = propose(1, write(3));
+    until_waiting(&f.target, &table, 1).await;
+    assert!(proposal_holder(&f.db, agent).await.is_some());
+    cancelled.abort();
+    let mut held = true;
+    for _ in 0..200 {
+        held = proposal_holder(&f.db, agent).await.is_some();
+        if !held {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(!held, "the cancelled proposal kept its turn");
+    lock.commit().await.unwrap();
+    // Five refused proposals over both nodes stop the agent on both, for
+    // the time left from the refusal that reached the limit.
+    let blocked = json!({"task":"Probe","database":db,
+        "sql":format!("UPDATE {} SET word='x' WHERE id=1", f.vault)});
+    for n in 0..5 {
+        let (failed, v) = propose(n % 2, blocked.clone()).await.unwrap();
+        assert!(failed, "{v}");
+        assert_eq!(v["error"]["code"], "query_denied", "{v}");
+    }
+    for node in [1, 0] {
+        let (failed, v) = propose(node, write(4)).await.unwrap();
+        assert!(failed, "{v}");
+        assert_eq!(v["error"]["code"], "too_many_denials", "{v}");
+        assert_eq!(
+            v["error"]["message"],
+            "Too many refused write requests in a row"
+        );
+        assert_eq!(v["error"]["fix"]["action"], "stop", "{v}");
+        let wait = v["error"]["fix"]["retry_after_seconds"].as_u64().unwrap();
+        assert!((590..=600).contains(&wait), "{v}");
+    }
+    let approvals: i64 = sqlx::query_scalar("SELECT count(*) FROM approvals WHERE agent_id=$1")
+        .bind(agent)
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(approvals, 2);
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_left_by_a_crashed_node_does_not_block_the_agent() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let (agent, _, token) = f.agent("Survivor", "write").await;
+    let db = json!(f.cluster);
+    let write = json!({"task":"Fix a note","database":db,
+        "sql":format!("UPDATE {} SET note='fixed' WHERE id=1", f.table)});
+    // A node took both turns of the agent and crashed: its leases have ended.
+    let crashed = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO agent_limits(agent_id,query_holder,query_until,proposal_holder,proposal_until)
+         VALUES ($1,$2,now()-interval '1 second',$2,now()-interval '1 second')",
+    )
+    .bind(agent)
+    .bind(crashed)
+    .execute(&f.db)
+    .await
+    .unwrap();
+    let quick = Duration::from_secs(5);
+    let (failed, v) = tokio::time::timeout(
+        quick,
+        tool(
+            &f,
+            &token,
+            "run_query",
+            json!({"task":"Read","database":db,"sql":"SELECT 1"}),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(!failed, "{v}");
+    let (failed, v) = tokio::time::timeout(quick, tool(&f, &token, "propose_write", write.clone()))
+        .await
+        .unwrap();
+    assert!(!failed, "{v}");
+    let holders: (Option<Uuid>, Option<Uuid>) =
+        sqlx::query_as("SELECT query_holder,proposal_holder FROM agent_limits WHERE agent_id=$1")
+            .bind(agent)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    assert_eq!(holders, (None, None));
+    // A turn whose lease has not ended is waited for, until it lapses.
+    sqlx::query(
+        "UPDATE agent_limits SET proposal_holder=$2,proposal_until=now()+interval '2 seconds'
+         WHERE agent_id=$1",
+    )
+    .bind(agent)
+    .bind(crashed)
+    .execute(&f.db)
+    .await
+    .unwrap();
+    let started = Instant::now();
+    let (failed, v) = tool(&f, &token, "propose_write", write).await;
+    assert!(!failed, "{v}");
+    assert!(
+        started.elapsed() >= Duration::from_millis(1500),
+        "{:?}",
+        started.elapsed()
+    );
+    f.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_proposal_that_lost_its_turn_is_not_stored() {
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    let (_, other) = f.node().await;
+    let nodes = [f.app.clone(), other];
+    f.policy(|policy| policy.lock_timeout_ms = 30_000).await;
+    let (agent, _, token) = f.agent("Writer", "write").await;
+    let db = json!(f.cluster);
+    let table = f.table.clone();
+    let write = |id: i32| {
+        json!({"task":"Fix a note","database":db,
+            "sql":format!("UPDATE {table} SET note='fixed' WHERE id={id}")})
+    };
+    let propose = |node: usize, arguments: Value| {
+        let (app, token) = (nodes[node].clone(), token.clone());
+        tokio::spawn(async move { tool_at(&app, &token, "propose_write", arguments).await })
+    };
+    // Nine requests wait for a person: room for one more.
+    for id in 0..9 {
+        let (failed, v) = propose(id as usize % 2, write(id)).await.unwrap();
+        assert!(!failed, "{v}");
+    }
+    let mut lock = f.target.begin().await.unwrap();
+    sqlx::query(&format!("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE"))
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    // The first node's proposal is in its read check when its lease ends,
+    // and the other node's proposal takes the turn and starts its own.
+    let first = propose(0, write(20));
+    until_waiting(&f.target, &table, 1).await;
+    let lost = proposal_holder(&f.db, agent).await.unwrap();
+    sqlx::query(
+        "UPDATE agent_limits SET proposal_until=now()-interval '1 second' WHERE agent_id=$1",
+    )
+    .bind(agent)
+    .execute(&f.db)
+    .await
+    .unwrap();
+    let second = propose(1, write(21));
+    until_waiting(&f.target, &table, 2).await;
+    assert_ne!(proposal_holder(&f.db, agent).await, Some(lost));
+    lock.commit().await.unwrap();
+    let (first, second) = (first.await.unwrap(), second.await.unwrap());
+    // The call that lost its turn is refused with an error that exists
+    // today; the one that holds it is stored.
+    assert!(first.0, "{}", first.1);
+    assert_eq!(first.1["error"]["code"], "internal", "{}", first.1);
+    assert_eq!(
+        first.1["error"]["fix"]["action"], "retry_later",
+        "{}",
+        first.1
+    );
+    assert!(!second.0, "{}", second.1);
+    let open: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM approvals WHERE agent_id=$1 AND status='pending'")
+            .bind(agent)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    assert_eq!(open, 10, "at most the limit of open requests is stored");
+    // The limit holds for the next proposal on either node.
+    for node in [0, 1] {
+        let (failed, v) = propose(node, write(30)).await.unwrap();
+        assert!(failed, "{v}");
+        assert_eq!(v["error"]["code"], "too_many_open_requests", "{v}");
+    }
+    f.close().await;
+}

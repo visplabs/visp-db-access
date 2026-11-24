@@ -932,8 +932,10 @@ mod tests {
                 (&without, &mut none, "without"),
                 (&recording, &mut with, "with"),
             ] {
-                state.agent_calls.invalidate_all();
-                state.agent_calls.run_pending_tasks().await;
+                sqlx::query("DELETE FROM agent_limits")
+                    .execute(&db)
+                    .await
+                    .unwrap();
                 let rate = round(app.clone()).await;
                 println!("round {n} {label:>7} recording: {rate:8.0} calls/s");
                 rates.push(rate);

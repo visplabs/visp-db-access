@@ -7,6 +7,20 @@ change the API and storage schema; migrations run automatically at startup.
 
 ## [Unreleased]
 
+### Changed
+
+- The limits on one agent hold once for the agent, not once per node, when
+  several gateway nodes share one metadata database: 120 tool calls a minute,
+  the stop after 5 refused queries, one proposed write at a time, and the stop
+  after refused proposals. They were kept in each node's memory before.
+  Migration `0013_agent_limits`. Agents see the same numbers, codes and
+  messages as before.
+
+### Security
+
+- `cookie` 0.18.3 for RUSTSEC-2026-0594. The gateway uses plain cookies only,
+  so it was not affected.
+
 ## [0.2.0] - 2026-11-23
 
 ### Added

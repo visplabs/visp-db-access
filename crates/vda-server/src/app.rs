@@ -51,13 +51,11 @@ pub struct AppState {
     /// Sends notices to the webhook; see `notices::send` for what it refuses.
     pub notices: crate::notices::send::Sender,
     account_failures: Cache<String, Arc<AtomicU32>>,
-    /// Refused queries in a row, per agent, for the loop breaker in `mcp`.
-    pub(crate) agent_denials: Cache<Uuid, Arc<tokio::sync::Mutex<u32>>>,
-    /// Refused proposals in a row, per agent, and when they reached the
-    /// limit; the lock also lets one agent make one proposal at a time.
-    pub(crate) agent_proposals: Cache<Uuid, Arc<tokio::sync::Mutex<crate::mcp::ProposalStreak>>>,
-    /// Tool calls in the current minute, per agent.
-    pub(crate) agent_calls: Cache<Uuid, Arc<AtomicU32>>,
+    /// The calls of this node that wait for an agent's turn of `run_query`
+    /// queue here, so one at a time asks the database; see `limits`.
+    pub(crate) agent_query_turns: Cache<Uuid, Arc<tokio::sync::Mutex<()>>>,
+    /// Likewise for an agent's turn to propose a write.
+    pub(crate) agent_proposal_turns: Cache<Uuid, Arc<tokio::sync::Mutex<()>>>,
     /// Calls refused before a tool ran that were recorded as steps in the
     /// current minute, per agent; see `mcp`.
     pub(crate) agent_refused_steps: Cache<Uuid, Arc<AtomicU32>>,
@@ -146,25 +144,21 @@ impl AppState {
                     .time_to_live(Duration::from_secs(60))
                     .build(),
                 audit_chain: Arc::default(),
-                agent_calls: Cache::builder()
-                    .max_capacity(20000)
-                    .time_to_live(Duration::from_secs(60))
-                    .build(),
                 agent_refused_steps: Cache::builder()
                     .max_capacity(20000)
                     .time_to_live(Duration::from_secs(60))
                     .build(),
                 steps,
                 held,
-                agent_denials: Cache::builder()
-                    .max_capacity(20000)
-                    .time_to_live(Duration::from_secs(crate::mcp::DENIAL_WINDOW_SECONDS))
-                    .build(),
                 // Idle, not total, time: an entry is not dropped while calls
-                // keep coming, so the lock is not replaced while it is held.
-                // The length of a stop comes from the time stored in the
-                // entry, so calls during a stop do not make it longer.
-                agent_proposals: Cache::builder()
+                // keep coming. A lock replaced while it is held lets one more
+                // call of this node ask the database, which still gives the
+                // turn to one call at a time.
+                agent_query_turns: Cache::builder()
+                    .max_capacity(20000)
+                    .time_to_idle(Duration::from_secs(crate::mcp::DENIAL_WINDOW_SECONDS))
+                    .build(),
+                agent_proposal_turns: Cache::builder()
                     .max_capacity(20000)
                     .time_to_idle(Duration::from_secs(crate::mcp::DENIAL_WINDOW_SECONDS))
                     .build(),
