@@ -7,6 +7,8 @@ change the API and storage schema; migrations run automatically at startup.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-25
+
 ### Changed
 
 - The limits on one agent hold once for the agent, not once per node, when
@@ -194,6 +196,7 @@ First public release.
 - A single Rust binary with the React console embedded, a PostgreSQL metadata
   store, a distroless Docker image and a Helm chart.
 
-[Unreleased]: https://github.com/visplabs/visp-gate/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/visplabs/visp-gate/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/visplabs/visp-gate/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/visplabs/visp-gate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/visplabs/visp-gate/releases/tag/v0.1.0

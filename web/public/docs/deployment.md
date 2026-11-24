@@ -77,7 +77,7 @@ builds the console and the Rust binary in separate stages and runs as a
 non-root user on a distroless base.
 
 ```sh
-docker pull ghcr.io/visplabs/visp-gate:0.2.0
+docker pull ghcr.io/visplabs/visp-gate:0.2.1
 docker build -t visp-gate .     # or build from source
 docker compose up --build            # gateway + metadata Postgres
 docker compose --profile demo up     # plus demo PostgreSQL and MySQL targets

@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/vda-guard", "crates/vda-connectors", "crates/vda-core", "crates/vda-server", "crates/vda-discovery"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.91.1"
 license = "Apache-2.0"
