@@ -282,6 +282,8 @@ export function fixtures() {
     elapsed_ms: i >= 18 || i % 7 === 0 ? null : 21 + i * 2,
     error: i % 7 === 0 ? 'Writes without WHERE are blocked' : null,
     created_at: new Date(Date.now() - i * 640000).toISOString(),
+    agent_id: null,
+    task: null,
   }));
   const grants: Grant[] = users.map((user, i) => ({
     id: uuid(600 + i),

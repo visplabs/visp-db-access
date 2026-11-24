@@ -203,6 +203,10 @@ export interface HistoryEntry {
   elapsed_ms: number | null;
   error: string | null;
   created_at: string;
+  /** The agent that ran it for its owner (`user_id`); null for a person. */
+  agent_id?: string | null;
+  /** What the caller said the query is for. An agent always says. */
+  task?: string | null;
 }
 
 export interface Approval {
