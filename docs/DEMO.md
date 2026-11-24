@@ -144,12 +144,17 @@ agent prints the outcome:
 
 Still in the console, as the reviewer:
 
+- **Overview** shows each agent with its live session, and what the gate did
+  in the last 24 hours: how many statements it allowed, how many requests are
+  held for a person, and how many it blocked.
 - **Agents → demo-agent**, then open the newest session. Every call of step 2
   is a step: the tool, the task the agent gave, the SQL, the guard's answer
   and, for a refusal, the fix the agent read. No result row is stored there.
 - **History** shows the queries that ran, with the agent's task.
 - **Audit log** shows who did what, and "Chain intact". Click **Verify now**
   to check the hash chain again.
+
+<img src="images/overview.png" width="880" alt="The workspace overview: the agent support-assistant with a live session, and the three tiles At the gate: 28 allowed, 7 held, 6 blocked.">
 
 ## 5. Stop the agent
 
@@ -170,6 +175,12 @@ the script. It needs three values: the URL `http://localhost:8080/api/v1/mcp`,
 the header name `Authorization` and the value `Bearer ` followed by the agent
 token that the setup step printed. No database password goes into the
 client's configuration.
+
+In your own installation, **Agents → Connect an agent** in the console makes
+the agent and its token, gives the same command or block for your client, and
+shows the agent's first calls as they arrive.
+
+<img src="images/connect-agent.png" width="880" alt="The Connect an agent wizard at its last step, Verify: First call arrived, with the agent's first three calls, and how the gate answers the new agent: allowed, masked, held and blocked.">
 
 Claude Code:
 

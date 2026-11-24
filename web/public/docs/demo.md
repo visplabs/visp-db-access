@@ -144,6 +144,9 @@ agent prints the outcome:
 
 Still in the console, as the reviewer:
 
+- **Overview** shows each agent with its live session, and what the gate did
+  in the last 24 hours: how many statements it allowed, how many requests are
+  held for a person, and how many it blocked.
 - **Agents → demo-agent**, then open the newest session. Every call of step 2
   is a step: the tool, the task the agent gave, the SQL, the guard's answer
   and, for a refusal, the fix the agent read. No result row is stored there.
@@ -171,6 +174,10 @@ the header name `Authorization` and the value `Bearer ` followed by the agent
 token that the setup step printed. No database password goes into the
 client's configuration.
 
+In your own installation, **Agents → Connect an agent** in the console makes
+the agent and its token, gives the same command or block for your client, and
+shows the agent's first calls as they arrive.
+
 Claude Code:
 
 ```sh
@@ -192,7 +199,8 @@ clients that take a JSON block:
 }
 ```
 
-To print the block with the token again:
+The setup step prints both of these with the demo's URL and token filled in
+(step 3 of its output). To print them again, with the same token:
 
 ```sh
 docker compose -f deploy/demo/docker-compose.yml run --rm seed

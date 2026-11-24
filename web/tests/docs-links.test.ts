@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error plain ESM script without types
-import { deadLinks, linkedDocs, rewriteLinks } from '../scripts/docs-links.mjs';
+import {
+  deadLinks,
+  dropImages,
+  linkedDocs,
+  rewriteLinks,
+} from '../scripts/docs-links.mjs';
 
 const published = new Set(['api.md', 'security-model.md']);
 
@@ -15,6 +20,11 @@ describe('published docs links', () => {
   it('turns unpublished and outside-docs links into plain text', () => {
     const src = '[a](DEPLOYMENT.md#x) and [b](../deploy/x.json)';
     expect(rewriteLinks(src, published)).toBe('a and b');
+  });
+  it('drops pictures, which the console does not publish', () => {
+    const src =
+      'Before.\n\n<img src="images/a.png" width="880" alt="A">\n\nAfter.\n';
+    expect(dropImages(src)).toBe('Before.\n\nAfter.\n');
   });
   it('leaves schemes and pure anchors alone', () => {
     const src = '[a](https://x.dev/y.md) [b](mailto:a@b.c) [c](#top)';

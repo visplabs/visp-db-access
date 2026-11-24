@@ -66,3 +66,9 @@ export function deadLinks(content, published) {
   });
   return dead;
 }
+
+// Pictures (an HTML <img> on a line of its own) stay on GitHub: the console's
+// own Markdown renders no HTML, and docs/images is not published with it.
+export function dropImages(content) {
+  return content.replace(/^<img\s[^>]*>\n(?:\n)?/gm, '');
+}

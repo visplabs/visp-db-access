@@ -12,9 +12,7 @@ person has seen what it changes.
 [![Latest release](https://img.shields.io/github/v/release/visplabs/visp-gate)](https://github.com/visplabs/visp-gate/releases)
 [![Container image](https://img.shields.io/badge/image-ghcr.io%2Fvisplabs%2Fvisp--gate-blue)](https://github.com/visplabs/visp-gate/pkgs/container/visp-gate)
 
-<!-- HERO: replace with docs/images/hero.gif after the redesign -->
-
-![An agent's UPDATE waiting for approval: the two rows it changes, before and after](docs/images/approval-preview.png)
+<img src="docs/images/hero.gif" width="880" alt="In the console, an agent's UPDATE waits in Approvals as Held. The reviewer opens it: asked by the agent support-assistant for Jordan Lee, preview needed before approval. Preview runs the write and rolls it back: it changes 2 rows in users, shown before and after. The reviewer clicks Approve and run, and the request shows Done: it ran, with a signed receipt of 2 rows previewed and 2 rows changed.">
 
 ## Quickstart
 
@@ -135,9 +133,11 @@ where each tool is stronger.
 
 ## Screenshots
 
-| An agent's session, call by call                | The console's safety check before a query runs            |
-| ----------------------------------------------- | --------------------------------------------------------- |
-| ![Agent session](docs/images/agent-session.png) | ![Console with the safety check](docs/images/console.png) |
+<img src="docs/images/approval-preview.png" width="880" alt="An agent's UPDATE after Preview: asked by the agent support-assistant for Jordan Lee, with its reason. It changes 2 rows in users; the table shows each row's name before and after, with the email column masked. Below are the statement, the checks, and the buttons Reject, Approve and run, and Approve.">
+
+| An agent's session, call by call                                                                                                                                                        | The console: the guard's check, and masked columns                                                                                                                                                      |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| <img src="docs/images/agent-session.png" width="440" alt="An agent's session: six steps, one allowed, one held, one blocked. Step 4 is blocked, with why and what the agent was told."> | <img src="docs/images/console.png" width="440" alt="The console on a production PostgreSQL database: the statement is safe to run, the guard adds LIMIT 1001, and the email column comes back masked."> |
 
 ## Install
 
