@@ -171,6 +171,8 @@ export function createMockTransport({
       elapsed_ms: result?.elapsed_ms ?? null,
       error,
       created_at: now(),
+      agent_id: null,
+      task: null,
     });
     // As the gateway writes it: the SQL is in the history, not in the audit
     // log. The event is the intent, written before the query runs.
