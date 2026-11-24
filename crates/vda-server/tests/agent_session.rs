@@ -19,7 +19,9 @@ use axum::{
     Router,
 };
 use clap::Parser;
+use futures::FutureExt;
 use serde_json::{json, Value};
+use std::panic::AssertUnwindSafe;
 use std::{
     net::SocketAddr,
     time::{Duration, Instant},
@@ -1428,6 +1430,213 @@ async fn fetch_rows_hands_out_exactly_the_rows_of_one_run() {
     .await;
     assert!(failed && v["error"]["code"] == "rate_limited", "{v}");
     f.close().await;
+}
+
+/// `fetch_rows` on MySQL: the fixture's database is pointed at the MySQL
+/// test server, and the same paging as on PostgreSQL must hold there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fetch_rows_pages_a_mysql_result_like_a_postgres_one() {
+    let Ok(mysql_url) = std::env::var("VISP_GATE_TEST_MYSQL_URL") else {
+        eprintln!("skipped: VISP_GATE_TEST_MYSQL_URL is not set");
+        return;
+    };
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mysql = sqlx::mysql::MySqlPoolOptions::new()
+        .max_connections(2)
+        .connect(&mysql_url)
+        .await
+        .unwrap();
+    // The fixture's PostgreSQL table name is unique to this test.
+    let table = &f.table;
+    let body = async {
+        for sql in [
+        format!(
+            "CREATE TABLE {table}(id INT PRIMARY KEY, email VARCHAR(100), note TEXT NOT NULL,
+             amount DECIMAL(10,2), big BIGINT UNSIGNED, made DATETIME, raw VARBINARY(8))"
+        ),
+        format!(
+            "INSERT INTO {table} WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<250)
+             SELECT i, CONCAT('person',i,'@hidden.example'), CONCAT('note-',i),
+             IF(i%7=0, NULL, i*1.25), 18446744073709551615-i,
+             TIMESTAMP('2026-01-01 00:00:00') + INTERVAL i MINUTE, UNHEX(LPAD(HEX(i),4,'0'))
+             FROM n"
+        ),
+    ] {
+        sqlx::query(&sql).execute(&mysql).await.unwrap();
+    }
+        let at = url::Url::parse(&mysql_url).unwrap();
+        sqlx::query(
+        "UPDATE clusters SET engine='mysql',host=$2,port=$3,database=$4,username=$5,password_enc=$6
+         WHERE id=$1",
+    )
+    .bind(f.cluster)
+    .bind(at.host_str().unwrap())
+    .bind(i32::from(at.port().unwrap_or(3306)))
+    .bind(at.path().trim_start_matches('/'))
+    .bind(at.username())
+    .bind(
+        Crypto::new(&[4; 32])
+            .encrypt(f.cluster, at.password().unwrap_or(""))
+            .unwrap(),
+    )
+    .execute(&f.db)
+    .await
+    .unwrap();
+
+        let (agent, token_id, token) = f.agent("MySQL pager", "read").await;
+        let db = json!(f.cluster);
+        let sql = format!("SELECT id,email,note,amount,big,made,raw FROM {table} ORDER BY id");
+        // The table has 250 rows and the policy lets one query fetch 120.
+        let run = |token: String, rows: usize| {
+            let (db, sql, app) = (db.clone(), sql.clone(), f.app.clone());
+            async move {
+                let (failed, v) = tool_at(
+                    &app,
+                    &token,
+                    "run_query",
+                    json!({"task":"Read all notes","database":db,"sql":sql,"max_rows":rows}),
+                )
+                .await;
+                assert!(!failed, "{v}");
+                v
+            }
+        };
+        let first = run(token.clone(), 50).await;
+        assert_eq!(first["row_count"], 50, "{first}");
+        assert_eq!(first["truncated"], true);
+        assert_eq!(first["rows_left"], 70);
+        let mut cursor = first["next_cursor"].as_str().unwrap().to_owned();
+        // Another agent cannot take the cursor, and trying leaves it to its owner.
+        let (_, _, stranger) = f.agent("Stranger", "read").await;
+        assert_expired(
+            &tool(
+                &f,
+                &stranger,
+                "fetch_rows",
+                json!({"task":"Take them","cursor":cursor}),
+            )
+            .await,
+        );
+        assert_eq!(f.state.held.usage().0, 1);
+        let mut got = ids(&first["rows"]);
+        let mut pages = vec![first.clone()];
+        let mut sizes = vec![30, 1000];
+        while !cursor.is_empty() {
+            let (failed, page) = tool(
+                &f,
+                &token,
+                "fetch_rows",
+                json!({"task":"Read the next notes","cursor":cursor,"max_rows":sizes.remove(0)}),
+            )
+            .await;
+            assert!(!failed, "{page}");
+            got.extend(ids(&page["rows"]));
+            cursor = page["next_cursor"].as_str().unwrap_or_default().to_owned();
+            pages.push(page);
+        }
+        // Exactly the 120 rows the one query fetched: in order, no repeat, no gap.
+        assert_eq!(got, (1..=120).collect::<Vec<i64>>());
+        assert_eq!(
+            pages
+                .iter()
+                .map(|p| p["row_count"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            [50, 30, 40]
+        );
+        let last = pages.last().unwrap();
+        assert!(
+            last.get("next_cursor").is_none() && last.get("rows_left").is_none(),
+            "{last}"
+        );
+        assert_eq!(last["truncated"], true);
+        assert_eq!(f.state.held.usage(), (0, 0));
+        // Every page as the first: the same columns, the protected column
+        // masked, and each MySQL type decoded the same way on every row.
+        assert_eq!(first["rows"][0][1], "••••••", "{first}");
+        for page in &pages {
+            assert_eq!(page["query_id"], first["query_id"]);
+            assert_eq!(page["columns"], first["columns"]);
+            assert_eq!(page["columns"][1]["masked"], true, "{page}");
+            assert!(!page.to_string().contains("hidden.example"), "{page}");
+            for row in page["rows"].as_array().unwrap() {
+                use base64::Engine;
+                let id = row[0].as_i64().unwrap();
+                let amount = if id % 7 == 0 {
+                    Value::Null
+                } else {
+                    json!(format!("{}.{:02}", id * 125 / 100, id * 125 % 100))
+                };
+                let raw = base64::engine::general_purpose::STANDARD
+                    .encode(u16::try_from(id).unwrap().to_be_bytes());
+                assert_eq!(
+                    row,
+                    &json!([
+                        id,
+                        "••••••",
+                        format!("note-{id}"),
+                        amount,
+                        (u64::MAX - u64::try_from(id).unwrap()).to_string(),
+                        format!("2026-01-01T{:02}:{:02}:00", id / 60, id % 60),
+                        format!("base64:{raw}"),
+                    ])
+                );
+            }
+        }
+        // Nothing ran for the pages.
+        assert_eq!(f.queries(agent).await, 1);
+
+        // A revoked token's rows are dropped, and its sibling cannot take them.
+        let (_, sibling) = f.token(agent).await;
+        let revoked = run(token.clone(), 10).await["next_cursor"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(f.state.held.usage().0, 1);
+        let (s, _) = f
+            .request(
+                "DELETE",
+                &format!("/agents/{agent}/tokens/{token_id}"),
+                &f.owner_cookie,
+                None,
+            )
+            .await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
+        assert_eq!(f.state.held.usage(), (0, 0));
+        let (s, _) = call(
+            &f.app,
+            "POST",
+            "/mcp",
+            "",
+            Some(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"fetch_rows","arguments":{"task":"Go on","cursor":revoked}}})),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        assert_expired(
+            &tool(
+                &f,
+                &sibling,
+                "fetch_rows",
+                json!({"task":"Go on","cursor":revoked}),
+            )
+            .await,
+        );
+    };
+    // Drop the table and close the fixture even when an assertion failed,
+    // then re-raise the failure.
+    let outcome = AssertUnwindSafe(body).catch_unwind().await;
+    sqlx::query(&format!("DROP TABLE IF EXISTS {table}"))
+        .execute(&mysql)
+        .await
+        .unwrap();
+    mysql.close().await;
+    f.close().await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -390,11 +390,33 @@ async fn authenticated_crud_policy_authorization_and_four_eyes() {
             )
             .await
         });
-        for _ in 0..100 {
-            if state.core.active.contains_key(&query_id) {
+        // The id enters `core.active` before the read takes the cluster's only
+        // permit, so wait for proof that it holds the permit: the read is
+        // queued on our lock in the target database, which it reaches only
+        // after acquiring the permit. No other session asks for this table yet.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_locks WHERE relation = $1::regclass AND NOT granted
+                 AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+            )
+            .bind(&table)
+            .fetch_one(&target)
+            .await
+            .unwrap();
+            if waiting > 0 {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            assert!(
+                !running.is_finished(),
+                "the first read finished before it waited on the table lock: {:?}",
+                running.await.unwrap()
+            );
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the first read did not wait on the table lock within 15 s, so it never held the permit"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert!(state.core.active.contains_key(&query_id));
         let (status, busy, _) = request(
