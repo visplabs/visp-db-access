@@ -8,14 +8,14 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
-  max-width: 1160px;
+  max-width: 1280px;
 }
 .connect-top .button.ghost {
   margin-left: -8px;
 }
 .connect-heading h1 {
   margin: 0;
-  font-size: 26px;
+  font-size: var(--text-title);
   font-weight: 600;
   letter-spacing: -0.015em;
 }
@@ -173,10 +173,6 @@
 }
 .connect-database:hover {
   background: var(--hover-fill);
-}
-.connect-database .environment-word {
-  margin-left: auto;
-  font-size: var(--text-xs);
 }
 .connect-database input,
 .connect-choice input {
@@ -651,9 +647,6 @@
   display: inline-flex;
   align-items: baseline;
   gap: var(--space-2);
-}
-.agent-reach-cell .environment-word {
-  font-size: var(--text-xs);
 }
 .agent-expiring {
   color: var(--verdict-held-fg);

@@ -149,13 +149,6 @@ textarea::placeholder {
   font-size: 12px;
   text-transform: none;
 }
-.badge.env-badge {
-  padding: 0;
-  background: transparent !important;
-}
-.environment-word {
-  font-weight: 600;
-}
 .switch {
   width: 32px;
   height: 20px;
@@ -391,8 +384,7 @@ textarea::placeholder {
 .toast {
   animation: refined-toast var(--motion-base) var(--ease-popover);
 }
-.skeleton,
-.badge.pulsing::before {
+.skeleton {
   animation: none;
 }
 .app {
@@ -595,9 +587,6 @@ td.numeric {
 .settings-page,
 .policy-page,
 .attention,
-.recent-queries,
-.my-approvals,
-.setup-checklist,
 .chart-card,
 .health-summary,
 .overview-strip,
@@ -796,77 +785,11 @@ td.numeric {
 .query-library-toolbar .button {
   background: transparent;
 }
-.result-grid th,
-.result-grid td {
-  border-right: 0;
-}
 .result-status {
   font-family: var(--font-ui);
 }
 .cm-tooltip-autocomplete {
   border-radius: 7px;
-}
-.setup-checklist {
-  padding: 0;
-  margin: 32px 0;
-}
-.setup-checklist ol {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 24px;
-  padding: 0;
-}
-.setup-checklist li {
-  border: 0;
-  padding: 4px 0;
-  min-width: 180px;
-}
-.setup-checklist li p {
-  display: none;
-}
-.setup-number {
-  width: 24px;
-  height: 24px;
-  background: var(--control-fill);
-  border-radius: 3px;
-}
-.overview-counts {
-  color: var(--label-secondary);
-  font-size: 13px;
-  margin: 12px 0 32px;
-  font-variant-numeric: tabular-nums;
-}
-.overview-greeting {
-  font-size: 28px;
-  letter-spacing: -0.015em;
-  margin-bottom: 8px;
-}
-.needs-you {
-  margin-bottom: 32px;
-}
-.needs-you > h2 {
-  margin-bottom: 16px;
-}
-.needs-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 48px;
-  padding: 12px 0;
-  border-bottom: var(--stroke) solid var(--rule);
-}
-.needs-row > div {
-  flex: 1;
-  min-width: 0;
-}
-.needs-row small {
-  display: block;
-  color: var(--label-secondary);
-  margin-top: 4px;
-}
-.recent-queries {
-  padding: 0;
-  margin-top: 32px;
 }
 .policy-summary {
   max-width: 70ch;
@@ -923,69 +846,6 @@ td.numeric {
   background: var(--paper);
   z-index: 3;
 }
-.approval-inbox-layout {
-  display: grid;
-  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
-  gap: 32px;
-  align-items: start;
-}
-.approval-inbox-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-.approval-inbox-list > li {
-  border-bottom: var(--stroke) solid var(--rule);
-}
-.approval-inbox-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  width: 100%;
-  padding: 16px 12px;
-  background: transparent;
-  border: 0;
-  border-radius: 7px;
-  color: var(--ink);
-  text-align: left;
-}
-.approval-inbox-item:hover,
-.approval-inbox-item[aria-pressed='true'] {
-  background: var(--hover-fill);
-}
-.requester-avatar {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--control-fill);
-  font-size: 12px;
-}
-.approval-inbox-item > span:last-child {
-  flex: 1;
-  min-width: 0;
-}
-.approval-inbox-item strong {
-  display: block;
-  font-size: 14px;
-}
-.approval-inbox-item small {
-  display: block;
-  color: var(--label-secondary);
-  margin-top: 8px;
-}
-.approval-inbox-detail {
-  min-width: 0;
-  position: sticky;
-  /* Pin below the 64px topbar, which would otherwise cover the pane's top. */
-  top: 80px;
-}
-.approval-inbox-detail > h2 {
-  margin-bottom: 16px;
-}
 .approval-scroll {
   overflow: auto;
   /* Keep the last row clear of the action bar. */
@@ -999,14 +859,7 @@ td.numeric {
   position: sticky;
   bottom: 0;
 }
-.approval-inbox-detail .approval-detail {
-  max-height: calc(100dvh - 240px);
-}
-.approval-inbox-detail .safety-panel {
-  padding: 16px 0;
-}
 .sql-preview-block,
-.sql-comparison,
 .json-preview {
   background: var(--control-fill);
   border: 0;
@@ -1095,8 +948,7 @@ td.numeric {
   font-size: 22px;
 }
 .login-card > .lucide,
-.login-card > p,
-.login-foot {
+.login-card > p {
   display: none;
 }
 .login-subtitle {
@@ -1112,10 +964,6 @@ td.numeric {
 .demo-note code {
   font-family: var(--font-ui);
   font-size: 12px;
-}
-.row-actions {
-  border: 0;
-  background: transparent;
 }
 .date-range-popover {
   width: 280px;
@@ -1214,12 +1062,6 @@ td.numeric {
   .approval-actions {
     padding-bottom: max(16px, env(safe-area-inset-bottom));
   }
-  .approval-inbox-layout {
-    display: block;
-  }
-  .approval-inbox-detail {
-    display: none;
-  }
   .policy-row {
     grid-template-columns: minmax(0, 1fr);
     gap: 12px;
@@ -1299,9 +1141,6 @@ td.numeric {
   }
   .page-heading {
     margin-bottom: 24px;
-  }
-  .overview-greeting {
-    font-size: 28px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -1395,9 +1234,6 @@ textarea {
     --band-height: 6px;
   }
 }
-.page-heading .overview-counts {
-  margin: 8px 0 0;
-}
 
 body {
   font-variant-numeric: tabular-nums;
@@ -1453,15 +1289,7 @@ body {
 }
 
 /* Approvals: who asked, what a write changes, and the receipt of a write that ran. */
-.approval-agent {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  color: var(--label-secondary);
-}
-.approval-preview,
-.approval-receipt {
+.approval-preview {
   display: grid;
   gap: 12px;
   min-width: 0;
@@ -1469,82 +1297,15 @@ body {
   border-top: var(--stroke) solid var(--rule);
   font-size: 13px;
 }
-.approval-preview h3,
-.approval-receipt h3 {
+.approval-preview h3 {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
 }
-.approval-preview p,
-.approval-receipt p {
+.approval-preview p {
   margin: 0;
-}
-.approval-receipt .section-heading {
-  margin: 0;
-}
-.preview-notes {
-  margin: 0;
-  padding-left: 16px;
-  color: var(--label-secondary);
-}
-.preview-sample {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-.preview-sample-title {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 12px;
-  font-size: 12px;
-}
-.preview-sample .table-wrap {
-  max-height: 280px;
-  overflow: auto;
-}
-.preview-sample td {
-  height: 32px;
-  padding: 4px 12px;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
 }
 /* A changed value is bold and underlined, so it reads without colour. */
-.preview-sample td.cell-changed {
-  font-weight: 600;
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 3px;
-  background: var(--subtle);
-}
-.receipt-list {
-  display: grid;
-  margin: 0;
-}
-.receipt-list > div {
-  display: grid;
-  grid-template-columns: 112px minmax(0, 1fr);
-  gap: 12px;
-  padding: 8px 0;
-  border-bottom: var(--stroke) solid var(--rule);
-}
-.receipt-list dt {
-  color: var(--label-secondary);
-}
-.receipt-list dd {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.receipt-list .icon-button {
-  min-height: 28px;
-  height: 28px;
-  min-width: 28px;
-}
 .approval-blocked {
   margin: 8px 0 0;
   font-size: 12px;
@@ -1560,25 +1321,7 @@ body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.preview-sample .cell-short {
-  display: none;
-}
 @media (max-width: 600px) {
-  .preview-sample .cell-short {
-    display: inline;
-  }
-  .preview-sample .cell-full {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-  .receipt-list > div {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 4px;
-  }
   .approval-blocked {
     text-align: left;
   }
@@ -1786,109 +1529,7 @@ body {
 .agent-session .agent-detail-heading .button.ghost {
   margin: 0 0 8px -8px;
 }
-.session-steps {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  margin: 16px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.session-step {
-  padding: 12px 0 12px 12px;
-  border-top: var(--stroke) solid var(--rule);
-  border-left: 3px solid var(--label-quaternary);
-}
-.session-step.refused,
-.session-step.failed {
-  border-left-color: var(--danger);
-}
-.session-step.approval {
-  border-left-color: var(--warning);
-}
-.session-step.ok {
-  border-left-color: var(--success);
-}
-.session-step p {
-  margin: 4px 0 0;
-}
-.session-step-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 10px;
-  font-size: var(--text-sm);
-}
-.session-step-head time {
-  margin-left: auto;
-  font-size: var(--text-xs);
-}
-.session-step-n {
-  min-width: 20px;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--muted);
-}
-.session-step-n::before {
-  content: '#';
-}
-.session-mark {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-weight: 600;
-}
-.session-mark.ok {
-  color: var(--success);
-}
-.session-mark.approval {
-  color: var(--warning);
-}
-.session-mark.refused,
-.session-mark.failed {
-  color: var(--danger);
-}
-.session-step-tool code,
-.session-answer code {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--muted);
-}
-.session-step-task {
-  font-size: var(--text-base);
-}
-.session-step-facts,
-.session-step-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  font-size: var(--text-xs);
-}
-.session-step-sql {
-  max-height: 160px;
-  margin: 8px 0 0;
-  overflow: auto;
-}
-.session-answer {
-  margin-top: 8px;
-  font-size: var(--text-sm);
-}
-.session-answer .muted {
-  font-size: var(--text-xs);
-}
-.session-earlier {
-  margin: 12px 0 0;
-  font-size: var(--text-xs);
-}
-.session-foot {
-  margin-top: 12px;
-  font-size: var(--text-xs);
-}
 @media (max-width: 600px) {
-  .session-step-head time {
-    margin-left: 0;
-    flex-basis: 100%;
-  }
   .session-task {
     max-width: 180px;
   }
