@@ -1,4 +1,5 @@
-/* Redesign, shared parts: the verdict chip and the actor badge. Loads after
+/* Redesign, shared parts: the verdict chip, the actor badge, the risk meter
+   and the environment mark. Loads after
    refinement.css. Each screen keeps its own rules in redesign-<screen>.css. */
 .verdict-chip {
   --chip-fg: var(--verdict-allowed-fg);
@@ -117,4 +118,78 @@
 .kitchen-verdicts {
   display: grid;
   gap: var(--space-3);
+}
+
+/* Where something runs (EnvBadge). Production is filled and striped, never
+   missed; staging and development are tinted. */
+.env-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--env-dev-rail);
+  border-radius: 4px;
+  background: var(--env-dev-soft);
+  color: var(--env-dev-text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.env-mark[data-environment='staging'] {
+  border-color: var(--env-staging);
+  background: var(--env-staging-soft);
+  color: var(--env-staging-text);
+}
+.env-mark[data-environment='production'] {
+  border-color: var(--env-prod);
+  background-color: var(--env-prod);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 5px,
+    rgb(0 0 0 / 14%) 5px 10px
+  );
+  color: var(--on-risk);
+}
+
+/* The guard's risk (RiskMeter): four steps and a word. */
+.risk-gauge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--label-secondary);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.risk-gauge-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+.risk-gauge-bars > i {
+  width: 5px;
+  height: 12px;
+  border-radius: 1.5px;
+  background: var(--label-quaternary);
+}
+.risk-gauge[data-compact] .risk-gauge-bars > i {
+  width: 4px;
+  height: 10px;
+}
+.risk-gauge-bars > i[data-on] {
+  background: var(--label-secondary);
+}
+.risk-gauge[data-risk='high'],
+.risk-gauge[data-risk='critical'] {
+  color: var(--verdict-blocked-fg);
+}
+.risk-gauge[data-risk='high'] .risk-gauge-bars > i[data-on] {
+  background: var(--verdict-held-fg);
+}
+.risk-gauge[data-risk='critical'] .risk-gauge-bars > i[data-on] {
+  background: var(--verdict-blocked-fg);
 }

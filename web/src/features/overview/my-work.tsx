@@ -7,13 +7,13 @@ import type {
   Cluster,
   HistoryEntry,
   Page,
-  Risk,
 } from '../../api/types';
 import { useResource } from '../../lib/query';
 import { useUser } from '../auth/session';
 import {
   EnvBadge,
   ErrorPanel,
+  RiskMeter,
   SegmentedControl,
   Skeleton,
 } from '../../components/ui';
@@ -39,32 +39,6 @@ function useMinuteClock() {
     return () => clearInterval(timer);
   }, []);
   return now;
-}
-
-const RISK_WORD: Record<Risk, string> = {
-  low: 'Low risk',
-  medium: 'Medium risk',
-  high: 'High risk',
-  critical: 'Critical risk',
-};
-const RISK_LEVEL: Record<Risk, number> = {
-  low: 1,
-  medium: 2,
-  high: 3,
-  critical: 4,
-};
-/** The guard's risk of a statement: four bars and the word. */
-export function RiskMark({ risk }: { risk: Risk }) {
-  return (
-    <span className="ov-risk" data-risk={risk}>
-      <span className="ov-risk-bars" aria-hidden>
-        {[1, 2, 3, 4].map((bar) => (
-          <i key={bar} data-on={bar <= RISK_LEVEL[risk] || undefined} />
-        ))}
-      </span>
-      {RISK_WORD[risk]}
-    </span>
-  );
 }
 
 function Requester({ approval }: { approval: Approval }) {
@@ -106,7 +80,7 @@ function ReviewRow({
         {approval.reason}
       </p>
       <span className="ov-review-risk">
-        <RiskMark risk={approval.analysis.risk} />
+        <RiskMeter risk={approval.analysis.risk} />
       </span>
       <span className="ov-review-expiry">
         <ExpiryTime value={approval.expires_at} />

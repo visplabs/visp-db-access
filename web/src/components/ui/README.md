@@ -13,8 +13,8 @@ cells. The scale is 12 / 13 / 14 / 16 / 20 / 26px. Controls use 6px radii, panel
 outline with a 2px offset. Selection is neutral gray.
 
 Primary actions are ink. Color denotes environments and SQL guard verdicts.
-`Badge` exposes neutral / env / verdict / status variants; status text is
-capitalized and neutral, with explicit words. `EnvBadge` delegates to `Badge`.
+`Badge` exposes neutral / verdict / status variants; status text is
+capitalized and neutral, with explicit words.
 See `docs/DESIGN.md` for color pairs, contrast measurements and the environment
 frame. Production has a striped 6px rail, staging a solid 4px rail and development
 a muted teal 2px rail. On phones the rail becomes a top band.
@@ -47,3 +47,21 @@ tones or colour alone for either. Colours are the `--verdict-*-fg/-bg/-line`
 tokens in `styles/tokens.css`; text on its ground is AA in both themes.
 Screen styles go in `styles/redesign-<screen>.css`, shared ones in
 `styles/redesign.css`.
+
+## Risk, environment, SQL and time
+
+One look each, on every screen (shown on `/ui`):
+
+- `EnvBadge` (`index.tsx`): where something runs. A small tinted mark;
+  production is filled and striped, so it is never missed. Never write the
+  environment as a coloured word by hand.
+- `RiskMeter` (`risk.tsx`): the guard's risk as four steps and the word
+  ("High risk"). `compact` drops the visible "risk" in dense rows; a screen
+  reader still hears it. Not the console's safety panel, which keeps its
+  full-width scale with every level named.
+- `SqlText` (`sql-preview.tsx`): SQL with keywords and strings marked, for
+  inside a `pre` or `code`; `SqlPreview` wraps it in `code`.
+- Times (`time.tsx`): `RelativeTime` in lists, `ExpiryTime` for deadlines,
+  `formatTime` (date, time and zone) where one moment is the subject, and
+  `ClockTime` for a run of events under a heading that already gives the day
+  and the zone, such as a session's steps. All honour the UTC preference.

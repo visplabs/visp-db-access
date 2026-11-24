@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { EyeOff, Lock, TriangleAlert } from 'lucide-react';
 import { json, request } from '../../api/client';
 import type { Approval, Preview, RowSample } from '../../api/types';
-import { Confirm } from '../../components/ui';
+import { Confirm, SqlText } from '../../components/ui';
 import {
   boundText,
   changeSummary,
@@ -13,7 +13,6 @@ import {
 } from '../../lib/approval-presentation';
 import { cellText, message } from '../../lib/utils';
 import { formatSql, pairRows } from './decision';
-import { SqlText } from './statement';
 
 export const PREVIEW_WARNING =
   'This runs the statement on the database and rolls it back. Triggers and defaults on the table still run.';

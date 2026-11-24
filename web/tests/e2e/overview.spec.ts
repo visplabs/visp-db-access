@@ -116,7 +116,7 @@ test('a new workspace starts with setup and calm zeros', async ({ page }) => {
   await expect(setup).toContainText('0 of 4 done');
   await expect(
     setup.getByRole('link', { name: 'Connect an agent' }),
-  ).toHaveAttribute('href', '/agents');
+  ).toHaveAttribute('href', '/agents?connect=1');
   await expect(gate(page)).toContainText('No statement reached the gate yet');
   await expect(gate(page)).toContainText('Nothing ran in 24 hours');
   await expect(gate(page)).toContainText('Nobody is waiting for a review');

@@ -562,7 +562,7 @@ test('the decision fits one screen: header, who asked, checks, a dense list and 
   const row = page
     .getByRole('button', { name: 'Review', exact: true })
     .filter({ hasText: 'Correct a customer name' });
-  await expect(row.locator('.ar-env')).toHaveText('Production');
+  await expect(row.locator('.env-mark')).toHaveText('Production');
   await row.click();
   await expect(row).toHaveAttribute('aria-pressed', 'true');
   expect(new URL(page.url()).searchParams.get('id')).toBe(MYSQL_PENDING);
@@ -574,7 +574,7 @@ test('the decision fits one screen: header, who asked, checks, a dense list and 
   await expect(who.locator('.actor-badge[data-actor="human"]')).toHaveText(
     'Jordan Lee',
   );
-  await expect(who.locator('.ar-env')).toHaveText('Production');
+  await expect(who.locator('.env-mark')).toHaveText('Production');
   await expect(who).toContainText('MySQL');
   await expect(who).toContainText(
     'Correct a customer name after a verified support request.',
@@ -601,10 +601,10 @@ test('the decision fits one screen: header, who asked, checks, a dense list and 
   await expect(checks.locator('li[data-level="pass"]')).toHaveCount(3);
   await expect(checks).toContainText('UPDATE on users');
   // The risk is in the header, in full view.
-  const risk = (await view.locator('.ar-header .ar-risk').boundingBox())!;
+  const risk = (await view.locator('.ar-header .risk-gauge').boundingBox())!;
   expect(risk.y).toBeGreaterThan(48);
   expect(risk.y + risk.height).toBeLessThanOrEqual(900);
-  await expect(view.locator('.ar-header .ar-risk')).toHaveText(/High risk/);
+  await expect(view.locator('.ar-header .risk-gauge')).toHaveText(/High risk/);
   // One timeline.
   const steps = view
     .getByRole('region', { name: 'What happened' })

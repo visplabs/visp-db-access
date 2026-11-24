@@ -503,12 +503,12 @@ test('hardened history and approval states show their badges and execution error
 }) => {
   await page.getByRole('link', { name: 'History', exact: true }).click();
   await page.getByRole('combobox', { name: 'Query status' }).click();
-  await page.getByRole('option', { name: 'running', exact: true }).click();
+  await page.getByRole('option', { name: 'Running', exact: true }).click();
   await expect(
     page.locator('small.muted').filter({ hasText: 'Running' }),
   ).toHaveText('Running');
   await page.getByRole('combobox', { name: 'Query status' }).click();
-  await page.getByRole('option', { name: 'unknown', exact: true }).click();
+  await page.getByRole('option', { name: 'Unknown', exact: true }).click();
   await expect(
     page.locator('small.muted').filter({ hasText: 'Unknown' }),
   ).toBeVisible();

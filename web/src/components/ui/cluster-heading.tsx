@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import type { Cluster } from '../../api/types';
 import { cloudLine } from '../../lib/cloud';
-import { Badge, HealthBadge, Tip } from './index';
+import { Badge, EnvBadge, HealthBadge, Tip } from './index';
 
 /** Where a cluster runs. Plain text with no colour: colour is kept for risk. */
 export function CloudLabel({
@@ -37,10 +37,7 @@ export function ClusterHeading({
         </Link>
       </Tip>
       <h1>{cluster.name}</h1>
-      <span className={`environment-word ${cluster.environment}`}>
-        {cluster.environment.charAt(0).toUpperCase() +
-          cluster.environment.slice(1)}
-      </span>
+      <EnvBadge environment={cluster.environment} />
       <CloudLabel cluster={cluster} />
       <HealthBadge
         status={cluster.health.status}

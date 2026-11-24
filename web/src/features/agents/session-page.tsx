@@ -9,11 +9,13 @@ import {
   ActorBadge,
   Button,
   Empty,
+  EnvBadge,
   ErrorPanel,
   Skeleton,
+  SqlText,
   VerdictChip,
 } from '../../components/ui';
-import { RelativeTime } from '../../components/ui/time';
+import { ClockTime, RelativeTime } from '../../components/ui/time';
 import { formatTime } from '../../lib/utils';
 import { verdictOfApproval, verdictOfStep } from '../../lib/verdict';
 import {
@@ -521,9 +523,9 @@ export function StepRow({
               Write
             </span>
           )}
-          <time className="trail-time" dateTime={step.created_at}>
-            {formatTime(step.created_at)}
-          </time>
+          <span className="trail-time">
+            <ClockTime value={step.created_at} />
+          </span>
         </div>
         <div className="trail-what">
           <p className="trail-task">
@@ -539,9 +541,7 @@ export function StepRow({
                 (cluster ? (
                   <span>
                     <span className="identifier">{cluster.name}</span>{' '}
-                    <span className={`environment-word ${cluster.environment}`}>
-                      {cluster.environment}
-                    </span>
+                    <EnvBadge environment={cluster.environment} />
                   </span>
                 ) : (
                   <span>A database you cannot see</span>
@@ -648,11 +648,11 @@ function StepSql({
           role="region"
           aria-label={`SQL of step ${n}`}
         >
-          {sql}
+          <SqlText sql={sql} />
         </pre>
       ) : (
         <code id={id} className="trail-sql-line">
-          {sql.replace(/\s+/g, ' ')}
+          <SqlText sql={sql.replace(/\s+/g, ' ')} />
         </code>
       )}
       {folds && (

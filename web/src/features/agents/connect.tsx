@@ -32,6 +32,7 @@ import { formatTime, message } from '../../lib/utils';
 import {
   ActorBadge,
   Button,
+  EnvBadge,
   Field,
   SegmentedControl,
   VerdictChip,
@@ -200,8 +201,6 @@ const freeName = (taken: string[]) => {
     if (!names.has(name)) return name;
   }
 };
-const capitalize = (word: string) =>
-  word.charAt(0).toUpperCase() + word.slice(1);
 
 export function ConnectWizard({
   user,
@@ -383,11 +382,7 @@ export function ConnectWizard({
                           }
                         />
                         <span className="identifier">{cluster.name}</span>
-                        <span
-                          className={`environment-word ${cluster.environment}`}
-                        >
-                          {capitalize(cluster.environment)}
-                        </span>
+                        <EnvBadge environment={cluster.environment} />
                       </label>
                     ))}
                   </div>

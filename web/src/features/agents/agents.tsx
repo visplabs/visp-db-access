@@ -8,6 +8,7 @@ import {
   ActorBadge,
   Button,
   Confirm,
+  EnvBadge,
   ErrorPanel,
   Field,
   Modal,
@@ -172,8 +173,6 @@ const lastActive = (agent: Agent) =>
     .sort((a, b) => a.localeCompare(b))
     .at(-1);
 const DAY = 86_400_000;
-const capitalize = (word: string) =>
-  word.charAt(0).toUpperCase() + word.slice(1);
 
 function AgentRow({
   agent,
@@ -215,9 +214,7 @@ function AgentRow({
           first ? (
             <span className="agent-reach-cell">
               <span className="identifier">{first.name}</span>
-              <span className={`environment-word ${first.environment}`}>
-                {capitalize(first.environment)}
-              </span>
+              <EnvBadge environment={first.environment} />
             </span>
           ) : (
             '1 database'
@@ -390,10 +387,7 @@ function AgentDetail({
               {cluster ? (
                 <>
                   <strong className="identifier">{cluster.name}</strong>
-                  <span className={`environment-word ${cluster.environment}`}>
-                    {cluster.environment.charAt(0).toUpperCase() +
-                      cluster.environment.slice(1)}
-                  </span>
+                  <EnvBadge environment={cluster.environment} />
                   <CloudLabel cluster={cluster} />
                 </>
               ) : (
@@ -773,10 +767,7 @@ function AgentForm({
                   }
                 />
                 <span className="identifier">{cluster.name}</span>
-                <span className={`environment-word ${cluster.environment}`}>
-                  {cluster.environment.charAt(0).toUpperCase() +
-                    cluster.environment.slice(1)}
-                </span>
+                <EnvBadge environment={cluster.environment} />
               </label>
             ))
           )}

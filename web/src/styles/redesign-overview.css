@@ -8,7 +8,7 @@
   margin-bottom: var(--space-6);
 }
 .ov-heading h1 {
-  font-size: 20px;
+  font-size: var(--text-title);
 }
 .ov-heading p {
   margin-top: 2px;
@@ -321,51 +321,6 @@
     row-gap: 4px;
   }
 }
-.ov-risk {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-}
-.ov-risk-bars {
-  display: inline-flex;
-  align-items: flex-end;
-  gap: 2px;
-  height: 10px;
-}
-.ov-risk-bars > i {
-  width: 3px;
-  border-radius: 1px;
-  background: var(--label-quaternary);
-}
-.ov-risk-bars > i:nth-child(1) {
-  height: 4px;
-}
-.ov-risk-bars > i:nth-child(2) {
-  height: 6px;
-}
-.ov-risk-bars > i:nth-child(3) {
-  height: 8px;
-}
-.ov-risk-bars > i:nth-child(4) {
-  height: 10px;
-}
-.ov-risk-bars > i[data-on] {
-  background: var(--label-secondary);
-}
-.ov-risk[data-risk='medium'] .ov-risk-bars > i[data-on] {
-  background: var(--warning);
-}
-.ov-risk[data-risk='high'] .ov-risk-bars > i[data-on],
-.ov-risk[data-risk='critical'] .ov-risk-bars > i[data-on] {
-  background: var(--danger);
-}
-.ov-risk[data-risk='high'],
-.ov-risk[data-risk='critical'] {
-  color: var(--danger);
-  font-weight: 600;
-}
-
 /* Recent activity: one line per query where the column fits. */
 .ov-activity-row {
   display: grid;

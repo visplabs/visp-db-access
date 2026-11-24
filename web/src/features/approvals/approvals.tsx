@@ -15,9 +15,11 @@ import {
   Button,
   Confirm,
   Empty,
+  EnvBadge,
   ErrorPanel,
   Field,
   Picker,
+  RiskMeter,
   Skeleton,
   TabBar,
   VerdictChip,
@@ -41,7 +43,7 @@ import {
 import { ChangesSection, usePreview } from './preview';
 import { ReceiptSection } from './receipt';
 import { ApprovalResult } from './result';
-import { ChecksSection, RiskMeter, StatementSection } from './statement';
+import { ChecksSection, StatementSection } from './statement';
 import { nextStep, timelineOf, type Step } from './decision';
 
 const TABS = ['pending', 'approved', 'mine', 'all'] as const;
@@ -293,15 +295,6 @@ function RequestState({
   );
 }
 
-/** Where a request runs. Production is filled and striped: never missed. */
-export function EnvMark({ environment }: { environment: string }) {
-  return (
-    <span className="ar-env" data-environment={environment}>
-      {environment.charAt(0).toUpperCase() + environment.slice(1)}
-    </span>
-  );
-}
-
 /** Who asked: an agent with the person it acts for, or the person. */
 function Requester({
   approval,
@@ -358,7 +351,7 @@ function RequestRow({
         </span>
       </span>
       <span className="ar-row-line ar-row-meta">
-        {cluster && <EnvMark environment={cluster.environment} />}
+        {cluster && <EnvBadge environment={cluster.environment} />}
         <span className="ar-row-cluster">{approval.cluster_name}</span>
         <RiskMeter risk={approval.analysis.risk} compact />
         <RequestEnd approval={approval} />
@@ -652,7 +645,7 @@ function Decision({
             <span className="ar-email">{data.requester.email}</span>
           </p>
           <p className="ar-where">
-            {cluster && <EnvMark environment={cluster.environment} />}
+            {cluster && <EnvBadge environment={cluster.environment} />}
             <strong className="ar-cluster">{data.cluster_name}</strong>
             {cluster && (
               <span className="muted">

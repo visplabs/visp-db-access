@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { formatTime } from '../../lib/utils';
+import { formatClock, formatTime } from '../../lib/utils';
 import { expiryLabel } from '../../lib/sql-diff';
 import { relativeTime } from '../../lib/time';
 function useClock() {
@@ -25,6 +25,15 @@ export function ExpiryTime({ value }: { value: string }) {
   return (
     <time dateTime={value} title={`${formatTime(value)} · ${value}`}>
       {expiryLabel(value, now)}
+    </time>
+  );
+}
+/** The time of day, with the full date and zone on hover; for events listed
+ * under a heading that already gives the day and the zone. */
+export function ClockTime({ value }: { value: string }) {
+  return (
+    <time dateTime={value} title={`${formatTime(value)} · ${value}`}>
+      {formatClock(value)}
     </time>
   );
 }

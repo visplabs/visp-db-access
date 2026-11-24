@@ -1,8 +1,7 @@
 import { Ban, CircleCheck, Info, TriangleAlert } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import type { Analysis, Risk } from '../../api/types';
-import { VerdictChip } from '../../components/ui';
-import { sqlParts } from '../../lib/activity';
+import type { Analysis } from '../../api/types';
+import { RiskMeter, SqlText, VerdictChip } from '../../components/ui';
 import { guardedSqlChanged, sqlDiff } from '../../lib/sql-diff';
 import { verdictOfAnalysis } from '../../lib/verdict';
 import {
@@ -11,23 +10,6 @@ import {
   statementLine,
   type CheckLevel,
 } from './decision';
-
-/** SQL with its keywords and strings marked; text nodes keep it inert. */
-export function SqlText({ sql }: { sql: string }) {
-  return (
-    <>
-      {sqlParts(sql).map((part, index) =>
-        part.kind === 'plain' ? (
-          part.text
-        ) : (
-          <span key={index} className={`sql-${part.kind}`}>
-            {part.text}
-          </span>
-        ),
-      )}
-    </>
-  );
-}
 
 /** The statement once. When the gate changes what runs, the change is shown
  * inline: lines it adds are marked, lines it removes struck through. */
@@ -76,38 +58,6 @@ export function StatementSection({
         </pre>
       )}
     </section>
-  );
-}
-
-const RISKS: Risk[] = ['low', 'medium', 'high', 'critical'];
-const riskWord = (risk: Risk) => risk.charAt(0).toUpperCase() + risk.slice(1);
-
-/** Four steps, filled up to the risk; the word says it, not the colour. */
-export function RiskMeter({
-  risk,
-  compact = false,
-}: {
-  risk: Risk;
-  compact?: boolean;
-}) {
-  const level = RISKS.indexOf(risk);
-  return (
-    <span
-      className="ar-risk"
-      data-risk={risk}
-      data-compact={compact || undefined}
-    >
-      <span className="ar-risk-bars" aria-hidden="true">
-        {RISKS.map((step, index) => (
-          <i key={step} data-on={index <= level || undefined} />
-        ))}
-      </span>
-      <span>
-        {riskWord(risk)}
-        {compact ? '' : ' risk'}
-        {compact && <span className="sr-only"> risk</span>}
-      </span>
-    </span>
   );
 }
 

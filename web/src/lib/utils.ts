@@ -18,6 +18,25 @@ function timeFormat(utc: boolean): Intl.DateTimeFormat {
   }
   return format;
 }
+const clockFormats = new Map<string, Intl.DateTimeFormat>();
+/** The time of day alone, for a run of events on one page whose date and
+ * time zone are said once above them (the steps of a session). */
+export const formatClock = (value: string) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Invalid Date';
+  const key = readPreferences().timezone === 'utc' ? 'utc' : 'local';
+  let format = clockFormats.get(key);
+  if (!format) {
+    format = new Intl.DateTimeFormat(undefined, {
+      timeZone: key === 'utc' ? 'UTC' : undefined,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    clockFormats.set(key, format);
+  }
+  return format.format(date);
+};
 export const formatTime = (value: string | null) => {
   if (!value) return '—';
   const date = new Date(value);

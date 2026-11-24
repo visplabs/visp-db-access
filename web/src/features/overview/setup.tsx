@@ -166,7 +166,7 @@ export function SetupChecklist() {
           Letting an AI agent query a database? Give it its own token, so every
           call it makes is checked and on record.
         </span>
-        <Link to="/agents">Connect an agent</Link>
+        <Link to="/agents?connect=1">Connect an agent</Link>
       </p>
     </section>
   );
