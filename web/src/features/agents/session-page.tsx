@@ -4,18 +4,17 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { MessageSquareText, PenLine } from 'lucide-react';
 import type { Agent, AgentStep, Approval, Cluster } from '../../api/types';
 import { request } from '../../api/client';
-import { useAction, useResource } from '../../lib/query';
+import { useResource } from '../../lib/query';
 import {
   ActorBadge,
   Button,
-  Empty,
   EnvBadge,
   ErrorPanel,
   Skeleton,
   SqlText,
   VerdictChip,
 } from '../../components/ui';
-import { ClockTime, RelativeTime } from '../../components/ui/time';
+import { ClockTime } from '../../components/ui/time';
 import { formatTime } from '../../lib/utils';
 import { verdictOfApproval, verdictOfStep } from '../../lib/verdict';
 import {
@@ -25,7 +24,8 @@ import {
   sessionState,
   toolText,
 } from '../../lib/sessions';
-import { useHidden, useSessionSteps } from './sessions';
+import { InlineTime, useHidden, useSessionSteps } from './sessions';
+import { PauseButton } from './pause';
 import {
   approvalText,
   foldsSql,
@@ -102,15 +102,17 @@ function SessionMissing() {
   return (
     <div className="trail-page">
       <Crumbs />
-      <Empty
-        title="Session not found"
-        description="It may have been deleted with its agent or after the retention time, or you may not be able to see this agent."
-        action={
-          <Link className="button primary" to="/agents">
-            Back to agents
-          </Link>
-        }
-      />
+      {/* The page's own heading: a page that is not there is still a page. */}
+      <section className="empty trail-missing" aria-labelledby="trail-missing">
+        <h1 id="trail-missing">Session not found</h1>
+        <p>
+          It may have been deleted with its agent or after the retention time,
+          or you may not be able to see this agent.
+        </p>
+        <Link className="button primary" to="/agents">
+          Back to agents
+        </Link>
+      </section>
     </div>
   );
 }
@@ -158,9 +160,6 @@ function SessionTrail({
     else query.set('show', next);
     setParams(query, { replace: true });
   };
-  const pause = useAction<Agent>(
-    agent.paused ? 'Agent resumed' : 'Agent paused',
-  );
   const session = steps.data?.session;
   const items = useMemo(() => steps.data?.items ?? [], [steps.data]);
   const sum = useMemo(() => summarize(items), [items]);
@@ -191,7 +190,7 @@ function SessionTrail({
           </div>
           {session && (
             <p className="trail-times">
-              Last step <RelativeTime value={session.last_step_at} />.{' '}
+              Last step <InlineTime value={session.last_step_at} />.{' '}
               {session.steps.toLocaleString('en')}{' '}
               {session.steps === 1 ? 'step' : 'steps'},{' '}
               {session.refusals.toLocaleString('en')} refused.
@@ -215,19 +214,7 @@ function SessionTrail({
               {state}
             </span>
           )}
-          <Button
-            variant={agent.paused ? 'secondary' : 'danger'}
-            disabled={pause.isPending}
-            onClick={() =>
-              pause.mutate({
-                path: `/agents/${agent.id}`,
-                method: 'PATCH',
-                body: { paused: !agent.paused },
-              })
-            }
-          >
-            {agent.paused ? 'Resume agent' : 'Pause agent'}
-          </Button>
+          <PauseButton agent={agent} />
         </div>
       </header>
       {agent.paused && (

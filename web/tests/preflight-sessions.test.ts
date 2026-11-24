@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMockTransport } from '../src/api/mock';
 import { analyzeDemo, preflightDemo } from '../src/api/mock-guard';
-import { defaultPolicy } from '../src/api/fixtures';
+import { DEMO_AGENT, defaultPolicy } from '../src/api/fixtures';
 import {
   checkStatus,
   gate,
@@ -55,6 +55,9 @@ async function signIn(email = 'admin@visp.dev') {
 const policy = defaultPolicy('production');
 const check = (sql: string, level: 'read' | 'write' | 'admin' | null) =>
   preflightDemo(analyzeDemo(sql, policy), level, policy);
+
+/** The demo agent that the mock starts with; its token is days old. */
+const DEMO = `/agents/${DEMO_AGENT.id}`;
 
 describe('the mock pre-flight has the server shape', () => {
   it('names one state, one reason and one next step for each case', () => {
@@ -334,21 +337,25 @@ describe('mock agent sessions follow the API contract', () => {
       next_cursor: null,
     });
     await api<NewAgentToken>(`${path}/tokens`, send('POST', {}));
-    const list = await api<Page<AgentSession>>(`${path}/sessions`);
+    // A new agent has no past: one session, the one its first call began.
+    const fresh = await api<Page<AgentSession>>(`${path}/sessions`);
+    expect(fresh.items.map((session) => session.active)).toEqual([true]);
+    // The demo agent's token is days old: newest first, the one that is
+    // going on, then the one that ended yesterday.
+    const list = await api<Page<AgentSession>>(`${DEMO}/sessions`);
     expect(list.items).toHaveLength(2);
-    // Newest first: the one that is going on, then the one that ended.
     expect(list.items.map((session) => session.active)).toEqual([true, false]);
     expect(list.items[0]!.started_at > list.items[1]!.started_at).toBe(true);
-    for (const session of list.items) {
+    for (const session of [...fresh.items, ...list.items]) {
       expect(session.token.hint).toHaveLength(4);
       expect(session.steps).toBeGreaterThan(0);
       expect(session.first_task).toBeTruthy();
     }
-    const first = await api<Page<AgentSession>>(`${path}/sessions?limit=1`);
+    const first = await api<Page<AgentSession>>(`${DEMO}/sessions?limit=1`);
     expect(first.items).toHaveLength(1);
     expect(first.next_cursor).not.toBeNull();
     const rest = await api<Page<AgentSession>>(
-      `${path}/sessions?limit=1&cursor=${first.next_cursor}`,
+      `${DEMO}/sessions?limit=1&cursor=${first.next_cursor}`,
     );
     expect(rest.items[0]!.id).toBe(list.items[1]!.id);
     expect(rest.next_cursor).toBeNull();
@@ -360,10 +367,12 @@ describe('mock agent sessions follow the API contract', () => {
     vi.useFakeTimers({ now: Date.now(), toFake: ['Date'] });
     const { api, path, agent } = await agentWithToken();
     await api<NewAgentToken>(`${path}/tokens`, send('POST', {}));
-    const [live, ended] = (await api<Page<AgentSession>>(`${path}/sessions`))
-      .items;
+    const [live] = (await api<Page<AgentSession>>(`${path}/sessions`)).items;
+    const [, ended] = (await api<Page<AgentSession>>(`${DEMO}/sessions`)).items;
     const steps = (id: string, query = '') =>
-      api<AgentSteps>(`${path}/sessions/${id}/steps${query}`);
+      api<AgentSteps>(
+        `${id === ended!.id ? DEMO : path}/sessions/${id}/steps${query}`,
+      );
     // A session that is over never changes.
     const past = await steps(ended!.id);
     expect(past.items.map((step) => step.n)).toEqual([1, 2, 3, 4, 5, 6]);
@@ -520,17 +529,11 @@ describe('session view logic', () => {
     expect(prependSteps(more, answer([step({ n: 30 })], 30)).from).toBe(0);
   });
   it('asks for the session alone with a marker past every step', async () => {
-    const { api, clusters } = await signIn();
-    const agent = await api<Agent>(
-      '/agents',
-      send('POST', { name: 'long', cluster_ids: [clusters[0]!.id] }),
-    );
-    await api(`/agents/${agent.id}/tokens`, send('POST', {}));
-    const ended = (
-      await api<Page<AgentSession>>(`/agents/${agent.id}/sessions`)
-    ).items[1]!;
+    const { api } = await signIn();
+    // The demo agent's session of yesterday.
+    const ended = (await api<Page<AgentSession>>(`${DEMO}/sessions`)).items[1]!;
     const head = await api<AgentSteps>(
-      `/agents/${agent.id}/sessions/${ended.id}/steps?after=${PAST_ALL}&limit=1`,
+      `${DEMO}/sessions/${ended.id}/steps?after=${PAST_ALL}&limit=1`,
     );
     expect(head.items).toEqual([]);
     expect(head.session.steps).toBe(6);

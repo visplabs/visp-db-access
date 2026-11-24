@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { installAuditTransport } from './audit-transport';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/login');
@@ -127,15 +128,7 @@ test('the connect page makes an agent and a token, prints each client snippet an
 }) => {
   test.slow();
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await page
-    .getByRole('navigation')
-    .getByRole('link', { name: 'Agents', exact: true })
-    .click();
-  // The empty list has one action: the connect page.
-  const empty = page.getByRole('region', { name: 'No agents yet' });
-  await expect(empty).toBeVisible();
-  await expect(empty.getByRole('button')).toHaveCount(1);
-  await empty.getByRole('button', { name: 'Connect an agent' }).click();
+  await openConnect(page);
   await expect(current(page)).toContainText('Who and what');
   // Safe defaults: a free name, read only, one database, 30 days. Continue
   // works without a change.
@@ -181,9 +174,14 @@ test('the connect page makes an agent and a token, prints each client snippet an
   await next.click();
   await expect(page.getByRole('radio', { name: /^Claude Code/ })).toBeChecked();
   await page.getByRole('button', { name: 'Create token' }).click();
-  await expect(page.getByText('Agent connected')).toBeVisible();
-  // Step 3: the token, once, inside the Claude Code command.
+  // Step 3: the token, once, inside the Claude Code command. The step says
+  // what happened; no toast does, so nothing covers the command.
   await expect(current(page)).toContainText('Copy and run');
+  await expect(
+    page.getByRole('heading', { name: /Paste this into Claude Code/ }),
+  ).toBeFocused();
+  await expect(page.getByText('Agent connected')).toHaveCount(0);
+  await expect(page.getByText('Token created')).toHaveCount(0);
   await expect(page.getByText('you will not see it again')).toBeVisible();
   const command = page.getByRole('region', { name: 'Claude Code command' });
   const origin = new URL(page.url()).origin;
@@ -269,19 +267,35 @@ test('the connect page makes an agent and a token, prints each client snippet an
   ).toBeVisible();
 });
 
+test('with no agent, the list has one action: the connect page', async ({
+  page,
+}) => {
+  await installAuditTransport(page, { path: '/agents', kind: 'empty' });
+  await page.goto('/login');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page
+    .getByRole('navigation')
+    .getByRole('link', { name: 'Agents', exact: true })
+    .click();
+  const empty = page.getByRole('region', { name: 'No agents yet' });
+  await expect(empty).toBeVisible();
+  await expect(empty.getByRole('button')).toHaveCount(1);
+  await empty.getByRole('button', { name: 'Connect an agent' }).click();
+  await expect(current(page)).toContainText('Who and what');
+});
+
+const list = (page: import('@playwright/test').Page) =>
+  page.getByRole('table', { name: 'Agents' });
+
 test('the connect page can be left at any step, and Back in the browser returns to the list', async ({
   page,
 }) => {
   await openConnect(page);
   await page.goBack();
-  await expect(
-    page.getByRole('region', { name: 'No agents yet' }),
-  ).toBeVisible();
+  await expect(list(page)).toBeVisible();
   await page.goForward();
   await page.getByRole('button', { name: 'Cancel' }).click();
-  await expect(
-    page.getByRole('region', { name: 'No agents yet' }),
-  ).toBeVisible();
+  await expect(list(page)).toBeVisible();
   // Leaving before the first call breaks nothing: the agent is there.
   await page.getByRole('button', { name: 'Connect an agent' }).first().click();
   await page.getByLabel('Name', { exact: true }).fill('quick-leave');
@@ -294,6 +308,10 @@ test('the connect page can be left at any step, and Back in the browser returns 
     page.getByRole('region', { name: 'Agent quick-leave' }),
   ).toBeVisible();
   // A second agent cannot take the same name.
+  await page
+    .getByRole('navigation', { name: 'Breadcrumb' })
+    .getByRole('link', { name: 'Agents' })
+    .click();
   await page.getByRole('button', { name: 'Connect an agent' }).first().click();
   await expect(page.getByLabel('Name', { exact: true })).toHaveValue(
     'my-agent',
@@ -320,9 +338,26 @@ for (const theme of ['Dark', 'Light'] as const)
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
     await page.getByRole('button', { name: 'Continue' }).click();
     await page.getByRole('button', { name: 'Create token' }).click();
-    await expect(
-      page.getByRole('region', { name: 'Claude Code command' }),
-    ).toBeVisible();
+    const command = page.getByRole('region', { name: 'Claude Code command' });
+    await expect(command).toBeVisible();
+    // The new step starts at its top, with the focus on its heading.
+    const stepHeading = page.getByRole('heading', {
+      name: /Paste this into Claude Code/,
+    });
+    await expect(stepHeading).toBeFocused();
+    await expect(stepHeading).toBeInViewport();
+    // Nothing covers the command that holds the token.
+    await command.scrollIntoViewIfNeeded();
+    expect(
+      await command.evaluate((pre) => {
+        const box = pre.getBoundingClientRect();
+        const top = document.elementFromPoint(
+          box.left + box.width / 2,
+          box.top + Math.min(box.height / 2, 20),
+        );
+        return !!top && pre.contains(top);
+      }),
+    ).toBe(true);
     expect(await fits()).toBe(true);
     // The command wraps: the whole token is on screen, no sideways scroll.
     const box = await page
@@ -352,24 +387,31 @@ test('an agent is given a token once on its page, paused, and deleted', async ({
   await page.getByRole('button', { name: 'Go to support-triage' }).click();
   const detail = page.getByRole('region', { name: 'Agent support-triage' });
   await expect(detail).toBeVisible();
-  // Choosing an agent moves to its detail, also for a keyboard user.
-  await expect(detail).toBeFocused();
-  // The list row: agent and owner badges, reach, level, tokens, state.
-  const row = page
-    .getByRole('table', { name: 'Agents' })
-    .getByRole('row')
-    .nth(1);
-  await expect(
-    row.getByRole('button', { name: /support-triage/ }),
-  ).toHaveAttribute('aria-current', 'true');
-  await expect(row.locator('.actor-badge[data-actor="agent"]')).toContainText(
+  // Choosing an agent moves to its page, also for a keyboard user.
+  const title = page.getByRole('heading', {
+    level: 1,
+    name: 'Agent support-triage',
+  });
+  await expect(title).toBeFocused();
+  // The header: the agent badge, its owner, its state, and how it is used.
+  await expect(title.locator('.actor-badge[data-actor="agent"]')).toContainText(
     'support-triage',
   );
-  await expect(row.locator('.actor-badge[data-actor="human"]')).toBeVisible();
-  await expect(row).toContainText('Read only');
-  await expect(row).toContainText('1 active');
-  await expect(row).toContainText('Active');
+  await expect(detail.locator('.agent-who')).toContainText('for');
+  await expect(detail.locator('.agent-who')).toContainText('You');
+  await expect(detail.locator('.agent-who')).toContainText('Active');
   await expect(detail).toContainText('Reads orders for support');
+  // What it can reach, at what level, and the verdicts for this agent.
+  const reach = detail.getByRole('region', { name: 'What it can reach' });
+  await expect(reach).toContainText('Read only.');
+  await expect(reach).toContainText('commerce-dev');
+  const answers = detail.getByRole('region', {
+    name: 'How the gate answers support-triage',
+  });
+  for (const word of ['Allowed', 'Masked', 'Held', 'Blocked'])
+    await expect(answers.getByText(word, { exact: true })).toBeVisible();
+  await expect(answers).toContainText('Reads on commerce-dev');
+  await expect(answers).toContainText('At read only, it cannot even ask.');
   // The guardrail texts say only what is true for every database.
   await expect(detail.getByText('Writes need a person')).toBeVisible();
   await expect(detail).toContainText(
@@ -402,6 +444,8 @@ test('an agent is given a token once on its page, paused, and deleted', async ({
   await expect(command).toContainText(
     'claude mcp add --transport http visp-gate',
   );
+  // The dialog shows the token; no toast is put over it.
+  await expect(page.getByText('Token created')).toHaveCount(0);
   const token = TOKEN.exec((await command.textContent())!)![0];
   // While the token shows, Escape does not lose it.
   await page.keyboard.press('Escape');
@@ -427,10 +471,26 @@ test('an agent is given a token once on its page, paused, and deleted', async ({
   ).toBeVisible();
   await expect(page.getByRole('dialog')).not.toContainText(token);
   await page.keyboard.press('Escape');
+  const tokens = detail.getByRole('table', { name: 'Tokens' });
   await expect(
-    detail.getByText(`vda_agent_••••${token.slice(-4)}`),
+    tokens.getByText(`vda_agent_••••${token.slice(-4)}`),
   ).toBeVisible();
-  await expect(row).toContainText('2 active');
+  await expect(
+    tokens.getByRole('button', { name: /^Revoke token ending/ }),
+  ).toHaveCount(2);
+  // The sessions list opens each session's page.
+  await expect(
+    detail
+      .getByRole('table', { name: 'Sessions' })
+      .getByRole('link', { name: /^Open session started / })
+      .first(),
+  ).toHaveAttribute(
+    'href',
+    /^\/agents\/[0-9a-f-]{36}\/sessions\/[0-9a-f-]{36}$/,
+    {
+      timeout: 15_000,
+    },
+  );
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await page.screenshot({
     path: 'screenshots/agents-dark.png',
@@ -444,20 +504,32 @@ test('an agent is given a token once on its page, paused, and deleted', async ({
     fullPage: true,
     animations: 'disabled',
   });
-  // Pause, resume, revoke, edit, delete.
-  await detail.getByRole('button', { name: 'Pause agent' }).click();
+  // Pause and resume: the focus stays on the button, which says the other.
+  const pause = detail.getByRole('button', { name: 'Pause agent' });
+  await pause.focus();
+  await page.keyboard.press('Enter');
   await expect(detail.getByText('This agent is paused')).toBeVisible();
-  await expect(row).toContainText('Paused');
-  await detail.getByRole('button', { name: 'Resume agent' }).click();
+  await expect(detail.locator('.agent-who')).toContainText('Paused');
+  const resume = detail.getByRole('button', { name: 'Resume agent' });
+  await expect(resume).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(detail.getByText('This agent is paused')).toHaveCount(0);
-  await detail
-    .getByRole('button', { name: /^Revoke token ending/ })
-    .first()
-    .click();
-  await expect(detail.getByRole('table', { name: 'Tokens' })).toContainText(
-    'Revoked',
-  );
-  await expect(row).toContainText('1 active');
+  await expect(
+    detail.getByRole('button', { name: 'Pause agent' }),
+  ).toBeFocused();
+  // Revoke: the focus goes to the next token that can still be revoked,
+  // then, with none left, to the list's heading.
+  const revokes = tokens.getByRole('button', { name: /^Revoke token ending/ });
+  await revokes.first().click();
+  await expect(tokens).toContainText('Revoked');
+  await expect(revokes).toHaveCount(1);
+  await expect(revokes.first()).toBeFocused();
+  await revokes.first().click();
+  await expect(revokes).toHaveCount(0);
+  await expect(
+    detail.getByRole('heading', { name: 'Tokens', exact: true }),
+  ).toBeFocused();
+  await expect(detail.locator('.agent-who')).toContainText('No token');
   await detail.getByRole('button', { name: 'Edit', exact: true }).click();
   // Nothing changed yet, so there is nothing to save.
   await expect(
@@ -469,14 +541,24 @@ test('an agent is given a token once on its page, paused, and deleted', async ({
     .getByRole('button', { name: 'Save', exact: true })
     .click();
   await expect(detail.getByText('50 queries / hour')).toBeVisible();
+  // The list row: agent and owner badges, reach, level, tokens, state.
+  await page
+    .getByRole('navigation', { name: 'Breadcrumb' })
+    .getByRole('link', { name: 'Agents' })
+    .click();
+  const row = list(page).getByRole('row').filter({ hasText: 'support-triage' });
+  await expect(row.locator('.actor-badge[data-actor="human"]')).toBeVisible();
+  await expect(row).toContainText('Read only');
+  await expect(row).toContainText('None active');
+  await expect(row).toContainText('No token');
+  await row.getByRole('link', { name: 'Agent support-triage' }).click();
   await detail.getByRole('button', { name: 'Delete', exact: true }).click();
   await page
     .getByRole('dialog')
     .getByRole('button', { name: 'Confirm', exact: true })
     .click();
-  await expect(
-    page.getByRole('region', { name: 'No agents yet' }),
-  ).toBeVisible();
+  await expect(list(page)).toBeVisible();
+  await expect(list(page)).not.toContainText('support-triage');
   // It works at a narrow width too.
   await page.setViewportSize({ width: 768, height: 1024 });
   expect(
@@ -485,6 +567,112 @@ test('an agent is given a token once on its page, paused, and deleted', async ({
     ),
   ).toBe(true);
 });
+
+test("an administrator sees another person's agent: its owner, its sessions, and only stop controls", async ({
+  page,
+}) => {
+  await page
+    .getByRole('navigation')
+    .getByRole('link', { name: 'Agents', exact: true })
+    .click();
+  const row = list(page)
+    .getByRole('row')
+    .filter({ hasText: 'support-assistant' });
+  await expect(row).toContainText('Jordan Lee');
+  // A token that made calls says when: never "not yet" next to a live
+  // session.
+  await expect(row).not.toContainText('Not yet');
+  await row.getByRole('link', { name: 'Agent support-assistant' }).click();
+  const detail = page.getByRole('region', { name: 'Agent support-assistant' });
+  await expect(detail.locator('.agent-who')).toContainText('Jordan Lee');
+  await expect(detail.locator('.agent-who')).toContainText(/Last call /);
+  await expect(detail.locator('.agent-who')).not.toContainText('No call yet');
+  // The owner shapes an agent; an administrator may only stop it.
+  await expect(detail.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+  await expect(
+    detail.getByRole('button', { name: 'Create token' }),
+  ).toHaveCount(0);
+  await expect(
+    detail.getByRole('button', { name: 'Pause agent' }),
+  ).toBeVisible();
+  await expect(
+    detail.getByRole('button', { name: 'Delete', exact: true }),
+  ).toBeVisible();
+  await expect(
+    detail.getByRole('region', {
+      name: 'How the gate answers support-assistant',
+    }),
+  ).toContainText('anything Jordan Lee cannot reach');
+  const tokens = detail.getByRole('table', { name: 'Tokens' });
+  await expect(tokens).not.toContainText('Not yet');
+  const sessions = detail.getByRole('table', { name: 'Sessions' });
+  await expect(sessions.getByRole('row')).toHaveCount(3);
+  await expect(sessions.getByText('Live', { exact: true })).toBeVisible();
+});
+
+for (const theme of ['Dark', 'Light'] as const)
+  test(`the agents list and an agent's page are cards on a phone, in ${theme.toLowerCase()}`, async ({
+    page,
+  }) => {
+    test.slow();
+    await setTheme(page, theme);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole('button', { name: 'Open navigation' }).click();
+    await page
+      .getByRole('navigation')
+      .getByRole('link', { name: 'Agents', exact: true })
+      .click();
+    await expect(list(page)).toBeVisible();
+    // No tooltip of the menu button is left open over the page.
+    await page.mouse.move(195, 820);
+    await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
+    // Every field of a row is on screen, named, with no sideways scroll.
+    const inView = (selector: string) =>
+      page.evaluate((what) => {
+        const main = document.querySelector('main.page')!;
+        const cells = [...document.querySelectorAll<HTMLElement>(what)];
+        return (
+          cells.length > 0 &&
+          main.scrollWidth <= main.clientWidth &&
+          document.documentElement.scrollWidth <= innerWidth &&
+          cells.every((cell) => {
+            const box = cell.getBoundingClientRect();
+            return box.width > 0 && box.left >= 0 && box.right <= innerWidth;
+          })
+        );
+      }, selector);
+    expect(await inView('table[aria-label="Agents"] td')).toBe(true);
+    // The header row is not shown; each cell names itself instead.
+    for (const label of [
+      'Owner',
+      'Reach',
+      'Level',
+      'Tokens',
+      'Last active',
+      'State',
+    ])
+      await expect(
+        list(page).locator(`td[data-label="${label}"]`).first(),
+      ).toBeVisible();
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await list(page)
+      .getByRole('link', { name: 'Agent support-assistant' })
+      .click();
+    const detail = page.getByRole('region', {
+      name: 'Agent support-assistant',
+    });
+    await expect(detail.getByRole('table', { name: 'Sessions' })).toBeVisible();
+    expect(await inView('table[aria-label="Sessions"] td')).toBe(true);
+    expect(await inView('table[aria-label="Tokens"] td')).toBe(true);
+    // The actions are reachable.
+    await detail
+      .getByRole('button', { name: /^Revoke token ending/ })
+      .scrollIntoViewIfNeeded();
+    await expect(
+      detail.getByRole('button', { name: /^Revoke token ending/ }),
+    ).toBeInViewport();
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  });
 
 test('the database setup check shows in sync, too open, and how to repair', async ({
   page,

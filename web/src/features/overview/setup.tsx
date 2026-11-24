@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useUser } from '../auth/session';
 import { Link } from 'react-router-dom';
-import { Bot, Check } from 'lucide-react';
+import { Check } from 'lucide-react';
 import type {
+  Agent,
   AuditEvent,
   Cluster,
   HistoryEntry,
@@ -19,6 +20,7 @@ import { Button, ErrorPanel, Skeleton } from '../../components/ui';
 export function SetupChecklist() {
   const user = useUser();
   const dismissalKey = `vda.setup.dismissed.${user?.id}`;
+  const [all, setAll] = useState(false);
   const [dismissed, setDismissed] = useState(() => {
     try {
       return localStorage.getItem(dismissalKey) === '1';
@@ -31,30 +33,22 @@ export function SetupChecklist() {
     history = useResource<Page<HistoryEntry>>('/history?status=ok&limit=1'),
     audit = useResource<Page<AuditEvent>>(
       '/audit?action=policy.update&limit=50',
-    );
+    ),
+    // An administrator lists every agent: one is enough to check it off.
+    agents = useResource<Page<Agent>>('/agents?limit=1');
   if (dismissed) return null;
-  if (
-    clusters.isPending ||
-    users.isPending ||
-    history.isPending ||
-    audit.isPending
-  )
-    return <Skeleton />;
-  const error = clusters.error ?? users.error ?? history.error ?? audit.error;
+  const reads = [clusters, users, history, audit, agents];
+  if (reads.some((read) => read.isPending)) return <Skeleton />;
+  const error = reads.find((read) => read.error)?.error;
   if (error)
     return (
       <ErrorPanel
         error={error}
-        retry={() => {
-          void clusters.refetch();
-          void users.refetch();
-          void history.refetch();
-          void audit.refetch();
-        }}
+        retry={() => reads.forEach((read) => void read.refetch())}
       />
     );
   const clusterIds = new Set(clusters.data?.items.map((c) => c.id));
-  const complete = setupSteps({
+  const [database, policy, teammate, query] = setupSteps({
     clusters: clusters.data?.items.length ?? 0,
     policiesReviewed: new Set(
       audit.data?.items
@@ -64,6 +58,13 @@ export function SetupChecklist() {
     users: users.data?.items.filter((member) => !member.disabled).length ?? 0,
     queries: history.data?.items.length ?? 0,
   });
+  const complete = [
+    !!database,
+    !!policy,
+    (agents.data?.items.length ?? 0) > 0,
+    !!teammate,
+    !!query,
+  ];
   if (complete.every(Boolean)) return null;
   const dismiss = () => {
     try {
@@ -86,6 +87,12 @@ export function SetupChecklist() {
       to: cluster ? `/clusters/${cluster.id}?tab=policy` : '/clusters?add=true',
     },
     {
+      title: 'Connect an agent',
+      detail:
+        'Give Claude Code, Cursor or another MCP client its own token. Its calls go through the guard.',
+      to: '/agents?connect=1',
+    },
+    {
       title: 'Invite a teammate',
       detail: 'Someone else to review the writes that are held.',
       to: '/users?add=true',
@@ -99,7 +106,11 @@ export function SetupChecklist() {
   const done = complete.filter(Boolean).length;
   const next = complete.findIndex((step) => !step);
   return (
-    <section className="ov-setup" aria-label="Workspace setup">
+    <section
+      className="ov-setup"
+      aria-label="Workspace setup"
+      data-all={all || undefined}
+    >
       <header className="ov-setup-head">
         <div>
           <h2>Set up the gate</h2>
@@ -160,14 +171,16 @@ export function SetupChecklist() {
           );
         })}
       </ol>
-      <p className="ov-setup-agent">
-        <Bot size={15} aria-hidden />
-        <span>
-          Letting an AI agent query a database? Give it its own token, so every
-          call it makes is checked and on record.
-        </span>
-        <Link to="/agents?connect=1">Connect an agent</Link>
-      </p>
+      {/* On a phone only the next step shows, so that setup does not fill
+          the first screen; this shows the others. */}
+      <button
+        type="button"
+        className="ov-setup-all"
+        aria-expanded={all}
+        onClick={() => setAll(!all)}
+      >
+        {all ? 'Show the next step only' : `Show all ${steps.length} steps`}
+      </button>
     </section>
   );
 }

@@ -11,9 +11,10 @@ import type {
 import type { GateVerdict } from '../../lib/verdict';
 
 /** `GET /overview`. The 24-hour counts cover the clusters the caller can
- * reach, people's and agents' queries alike. `blocked_24h` counts every
- * history row with status `blocked`: refused statements and writes stopped
- * for approval. `pending_approvals` is a count of right now, not of 24 h. */
+ * reach, people's and agents' queries alike. `blocked_24h` counts the
+ * history rows with status `blocked`: statements the guard refused, and
+ * writes it stopped because they need a person. `errors_24h` counts status
+ * `error`. `pending_approvals` is a count of right now, not of 24 h. */
 export type Overview = {
   clusters_total: number;
   healthy: number;
@@ -32,6 +33,8 @@ export type Overview = {
 export type GateTile = {
   verdict: GateVerdict;
   count: number;
+  /** The time the count covers, said on the tile. */
+  window: '24 h' | 'Now';
   /** One line under the number, in the users' words. */
   meaning: string;
   /** Where the matching list is. */
@@ -40,37 +43,50 @@ export type GateTile = {
   note?: string;
 };
 
-const plural = (n: number, one: string, many = `${one}s`) =>
-  `${n.toLocaleString('en')} ${n === 1 ? one : many}`;
+/** Statements of the last 24 hours that the guard let through and that did
+ * not fail: `queries_24h` less `blocked_24h` (status `blocked`) and
+ * `errors_24h` (status `error`). That is the History list of status `ok`,
+ * except runs still going, cancelled or of unknown outcome: the API does
+ * not count those apart. */
+export const allowedCount = (data: Overview) =>
+  Math.max(0, data.queries_24h - data.blocked_24h - data.errors_24h);
 
-/** One tile per verdict the API can back. There is no masked count and no
- * split of held from refused statements, so Masked has no tile and the
- * Blocked tile says that held writes are in it. */
+/** One tile per verdict the API can back, each saying the time it covers.
+ * There is no masked count, so Masked has no tile. Held counts the requests
+ * that wait now; Allowed and Blocked count statements of the last 24 hours. */
 export function gateTiles(data: Overview): GateTile[] {
-  const allowed = Math.max(0, data.queries_24h - data.blocked_24h);
+  const allowed = allowedCount(data);
   return [
     {
       verdict: 'allowed',
       count: allowed,
-      meaning: allowed ? 'let through by the guard' : 'Nothing ran in 24 hours',
+      window: '24 h',
+      meaning: allowed
+        ? 'let through, and did not fail'
+        : 'Nothing ran in 24 hours',
       to: '/history?status=ok',
       note: data.errors_24h
-        ? `${plural(data.errors_24h, 'query', 'queries')} then failed on the database`
+        ? `${data.errors_24h.toLocaleString('en')} more let through, then failed on the database`
         : undefined,
     },
     {
       verdict: 'held',
       count: data.pending_approvals,
-      meaning: data.pending_approvals
-        ? 'wait for a person right now'
-        : 'Nobody is waiting for a review',
+      window: 'Now',
+      meaning:
+        data.pending_approvals === 0
+          ? 'Nobody is waiting for a review'
+          : data.pending_approvals === 1
+            ? 'request waits for a person'
+            : 'requests wait for a person',
       to: '/approvals',
     },
     {
       verdict: 'blocked',
       count: data.blocked_24h,
+      window: '24 h',
       meaning: data.blocked_24h
-        ? 'stopped by the guard, held writes included'
+        ? 'stopped by the guard'
         : 'Nothing blocked in 24 hours',
       to: '/history?status=blocked',
     },

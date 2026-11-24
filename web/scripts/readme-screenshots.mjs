@@ -155,10 +155,12 @@ await page.getByText('First call arrived').waitFor({ timeout: 30000 });
 await shot('connect-agent', mainArea());
 
 // An agent's session: the trail, with a refused step and what the agent
-// was told. The ended session has one.
+// was told. The demo agent's session of yesterday has one; a new agent has
+// no session from before its token.
 await page.getByRole('button', { name: 'Done' }).click();
+await go('/agents?agent=00000000-0000-4000-8000-000000000900');
 const sessions = page
-  .getByRole('region', { name: 'Agent support-triage' })
+  .getByRole('region', { name: 'Agent support-assistant' })
   .getByRole('table', { name: 'Sessions' });
 await sessions.waitFor({ timeout: 30000 });
 await sessions
@@ -167,7 +169,7 @@ await sessions
   .getByRole('link', { name: /^Open session started / })
   .click();
 const trail = page.getByRole('region', {
-  name: 'Session of support-triage',
+  name: 'Session of support-assistant',
 });
 const steps = trail.getByRole('list', { name: 'Steps' }).getByRole('listitem');
 await steps.nth(5).waitFor({ timeout: 30000 });

@@ -1,7 +1,7 @@
 // "Connect an agent": a page in four steps, from nothing to the agent's
 // first guarded call. The agent and its token are made at step three; the
 // token lives only in this component and is gone when the page closes.
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -107,19 +107,60 @@ export function snippetFor(client: Client, token: string, url = mcpUrl()) {
 /** A first thing to ask, which makes the agent call the gate once. */
 export const FIRST_PROMPT = `List the databases you can use through ${SERVER_NAME}.`;
 
+/** Copy, and say what happened on the spot rather than in a toast: nothing
+ * may cover a one-time token. The answer is spoken once. */
+export function useInlineCopy() {
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  useEffect(() => {
+    if (state !== 'copied') return;
+    const timer = setTimeout(() => setState('idle'), 2500);
+    return () => clearTimeout(timer);
+  }, [state]);
+  const copy = async (text: string) => {
+    try {
+      if (!navigator.clipboard) throw new Error('unavailable');
+      await navigator.clipboard.writeText(text);
+      setState('copied');
+    } catch {
+      setState('failed');
+    }
+  };
+  return { state, copy };
+}
+
+/** What the copy did, in a live region next to the button. */
+export function CopyResult({ state }: { state: 'idle' | 'copied' | 'failed' }) {
+  return (
+    <span className="connect-copied" role="status" data-state={state}>
+      {state === 'copied'
+        ? 'Copied'
+        : state === 'failed'
+          ? 'Could not copy. Select it yourself.'
+          : ''}
+    </span>
+  );
+}
+
 /** A snippet with the token marked, and its own Copy button. */
 export function Snippet({ client, token }: { client: Client; token: string }) {
-  const copy = useCopy();
+  const { state, copy } = useInlineCopy();
   const snippet = snippetFor(client, token);
   const [before, after] = splitOnce(snippet.text, token);
   return (
     <figure className="connect-snippet" data-client={client}>
       <figcaption>
         <span className="connect-snippet-title">{snippet.title}</span>
-        <Button size="small" onClick={() => void copy(snippet.text)}>
-          <Copy size={14} aria-hidden="true" />
-          Copy
-        </Button>
+        <span className="connect-copy">
+          <CopyResult state={state} />
+          <Button size="small" onClick={() => void copy(snippet.text)}>
+            {state === 'copied' ? (
+              <Check size={14} aria-hidden="true" />
+            ) : (
+              <Copy size={14} aria-hidden="true" />
+            )}
+            Copy
+          </Button>
+        </span>
       </figcaption>
       {/* A scrolling region: keyboard users focus it to scroll a long line. */}
       <pre tabIndex={0} role="region" aria-label={snippet.label}>
@@ -229,9 +270,23 @@ export function ConnectWizard({
     [client, setClient] = useState<Client>('claude-code');
   const [agent, setAgent] = useState<Agent | null>(null),
     [token, setToken] = useState<NewAgentToken | null>(null);
-  const save = useAction<Agent>('Agent connected', { quietErrors: true }),
-    mint = useAction<NewAgentToken>('Token created', { quietErrors: true });
+  // No toast: the next step itself shows the agent and its token, and a
+  // toast could cover the command that holds the token. Errors show in place.
+  const save = useAction<Agent>('', { quietErrors: true }),
+    mint = useAction<NewAgentToken>('', { quietErrors: true });
   const busy = save.isPending || mint.isPending;
+  // A new step starts at its top, with the focus on its heading: on a phone
+  // the button that moved on is far below it.
+  const panel = useRef<HTMLElement>(null),
+    stepHeading = useRef<HTMLHeadingElement>(null),
+    shownStep = useRef(step);
+  useEffect(() => {
+    if (shownStep.current === step) return;
+    shownStep.current = step;
+    const narrow = globalThis.matchMedia?.('(max-width: 700px)').matches;
+    panel.current?.scrollIntoView({ block: narrow ? 'start' : 'nearest' });
+    stepHeading.current?.focus({ preventScroll: true });
+  }, [step]);
   const taken = ownNames.some(
     (other) => other.toLowerCase() === name.trim().toLowerCase(),
   );
@@ -319,10 +374,11 @@ export function ConnectWizard({
       </ol>
       <div className="connect-body">
         <section
+          ref={panel}
           className="connect-panel"
           aria-labelledby="connect-step-heading"
         >
-          <h2 id="connect-step-heading">
+          <h2 id="connect-step-heading" ref={stepHeading} tabIndex={-1}>
             <span className="sr-only">
               Step {step + 1} of {STEPS.length}:{' '}
             </span>
@@ -591,6 +647,59 @@ function Choice({
   );
 }
 
+/** The four verdicts in one agent's terms: what it can reach and at which
+ * level. Its owner's reach is the ceiling ("anything you cannot reach"),
+ * so `owner` names that person when it is not the reader. */
+export function GateAnswers({
+  level,
+  databases,
+  unseen = 0,
+  owner,
+}: {
+  level: 'read' | 'write';
+  databases: Pick<Cluster, 'name'>[];
+  /** Databases of the agent that the reader cannot see. */
+  unseen?: number;
+  owner?: string;
+}) {
+  const count = databases.length + unseen;
+  return (
+    <ul className="connect-answers">
+      <li>
+        <VerdictChip verdict="allowed" />
+        <span>
+          Reads on{' '}
+          {count === 0
+            ? 'the databases you pick'
+            : databases.length === 1 && unseen === 0
+              ? databases[0]!.name
+              : `${count} databases`}
+          , within their row and time limits.
+        </span>
+      </li>
+      <li>
+        <VerdictChip verdict="masked" />
+        <span>Protected columns come back hidden.</span>
+      </li>
+      <li>
+        <VerdictChip verdict="held" />
+        <span>
+          {level === 'write'
+            ? 'A write it asks for waits for a person to approve.'
+            : 'Writes never run. At read only, it cannot even ask.'}
+        </span>
+      </li>
+      <li>
+        <VerdictChip verdict="blocked" />
+        <span>
+          Blocked tables, and anything{' '}
+          {owner ? `${owner} cannot` : 'you cannot'} reach.
+        </span>
+      </li>
+    </ul>
+  );
+}
+
 /** What the gate will answer this agent: the four verdicts, in its terms. */
 function GateCard({
   name,
@@ -612,36 +721,7 @@ function GateCard({
       <h2>
         How the gate answers <span className="identifier">{name}</span>
       </h2>
-      <ul className="connect-answers">
-        <li>
-          <VerdictChip verdict="allowed" />
-          <span>
-            Reads on{' '}
-            {databases.length === 0
-              ? 'the databases you pick'
-              : databases.length === 1
-                ? databases[0]!.name
-                : `${databases.length} databases`}
-            , within their row and time limits.
-          </span>
-        </li>
-        <li>
-          <VerdictChip verdict="masked" />
-          <span>Protected columns come back hidden.</span>
-        </li>
-        <li>
-          <VerdictChip verdict="held" />
-          <span>
-            {level === 'write'
-              ? 'A write it asks for waits for a person to approve.'
-              : 'Writes never run. At read only, it cannot even ask.'}
-          </span>
-        </li>
-        <li>
-          <VerdictChip verdict="blocked" />
-          <span>Blocked tables, and anything you cannot reach.</span>
-        </li>
-      </ul>
+      <GateAnswers level={level} databases={databases} />
       <dl className="connect-facts">
         <div>
           <dt>Acts for</dt>
