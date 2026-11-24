@@ -12,8 +12,12 @@ Three rules decide every colour:
 2. **Blue means "you can act here".** One action blue marks primary buttons,
    the selected item, switches that are on, and the focused control. It never
    marks risk, and nothing else is blue except SQL keywords in the editor.
-3. **Strong colour means risk.** Environments and verdicts share one safer →
-   riskier ladder (mint, amber, coral). Words and shapes always carry the
+3. **Strong colour means risk.** Verdicts take the hues (Allowed green, Masked
+   violet, Held amber, Blocked red). Environments never do: they are slate,
+   told apart by weight and pattern (production ink with hazard stripes,
+   staging a slate outline, development quiet), and shaped as a square
+   uppercase tag where a verdict is a rounded chip with an icon. Environment
+   is where; a verdict is what the gate decided. Words and shapes always carry the
    meaning alongside colour. Health is neutral when healthy; Degraded (amber
    square) and Down (coral hollow dot and word) take risk colour because an
    unavailable database is a risk. A cloud label is plain text with no colour.
@@ -44,13 +48,18 @@ independent palettes.
 | Action, hover     | `--action-hover`     | `#2C4BAB` | `#A6C0FF` |
 | Action, soft      | `--action-soft`      | `#E8EDFB` | `#1C2740` |
 | On action         | `--on-action`        | `#FFFFFF` | `#0E1217` |
-| Development       | `--env-dev-text`     | `#17755F` | `#5FD0B3` |
-| Development soft  | `--env-dev-soft`     | `#E2F3EE` | `#12302B` |
-| Staging           | `--env-staging-text` | `#8A5A0B` | `#EDB95E` |
-| Staging soft      | `--env-staging-soft` | `#FBF0D9` | `#33290F` |
-| Production        | `--env-prod`         | `#C22F3C` | `#FF9AA0` |
-| Production soft   | `--env-prod-soft`    | `#FBE9EB` | `#3A1D22` |
+| Success (status)  | `--env-dev-text`     | `#17755F` | `#5FD0B3` |
+| Success soft      | `--env-dev-soft`     | `#E2F3EE` | `#12302B` |
+| Warning (status)  | `--env-staging-text` | `#8A5A0B` | `#EDB95E` |
+| Warning soft      | `--env-staging-soft` | `#FBF0D9` | `#33290F` |
+| Danger (status)   | `--env-prod`         | `#C22F3C` | `#FF9AA0` |
+| Danger soft       | `--env-prod-soft`    | `#FBE9EB` | `#3A1D22` |
 | Production action | `--env-prod-action`  | `#C22F3C` | `#FF8087` |
+| Env: production   | `--env-prod-fill`    | `#1D242D` | `#E4E9EF` |
+| Env: staging      | `--env-staging-fill` | `#E3E8EE` | `#26303B` |
+| Env: staging text | `--env-staging-ink`  | `#2F3A47` | `#D5DCE4` |
+| Env: dev text     | `--env-dev-ink`      | `#4A5665` | `#AAB4C0` |
+| Env: staging rail | `--env-rail-staging` | `#6B7785` | `#8794A2` |
 | On risk           | `--on-risk`          | `#FFFFFF` | `#0E1217` |
 | Selection         | `--selection`        | `#D6DEF5` | `#2B3A5C` |
 | Syntax keyword    | `--syntax-keyword`   | `#3559C7` | `#8FB0FF` |
@@ -124,12 +133,12 @@ security policy does not allow inline scripts.
 Everything right of the sidebar and below the top bar, on every cluster tab and
 the selected-cluster console, carries one band across its top edge:
 
-- Production: an 8px band of static −45° red/soft-red diagonal stripes (6px on
-  phones).
-- Staging: a 4px solid amber band.
-- Development: a 2px muted teal line.
+- Production: an 8px band of static −45° ink/ground diagonal stripes
+  (`--env-rail-prod`; 6px on phones).
+- Staging: a 4px solid slate band (`--env-rail-staging`).
+- Development: a 2px faint line (`--env-rail-dev`).
 
-Width and pattern encode risk independently of hue. Nothing animates. Clusters
+Width and pattern encode risk; no environment uses a verdict hue. Nothing animates. Clusters
 inventory group headings repeat the treatment as a small swatch. The compact
 header has the cluster name, environment word, health/latency, mono host (hidden
 on phones; available in Settings and on hover), access and an inline drift link.

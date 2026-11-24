@@ -111,8 +111,9 @@ if (root)
         <Tooltip.Provider delayDuration={300}>
           <ThemeProvider>
             <PreferencesProvider>
-              <ToastProvider>
-                <BrowserRouter>
+              {/* Inside the router: a toast closes when the page changes. */}
+              <BrowserRouter>
+                <ToastProvider>
                   <RouteBoundary>
                     <Routes>
                       <Route path="/login" element={<Login />} />
@@ -208,8 +209,8 @@ if (root)
                       </Route>
                     </Routes>
                   </RouteBoundary>
-                </BrowserRouter>
-              </ToastProvider>
+                </ToastProvider>
+              </BrowserRouter>
             </PreferencesProvider>
           </ThemeProvider>
         </Tooltip.Provider>

@@ -68,8 +68,9 @@ describe('verdict vocabulary', () => {
   it('maps every approval status', () => {
     const table: [Approval['status'], string | undefined][] = [
       ['pending', 'held'],
-      ['approved', 'allowed'],
-      ['executing', 'allowed'],
+      // Approved or running: nothing has run yet, so it is not Allowed.
+      ['approved', undefined],
+      ['executing', undefined],
       ['executed', 'allowed'],
       ['rejected', 'blocked'],
       ['failed', undefined],

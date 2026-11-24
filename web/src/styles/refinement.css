@@ -1170,23 +1170,20 @@ textarea {
 /* The environment band stays immediately below the scrolling chrome. */
 .environment-frame {
   --band-height: 2px;
-  --band-fill: var(--env-dev-rail);
+  /* Environment slate, never a verdict hue (see tokens.css). */
+  --band-fill: var(--env-rail-dev);
   border-top-color: transparent;
   border-image: none;
 }
 .environment-frame[data-environment='production'] {
   --band-height: 8px;
-  --band-fill: repeating-linear-gradient(
-    -45deg,
-    var(--env-prod) 0 7px,
-    var(--env-prod-soft) 7px 14px
-  );
+  --band-fill: var(--env-rail-prod);
   border-image: none;
   border-top-color: transparent;
 }
 .environment-frame[data-environment='staging'] {
   --band-height: 4px;
-  --band-fill: var(--env-staging);
+  --band-fill: var(--env-rail-staging);
   border-top-color: transparent;
 }
 .environment-frame[data-environment='development'] {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Link2, X } from 'lucide-react';
+import { ArrowLeft, Link2, MessageSquarePlus, X } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   useInfiniteQuery,
@@ -8,6 +8,7 @@ import {
 } from '@tanstack/react-query';
 import type { Approval, Cluster, Page } from '../../api/types';
 import { params, request } from '../../api/client';
+import { ApiError } from '../../api/errors';
 import { useAction, useResource } from '../../lib/query';
 import {
   ActorBadge,
@@ -45,6 +46,13 @@ import { ReceiptSection } from './receipt';
 import { ApprovalResult } from './result';
 import { ChecksSection, StatementSection } from './statement';
 import { nextStep, timelineOf, type Step } from './decision';
+
+/** A request that does not exist, or that this person may not open. */
+const isMissing = (error: unknown) =>
+  error instanceof ApiError && (error.status === 404 || error.status === 403);
+/** Short or narrow screens: the header scrolls away under a one-line
+ * status, and the decision bar is one row with the note behind a button. */
+const COMPACT_DECISION = '(max-width: 760px), (max-height: 760px)';
 
 const TABS = ['pending', 'approved', 'mine', 'all'] as const;
 const tabLabel = (tab: string) => tab.charAt(0).toUpperCase() + tab.slice(1);
@@ -102,18 +110,22 @@ export function ApprovalsPage() {
     [clusters.data],
   );
   const view = narrow ? (selected ? 'detail' : 'list') : 'split';
-  // Back to the list on a narrow screen: focus the request just left, once
-  // the list is shown again.
+  // Back to the list, or the request closed: focus the request just left
+  // once the list shows again, or the list when that row is gone (it moved
+  // to another tab). Focus never falls to the page.
   const returnTo = useRef<string | null>(null);
+  const listPane = useRef<HTMLDivElement>(null);
   const back = () => {
     returnTo.current = selected;
     setSelected(null);
   };
   useEffect(() => {
-    if (view !== 'list' || !returnTo.current) return;
-    document.getElementById(`row-${returnTo.current}`)?.focus();
+    if (selected || !returnTo.current) return;
+    const row = document.getElementById(`row-${returnTo.current}`);
+    const list = listPane.current?.querySelector<HTMLElement>('.ar-list');
+    (row ?? list ?? listPane.current)?.focus();
     returnTo.current = null;
-  }, [view]);
+  }, [selected, view]);
   return (
     <div className="ar-page" data-view={view}>
       <div className="ar-head">
@@ -170,7 +182,7 @@ export function ApprovalsPage() {
         }))}
       >
         <div className="ar-split">
-          <div className="ar-list-pane">
+          <div className="ar-list-pane" ref={listPane} tabIndex={-1}>
             <p className="ar-count" role="status">
               {query.isPending
                 ? 'Loading requests…'
@@ -205,7 +217,7 @@ export function ApprovalsPage() {
                 }
               />
             ) : (
-              <ul className="ar-list" aria-label="Approval inbox">
+              <ul className="ar-list" aria-label="Approval inbox" tabIndex={-1}>
                 {items.map((approval) => (
                   <li key={approval.id}>
                     <RequestRow
@@ -240,7 +252,7 @@ export function ApprovalsPage() {
                 key={selected}
                 id={selected}
                 narrow={narrow}
-                onClose={narrow ? back : () => setSelected(null)}
+                onClose={back}
                 note={notes[selected] ?? ''}
                 setNote={(note) =>
                   setNotes((notes) => ({ ...notes, [selected]: note }))
@@ -270,16 +282,22 @@ const statusTone: Record<Approval['status'], string> = {
   withdrawn: 'neutral',
   expired: 'neutral',
 };
-/** The status of a request in words: for endings that are not a verdict. */
+/** Statuses whose bare word would mislead: approved has not run yet. */
+const statusWords: Partial<Record<Approval['status'], string>> = {
+  approved: 'Approved — not run yet',
+  executing: 'Running',
+};
+/** The status of a request in words: for states that are not a verdict
+ * (approved and running: nothing has run yet; and endings without one). */
 export function ApprovalBadge({ status }: { status: Approval['status'] }) {
   return (
     <Badge variant="status" tone={statusTone[status]}>
-      {status}
+      {statusWords[status] ?? status}
     </Badge>
   );
 }
 
-/** The verdict of a request, or its status when it ended without one. */
+/** The verdict of a request, or its status when it has none. */
 function RequestState({
   status,
   size = 'sm',
@@ -352,7 +370,9 @@ function RequestRow({
       </span>
       <span className="ar-row-line ar-row-meta">
         {cluster && <EnvBadge environment={cluster.environment} />}
-        <span className="ar-row-cluster">{approval.cluster_name}</span>
+        <span className="ar-row-cluster" title={approval.cluster_name}>
+          {approval.cluster_name}
+        </span>
         <RiskMeter risk={approval.analysis.risk} compact />
         <RequestEnd approval={approval} />
       </span>
@@ -365,19 +385,14 @@ function RequestRow({
 
 /** In a list row: when it expires while it can still run, else how it ended. */
 function RequestEnd({ approval }: { approval: Approval }) {
+  // The state badge already says "Approved — not run yet" or "Running".
   if (awaitsAction(approval))
     return (
       <span className="ar-row-end">
-        {approval.status === 'approved' && 'Approved · '}
         <ExpiryTime value={approval.expires_at} />
       </span>
     );
-  if (approval.status === 'executing')
-    return (
-      <span className="ar-row-end">
-        <ApprovalBadge status="executing" />
-      </span>
-    );
+  if (approval.status === 'executing') return null;
   const ended = endedAt(approval);
   if (!ended) return null;
   // "Ran just now", "Failed 3 min ago": the list refetches, so this stays fresh.
@@ -472,7 +487,22 @@ function ApprovalDetail({
   if (approval.error)
     return (
       <div className="ar-loading">
-        <ErrorPanel error={approval.error} />
+        {isMissing(approval.error) ? (
+          // A bad or old link, or a request this person may not open: the
+          // server answers the same, so the screen says both. Retrying
+          // cannot help.
+          <Empty
+            title="This request is not here (or you cannot see it)"
+            description="It may never have existed, or only its requester and the admins of its cluster can open it."
+            action={
+              <Button onClick={onClose}>
+                <ArrowLeft size={15} aria-hidden="true" /> All requests
+              </Button>
+            }
+          />
+        ) : (
+          <ErrorPanel error={approval.error} />
+        )}
       </div>
     );
   return (
@@ -518,9 +548,31 @@ function Decision({
   const [confirming, setConfirming] = useState<
     'execute' | 'run' | 'withdraw' | null
   >(null);
-  const action = useAction<Approval>('Approval updated');
+  // No toasts: the header and the timeline already say what happened, and a
+  // failure is explained in place, above the bar.
+  const action = useAction<Approval>('', { quietErrors: true });
   const cache = useQueryClient();
   const preview = usePreview(data);
+  const compact = useMedia(COMPACT_DECISION);
+  // On a compact bar the note opens on demand; a note with text stays open.
+  const [noteOpen, setNoteOpen] = useState(false);
+  // Reject was pressed without a note: the field says why it is needed.
+  const [noteAsked, setNoteAsked] = useState(false);
+  const noteRef = useRef<HTMLTextAreaElement>(null);
+  const showNote = !compact || noteOpen || !!note.trim() || noteAsked;
+  const openNote = () => {
+    setNoteOpen(true);
+    // The field mounts on this render; focus it once it is there.
+    requestAnimationFrame(() => noteRef.current?.focus());
+  };
+  const reject = () => {
+    if (!note.trim()) {
+      setNoteAsked(true);
+      openNote();
+      return;
+    }
+    act('reject', { note });
+  };
   // One action at a time: a second click cannot send a second request
   // before the screen has caught up with the first.
   const lock = useRef(false);
@@ -599,6 +651,9 @@ function Decision({
       ? failure
       : null;
   const hasBar = canReview || canExecute || canWithdraw || offerPreview;
+  const readers = data.agent
+    ? `The requester and the agent ${data.agent.name} can read this note.`
+    : 'The requester can read this note.';
   const busy = action.isPending || preview.busy;
   return (
     <div
@@ -606,23 +661,33 @@ function Decision({
       data-focus-return
       data-verdict={step.verdict ?? 'none'}
       data-environment={cluster?.environment}
+      data-compact={compact || undefined}
     >
+      {/* On a compact screen the top line stays as a slim status while the
+          title and the rest of the header scroll away with the body. */}
       <header className="ar-header">
         <div className="ar-header-top">
           {narrow && (
-            <Button variant="ghost" size="small" onClick={onClose}>
-              <ArrowLeft size={15} aria-hidden="true" /> All requests
+            <Button
+              variant="ghost"
+              size="small"
+              aria-label="All requests"
+              onClick={onClose}
+            >
+              <ArrowLeft size={15} aria-hidden="true" />
+              <span className="ar-tool-word">All requests</span>
             </Button>
           )}
           <RequestState status={data.status} size="md" />
-          <RiskMeter risk={data.analysis.risk} />
+          <RiskMeter risk={data.analysis.risk} compact={compact} />
           <span className="ar-header-tools">
             <Link
               className="button ghost small"
               to={`/approvals?id=${id}`}
               aria-label="Permalink to this approval"
             >
-              <Link2 size={14} aria-hidden="true" /> Permalink
+              <Link2 size={14} aria-hidden="true" />
+              <span className="ar-tool-word">Permalink</span>
             </Link>
             {!narrow && (
               <Button aria-label="Close approval" onClick={onClose}>
@@ -691,19 +756,25 @@ function Decision({
         </div>
       )}
       {hasBar && (
-        <footer className="ar-bar approval-actions" aria-label="Decision">
-          {canReview && (
-            <div className="ar-note-field">
+        <footer
+          className="ar-bar approval-actions"
+          aria-label="Decision"
+          data-compact={compact || undefined}
+        >
+          {canReview && showNote && (
+            <div className="ar-note-field" id={`note-${id}`}>
               <Field
                 label="Review note"
-                hint={`Required when rejecting a request. ${
-                  data.agent
-                    ? `The requester and the agent ${data.agent.name} can read this note.`
-                    : 'The requester can read this note.'
-                }`}
+                hint={
+                  noteAsked && !note.trim()
+                    ? `Write why you reject it, then press Reject again. ${readers}`
+                    : `Required when rejecting a request. ${readers}`
+                }
               >
                 <textarea
+                  ref={noteRef}
                   value={note}
+                  aria-invalid={(noteAsked && !note.trim()) || undefined}
                   onChange={(e) => setNote(e.target.value)}
                   rows={1}
                 />
@@ -715,10 +786,29 @@ function Decision({
               <p className="approval-blocked" id={`approve-blocked-${id}`}>
                 {agentDeleted
                   ? 'The agent that asked was deleted: reject it, or let it expire.'
-                  : 'Preview it before you approve it. Nothing has run yet.'}
+                  : compact
+                    ? 'Preview it before you approve it.'
+                    : 'Preview it before you approve it. Nothing has run yet.'}
               </p>
             )}
             <div className="ar-button-row">
+              {canReview && compact && !note.trim() && (
+                <Button
+                  variant="ghost"
+                  className="ar-note-toggle"
+                  aria-expanded={showNote}
+                  aria-controls={showNote ? `note-${id}` : undefined}
+                  onClick={() => {
+                    if (showNote) {
+                      setNoteOpen(false);
+                      setNoteAsked(false);
+                    } else openNote();
+                  }}
+                >
+                  <MessageSquarePlus size={15} aria-hidden="true" />
+                  {showNote ? 'Hide note' : 'Add note'}
+                </Button>
+              )}
               {canWithdraw && (
                 <Button
                   disabled={busy}
@@ -729,36 +819,45 @@ function Decision({
               )}
               {canReview && (
                 <>
-                  <Button
-                    variant="danger"
-                    disabled={busy || !note.trim()}
-                    onClick={() => act('reject', { note })}
-                  >
+                  {/* Reject needs a note: without one it asks for it. */}
+                  <Button variant="danger" disabled={busy} onClick={reject}>
                     {action.isPending ? 'Saving…' : 'Reject'}
                   </Button>
-                  <Button
-                    disabled={busy || previewFirst}
-                    aria-describedby={
-                      previewFirst ? `approve-blocked-${id}` : undefined
-                    }
-                    onClick={() => setConfirming('run')}
-                  >
-                    Approve and run
-                  </Button>
-                  <Button
-                    variant={previewFirst ? 'secondary' : 'primary'}
-                    disabled={busy || previewFirst}
-                    aria-describedby={
-                      previewFirst ? `approve-blocked-${id}` : undefined
-                    }
-                    onClick={() => act('approve', { note })}
-                  >
-                    {action.isPending ? 'Saving…' : 'Approve'}
-                  </Button>
+                  {/* A compact bar leaves out what cannot be used yet. */}
+                  {!(compact && previewFirst) && (
+                    <>
+                      <Button
+                        disabled={busy || previewFirst}
+                        aria-describedby={
+                          previewFirst ? `approve-blocked-${id}` : undefined
+                        }
+                        onClick={() => setConfirming('run')}
+                      >
+                        Approve and run
+                      </Button>
+                      <Button
+                        variant={previewFirst ? 'secondary' : 'primary'}
+                        disabled={busy || previewFirst}
+                        aria-describedby={
+                          previewFirst ? `approve-blocked-${id}` : undefined
+                        }
+                        onClick={() => act('approve', { note })}
+                      >
+                        {action.isPending ? 'Saving…' : 'Approve'}
+                      </Button>
+                    </>
+                  )}
                 </>
               )}
               {offerPreview && (
-                <Button variant="primary" disabled={busy} onClick={preview.ask}>
+                <Button
+                  variant="primary"
+                  disabled={busy}
+                  aria-describedby={
+                    canReview && compact ? `approve-blocked-${id}` : undefined
+                  }
+                  onClick={preview.ask}
+                >
                   {preview.busy ? 'Previewing…' : 'Preview'}
                 </Button>
               )}
@@ -815,6 +914,8 @@ function Decision({
  * where they belong. */
 function Timeline({ approval, live }: { approval: Approval; live: boolean }) {
   const steps = timelineOf(approval, live);
+  // No heading without steps under it.
+  if (steps.length === 0) return null;
   return (
     <section className="ar-timeline" aria-label="What happened">
       <h3 className="ar-section-title">What happened</h3>

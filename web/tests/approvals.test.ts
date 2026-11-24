@@ -824,6 +824,9 @@ describe('the approval review as a decision', () => {
     expect(verdict({ status: 'executed' })).toBe('allowed');
     expect(verdict({ status: 'rejected' })).toBe('blocked');
     expect(verdict({ status: 'expired' })).toBeUndefined();
+    // Approved or running: nothing has run, so it is not Allowed yet.
+    expect(verdict({ status: 'approved' })).toBeUndefined();
+    expect(verdict({ status: 'executing' })).toBeUndefined();
     // A pending request past its expiry is no longer held.
     expect(verdict({}, { ...live, live: false })).toBeUndefined();
   });

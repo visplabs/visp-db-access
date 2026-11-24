@@ -568,8 +568,9 @@ export function Badge({
     </span>
   );
 }
-/** Where something runs, the same on every screen: a small tinted mark;
- * production is filled and striped so it is never missed. */
+/** Where something runs, the same on every screen: a square slate tag that
+ * never looks like a verdict; production is ink-filled with a hazard cap so
+ * it is never missed. */
 export function EnvBadge({ environment }: { environment: string }) {
   return (
     <span className="env-mark" data-environment={environment}>

@@ -119,40 +119,83 @@
   display: grid;
   gap: var(--space-3);
 }
+.kitchen-env {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 560px;
+}
+.kitchen-env-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  overflow: hidden;
+  padding: 0 12px 8px;
+  border: var(--stroke) solid var(--rule);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  flex-wrap: wrap;
+}
+.kitchen-env-rail {
+  flex: 0 0 calc(100% + 24px);
+  height: 4px;
+  margin: 0 -12px;
+  background: var(--env-rail-staging);
+}
+.kitchen-env-rail[data-environment='production'] {
+  height: 6px;
+  background: var(--env-rail-prod);
+}
+.kitchen-env-rail[data-environment='development'] {
+  height: 2px;
+  background: var(--env-rail-dev);
+}
 
-/* Where something runs (EnvBadge). Production is filled and striped, never
-   missed; staging and development are tinted. */
+/* Where something runs (EnvBadge). Environment is where; a verdict is what
+   the gate decided. So the two never look alike: a verdict is a rounded
+   chip with an icon in a verdict hue; an environment is a square uppercase
+   tag in slate, with no icon. Production is a solid ink tag with a striped
+   hazard cap, never missed; staging is a slate outline; development is
+   quiet. */
 .env-mark {
   display: inline-flex;
   flex: none;
   align-items: center;
   height: 18px;
-  padding: 0 6px;
-  border: 1px solid var(--env-dev-rail);
-  border-radius: 4px;
-  background: var(--env-dev-soft);
-  color: var(--env-dev-text);
-  font-size: 11px;
-  font-weight: 600;
+  padding: 0 5px;
+  border: 1px solid var(--env-dev-line);
+  border-radius: 2px;
+  background: var(--env-dev-fill);
+  color: var(--env-dev-ink);
+  font-size: 10.5px;
+  font-weight: 700;
   line-height: 1;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
   white-space: nowrap;
   vertical-align: middle;
 }
 .env-mark[data-environment='staging'] {
-  border-color: var(--env-staging);
-  background: var(--env-staging-soft);
-  color: var(--env-staging-text);
+  border-color: var(--env-staging-line);
+  background: var(--env-staging-fill);
+  color: var(--env-staging-ink);
 }
 .env-mark[data-environment='production'] {
-  border-color: var(--env-prod);
-  background-color: var(--env-prod);
-  background-image: repeating-linear-gradient(
-    -45deg,
-    transparent 0 5px,
-    rgb(0 0 0 / 14%) 5px 10px
-  );
-  color: var(--on-risk);
+  padding-left: 12px;
+  border-color: var(--env-prod-fill);
+  background:
+    repeating-linear-gradient(
+        -45deg,
+        var(--env-prod-hazard) 0 2px,
+        transparent 2px 4px
+      )
+      left / 7px 100% no-repeat,
+    var(--env-prod-fill);
+  color: var(--env-prod-ink);
+}
+@media (forced-colors: active) {
+  .env-mark {
+    border-color: CanvasText;
+  }
 }
 
 /* The guard's risk (RiskMeter): four steps and a word. */
@@ -192,4 +235,41 @@
 }
 .risk-gauge[data-risk='critical'] .risk-gauge-bars > i[data-on] {
   background: var(--verdict-blocked-fg);
+}
+
+/* Toasts (toast.tsx) sit in the top bar's own band, centred: never over a
+   decision bar, a run bar or a command to copy, and never over a dialog.
+   One shows at a time, the newest; a long one scrolls inside its box
+   rather than growing over the page. */
+.toasts {
+  top: 6px;
+  right: auto;
+  bottom: auto;
+  left: 50%;
+  translate: -50% 0;
+  width: max-content;
+  max-width: min(440px, calc(100vw - 24px));
+}
+.toast:not(:last-child) {
+  display: none;
+}
+.toast {
+  min-height: 36px;
+  max-height: 76px;
+  max-width: 100%;
+  overflow-y: auto;
+  padding: 4px 4px 4px 12px;
+  line-height: 18px;
+}
+.toast > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.toast > .button {
+  flex: none;
+  min-height: 28px;
+  height: 28px;
+  width: 28px;
+  margin-left: 4px;
+  padding: 0;
 }

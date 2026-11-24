@@ -73,7 +73,8 @@
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-columns: clamp(290px, 32%, 380px) minmax(0, 1fr);
+  /* Room for the cluster name beside the environment, risk and expiry. */
+  grid-template-columns: clamp(300px, 36%, 440px) minmax(0, 1fr);
   gap: 16px;
 }
 .ar-list-pane,
@@ -259,22 +260,20 @@
   --v-bg: var(--verdict-blocked-bg);
   --v-line: var(--verdict-blocked-line);
 }
-/* The environment rail, as the console frames it. */
+/* The top rail means one thing on this screen: the environment, as the
+   console frames it, in the environment slate (never a verdict hue). The
+   verdict is the header's chip and tint. */
 .ar-decision[data-environment='production'] {
   --rail: 6px;
-  --rail-fill: repeating-linear-gradient(
-    -45deg,
-    var(--env-prod) 0 7px,
-    var(--env-prod-soft) 7px 14px
-  );
+  --rail-fill: var(--env-rail-prod);
 }
 .ar-decision[data-environment='staging'] {
   --rail: 4px;
-  --rail-fill: var(--env-staging);
+  --rail-fill: var(--env-rail-staging);
 }
 .ar-decision[data-environment='development'] {
   --rail: 2px;
-  --rail-fill: var(--env-dev-rail);
+  --rail-fill: var(--env-rail-dev);
 }
 
 /* The header: the state, coloured by its verdict, and the next action. */
@@ -396,7 +395,8 @@
 .ar-reason {
   margin: 2px 0 0;
   padding: 2px 0 2px 12px;
-  border-left: 3px solid var(--v-line);
+  /* A quotation mark, not a verdict edge: the verdict is the header's. */
+  border-left: 3px solid var(--label-quaternary);
   color: var(--label-primary);
   font-size: var(--text-base);
   line-height: 21px;
@@ -1046,6 +1046,16 @@
     white-space: nowrap;
   }
 }
+/* Short screens: less room around the request, more for its rows. */
+@media (max-height: 760px) {
+  /* The top bar (48px) overlays the page: 12px below it. */
+  .main-shell:not(:has(> .connection-banner)) > .page:has(> .ar-page) {
+    padding-top: 60px;
+  }
+  .main-shell > .page:has(> .ar-page) {
+    padding-bottom: 8px;
+  }
+}
 /* Short screens: less chrome above the panes. */
 @media (max-height: 760px) and (min-width: 1024px) {
   .ar-title-block p {
@@ -1055,6 +1065,124 @@
     margin-bottom: 8px;
   }
 }
+/* Compact: short or narrow screens (COMPACT_DECISION in approvals.tsx sets
+   data-compact). The request scrolls as one piece: the top line of the
+   header stays as a slim status, the title and the rest scroll away, and
+   the decision bar is one row at the bottom, so the rows and the statement
+   the reviewer decides on get the height. */
+.ar-decision[data-compact] {
+  display: block;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.ar-decision[data-compact]::before {
+  display: block;
+}
+.ar-decision[data-compact] .ar-header {
+  display: contents;
+}
+.ar-decision[data-compact] .ar-header-top {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px var(--ar-gutter);
+  background: var(--v-bg);
+  box-shadow: 0 1px 0 var(--v-line);
+}
+.ar-decision[data-compact] .ar-header-top > * {
+  flex: none;
+}
+.ar-decision[data-compact] .ar-title {
+  margin: 0;
+  padding: 10px var(--ar-gutter) 0;
+  background: var(--v-bg);
+  font-size: 18px;
+  line-height: 23px;
+}
+.ar-decision[data-compact] .ar-next {
+  margin: 0;
+  padding: 2px var(--ar-gutter) 12px;
+  border-bottom: var(--stroke) solid var(--v-line);
+  background: var(--v-bg);
+}
+.ar-decision[data-compact] .ar-body {
+  min-height: auto;
+  overflow: visible;
+  padding-top: 14px;
+  padding-bottom: 16px;
+}
+.ar-decision[data-compact] .ar-failure {
+  margin-bottom: 8px;
+}
+.ar-bar[data-compact] {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px var(--ar-gutter);
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+}
+.ar-bar[data-compact] .ar-note-field {
+  flex: 1 1 100%;
+}
+.ar-bar[data-compact] .ar-buttons {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-left: 0;
+}
+.ar-bar[data-compact] .ar-button-row {
+  display: contents;
+}
+.ar-bar[data-compact] .ar-button-row > .button {
+  flex: none;
+  min-height: 36px;
+  height: 36px;
+}
+.ar-bar[data-compact] .ar-note-toggle {
+  order: -1;
+  margin-right: auto;
+  gap: 6px;
+  padding-inline: 8px;
+}
+.ar-bar[data-compact] .approval-blocked {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: none;
+  font-size: var(--text-xs);
+  line-height: 16px;
+  text-align: left;
+}
+/* A phone: the tools in the status line keep only their icons. */
+@media (max-width: 480px) {
+  .ar-decision[data-compact] .ar-tool-word {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .ar-decision[data-compact] .ar-header-top > .button.ghost:first-child {
+    margin-left: -6px;
+    padding-inline: 6px;
+  }
+  .ar-bar[data-compact] .ar-note-toggle {
+    width: 36px;
+    min-width: 36px;
+    padding: 0;
+    font-size: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ar-row {
     transition: none;
