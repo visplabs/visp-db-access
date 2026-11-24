@@ -26,23 +26,21 @@ async function agentWithToken(page: Page, name: string) {
     .getByRole('navigation')
     .getByRole('link', { name: 'Agents', exact: true })
     .click();
+  // The connect page makes the agent and its token; leave it at the snippet.
   await page.getByRole('button', { name: 'Connect an agent' }).first().click();
-  const dialog = page.getByRole('dialog');
-  await dialog.getByLabel('Name', { exact: true }).fill(name);
-  await dialog.getByRole('checkbox').first().check();
-  await dialog.getByRole('button', { name: 'Connect agent' }).click();
+  await page.getByLabel('Name', { exact: true }).fill(name);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: 'Create token' }).click();
+  await expect(
+    page.getByRole('region', { name: 'Claude Code command' }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: `Go to ${name}` }).click();
   const detail = page.getByRole('region', { name: `Agent ${name}` });
   await expect(detail).toBeVisible();
-  // No token, no call, no session.
-  await expect(
-    detail.getByText('This agent has made no call yet.'),
-  ).toBeVisible();
-  await detail.getByRole('button', { name: 'Create token' }).click();
-  await page
-    .getByRole('dialog')
-    .getByRole('button', { name: 'Create token' })
-    .click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Done' }).click();
+  // The mock agent first calls a few seconds after its token is made.
+  await expect(detail.getByRole('table', { name: 'Sessions' })).toBeVisible({
+    timeout: 20_000,
+  });
   return detail;
 }
 const steps = (page: Page) =>

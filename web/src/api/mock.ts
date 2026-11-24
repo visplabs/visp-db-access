@@ -24,7 +24,10 @@ const required = <T>(value: T | undefined): T =>
 /** A session-isolated, in-memory implementation of the v1 contract. */
 export function createMockTransport({
   delay = 180,
-}: { delay?: number } = {}): Transport {
+  // A new agent token gets its first call this long after it is made, so the
+  // connect screen can show the moment. A mock with no delay answers at once.
+  firstCallMs = delay > 0 ? 4000 : 0,
+}: { delay?: number; firstCallMs?: number } = {}): Transport {
   const state = fixtures();
   const passwords = new Map(
     state.users.map((user) => [user.id, 'demo-password']),
@@ -331,6 +334,7 @@ export function createMockTransport({
     fail,
     audit: (action, type, id, details) => audit(action, type, id, details),
     now,
+    firstCallMs,
   });
   const approvals = createApprovals({
     state,

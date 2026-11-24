@@ -103,11 +103,9 @@ test('clusters say where they run, in the list, the cards and the console header
   ).toHaveText(/ · (PostgreSQL|MySQL)$/);
 });
 
-test('an agent is connected, given a token once, paused, and deleted', async ({
-  page,
-}) => {
-  // A long flow with several accessibility scans: give it room on a busy machine.
-  test.slow();
+const TOKEN = /vda_agent_[\w-]{43}/;
+/** Open the connect page from the agents list. */
+async function openConnect(page: import('@playwright/test').Page) {
   await page
     .getByRole('navigation')
     .getByRole('link', { name: 'Agents', exact: true })
@@ -115,25 +113,263 @@ test('an agent is connected, given a token once, paused, and deleted', async ({
   await expect(
     page.getByRole('heading', { name: 'Agents', exact: true }),
   ).toBeVisible();
-  await expect(page.getByText('No agents yet')).toBeVisible();
   await page.getByRole('button', { name: 'Connect an agent' }).first().click();
-  const dialog = page.getByRole('dialog');
-  // Nothing can be saved without a name and a database.
   await expect(
-    dialog.getByRole('button', { name: 'Connect agent' }),
-  ).toBeDisabled();
-  await dialog.getByLabel('Name', { exact: true }).fill('support-triage');
-  await dialog.getByLabel('What it is for').fill('Reads orders for support');
-  await dialog.getByRole('checkbox').first().check();
-  await dialog.getByRole('button', { name: 'Connect agent' }).click();
+    page.getByRole('heading', { name: 'Connect an agent', level: 1 }),
+  ).toBeVisible();
+}
+const current = (page: import('@playwright/test').Page) =>
+  page.getByRole('list', { name: 'Progress' }).locator('[aria-current="step"]');
+
+test('the connect page makes an agent and a token, prints each client snippet and shows the first call', async ({
+  page,
+  context,
+}) => {
+  test.slow();
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page
+    .getByRole('navigation')
+    .getByRole('link', { name: 'Agents', exact: true })
+    .click();
+  // The empty list has one action: the connect page.
+  const empty = page.getByRole('region', { name: 'No agents yet' });
+  await expect(empty).toBeVisible();
+  await expect(empty.getByRole('button')).toHaveCount(1);
+  await empty.getByRole('button', { name: 'Connect an agent' }).click();
+  await expect(current(page)).toContainText('Who and what');
+  // Safe defaults: a free name, read only, one database, 30 days. Continue
+  // works without a change.
+  const name = page.getByLabel('Name', { exact: true });
+  await expect(name).toHaveValue('my-agent');
+  await expect(page.getByRole('radio', { name: /^Read only/ })).toBeChecked();
+  await expect(
+    page
+      .getByRole('group', { name: 'Databases it can reach' })
+      .getByRole('checkbox', { checked: true }),
+  ).toHaveCount(1);
+  await expect(page.getByRole('button', { name: '30 days' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  const next = page.getByRole('button', { name: 'Continue' });
+  await expect(next).toBeEnabled();
+  // Nothing goes on without a name or a database.
+  await name.fill('');
+  await expect(next).toBeDisabled();
+  await name.fill('support-triage');
+  const databases = page
+    .getByRole('group', { name: 'Databases it can reach' })
+    .getByRole('checkbox');
+  await databases.first().check();
+  for (const box of await databases.all()) await box.uncheck();
+  await expect(next).toBeDisabled();
+  await databases.first().check();
+  await page.getByRole('button', { name: '7 days' }).click();
+  // The side card says what the gate will answer, in the four verdicts.
+  const card = page.getByRole('complementary', {
+    name: 'How the gate answers',
+  });
+  await expect(card).toContainText('support-triage');
+  for (const word of ['Allowed', 'Masked', 'Held', 'Blocked'])
+    await expect(card.getByText(word, { exact: true })).toBeVisible();
+  await expect(card).toContainText('7 days');
+  await next.click();
+  // Step 2: the client. Back keeps what was typed.
+  await expect(current(page)).toContainText('Pick your client');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(name).toHaveValue('support-triage');
+  await next.click();
+  await expect(page.getByRole('radio', { name: /^Claude Code/ })).toBeChecked();
+  await page.getByRole('button', { name: 'Create token' }).click();
   await expect(page.getByText('Agent connected')).toBeVisible();
+  // Step 3: the token, once, inside the Claude Code command.
+  await expect(current(page)).toContainText('Copy and run');
+  await expect(page.getByText('you will not see it again')).toBeVisible();
+  const command = page.getByRole('region', { name: 'Claude Code command' });
+  const origin = new URL(page.url()).origin;
+  await expect(command).toHaveText(
+    new RegExp(
+      `^claude mcp add --transport http visp-gate ${origin}/api/v1/mcp --header "Authorization: Bearer vda_agent_[\\w-]{43}"$`,
+    ),
+  );
+  const token = TOKEN.exec((await command.textContent())!)![0];
+  await expect(page.getByText('never a database password')).toBeVisible();
+  // Copy puts exactly the snippet on the clipboard.
+  await page.getByRole('button', { name: 'Copy', exact: true }).click();
+  await expect(page.getByText('Copied', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    await command.textContent(),
+  );
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  // Another client: the same token, in Cursor's file.
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  // The agent exists now: its fields cannot go back to step 1.
+  await expect(
+    page.getByRole('button', { name: 'Back', exact: true }),
+  ).toHaveCount(0);
+  await page.getByText('Cursor', { exact: true }).click();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  const cursor = page.getByRole('region', { name: 'Cursor config' });
+  await expect(page.getByText('.cursor/mcp.json')).toBeVisible();
+  expect(JSON.parse((await cursor.textContent())!)).toEqual({
+    mcpServers: {
+      'visp-gate': {
+        url: `${origin}/api/v1/mcp`,
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    },
+  });
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByText('Other MCP client', { exact: true }).click();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  const other = page.getByRole('region', { name: 'MCP config' });
+  expect(JSON.parse((await other.textContent())!)).toEqual({
+    mcpServers: {
+      'visp-gate': {
+        type: 'http',
+        url: `${origin}/api/v1/mcp`,
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    },
+  });
+  await expect(page.locator('body')).not.toContainText('database-gateway');
+  // Step 4: wait for the first call; the mock agent calls a few seconds
+  // after its token is made.
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(current(page)).toContainText('Verify');
+  await expect(
+    page.getByText('List the databases you can use through visp-gate.', {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText('First call arrived')).toBeVisible({
+    timeout: 15_000,
+  });
+  const calls = page.getByRole('list', { name: 'First calls' });
+  await expect(calls.getByRole('listitem').first()).toContainText(
+    'list_databases',
+  );
+  await expect(
+    calls.getByText('Allowed', { exact: true }).first(),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('link', { name: 'Open the session' }),
+  ).toHaveAttribute(
+    'href',
+    /^\/agents\?agent=[0-9a-f-]{36}&session=[0-9a-f-]{36}$/,
+  );
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.getByRole('button', { name: 'Done' }).click();
+  // The agent's page; the token is gone from the screen.
+  const detail = page.getByRole('region', { name: 'Agent support-triage' });
+  await expect(detail).toBeVisible();
+  await expect(page.locator('body')).not.toContainText(token);
+  await expect(
+    detail.getByText(`vda_agent_••••${token.slice(-4)}`),
+  ).toBeVisible();
+});
+
+test('the connect page can be left at any step, and Back in the browser returns to the list', async ({
+  page,
+}) => {
+  await openConnect(page);
+  await page.goBack();
+  await expect(
+    page.getByRole('region', { name: 'No agents yet' }),
+  ).toBeVisible();
+  await page.goForward();
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(
+    page.getByRole('region', { name: 'No agents yet' }),
+  ).toBeVisible();
+  // Leaving before the first call breaks nothing: the agent is there.
+  await page.getByRole('button', { name: 'Connect an agent' }).first().click();
+  await page.getByLabel('Name', { exact: true }).fill('quick-leave');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: 'Create token' }).click();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByText('Waiting for the first call…')).toBeVisible();
+  await page.getByRole('button', { name: 'Done' }).click();
+  await expect(
+    page.getByRole('region', { name: 'Agent quick-leave' }),
+  ).toBeVisible();
+  // A second agent cannot take the same name.
+  await page.getByRole('button', { name: 'Connect an agent' }).first().click();
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue(
+    'my-agent',
+  );
+  await page.getByLabel('Name', { exact: true }).fill('Quick-Leave');
+  await expect(
+    page.getByText('You already have an agent with this name.'),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Continue' })).toBeDisabled();
+});
+
+for (const theme of ['Dark', 'Light'] as const)
+  test(`the connect page fits a phone at 390 px in ${theme.toLowerCase()}`, async ({
+    page,
+  }) => {
+    test.slow();
+    await setTheme(page, theme);
+    const fits = () =>
+      page.evaluate(() => document.documentElement.scrollWidth <= innerWidth);
+    await openConnect(page);
+    await page.setViewportSize({ width: 390, height: 700 });
+    await expect(current(page)).toContainText('Who and what');
+    expect(await fits()).toBe(true);
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await page.getByRole('button', { name: 'Create token' }).click();
+    await expect(
+      page.getByRole('region', { name: 'Claude Code command' }),
+    ).toBeVisible();
+    expect(await fits()).toBe(true);
+    // The command wraps: the whole token is on screen, no sideways scroll.
+    const box = await page
+      .getByRole('region', { name: 'Claude Code command' })
+      .evaluate((pre) => pre.scrollWidth <= pre.clientWidth);
+    expect(box).toBe(true);
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect(page.getByText('First call arrived')).toBeVisible({
+      timeout: 15_000,
+    });
+    expect(await fits()).toBe(true);
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  });
+
+test('an agent is given a token once on its page, paused, and deleted', async ({
+  page,
+}) => {
+  // A long flow with several accessibility scans: give it room on a busy machine.
+  test.slow();
+  await openConnect(page);
+  await page.getByLabel('Name', { exact: true }).fill('support-triage');
+  await page.getByText('More options').click();
+  await page.getByLabel('What it is for').fill('Reads orders for support');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: 'Create token' }).click();
+  await page.getByRole('button', { name: 'Go to support-triage' }).click();
   const detail = page.getByRole('region', { name: 'Agent support-triage' });
   await expect(detail).toBeVisible();
   // Choosing an agent moves to its detail, also for a keyboard user.
   await expect(detail).toBeFocused();
+  // The list row: agent and owner badges, reach, level, tokens, state.
+  const row = page
+    .getByRole('table', { name: 'Agents' })
+    .getByRole('row')
+    .nth(1);
   await expect(
-    page.getByRole('button', { name: 'support-triage' }),
+    row.getByRole('button', { name: /support-triage/ }),
   ).toHaveAttribute('aria-current', 'true');
+  await expect(row.locator('.actor-badge[data-actor="agent"]')).toContainText(
+    'support-triage',
+  );
+  await expect(row.locator('.actor-badge[data-actor="human"]')).toBeVisible();
+  await expect(row).toContainText('Read only');
+  await expect(row).toContainText('1 active');
+  await expect(row).toContainText('Active');
+  await expect(detail).toContainText('Reads orders for support');
   // The guardrail texts say only what is true for every database.
   await expect(detail.getByText('Writes need a person')).toBeVisible();
   await expect(detail).toContainText(
@@ -154,28 +390,34 @@ test('an agent is connected, given a token once, paused, and deleted', async ({
     'withdraw',
   ])
     await expect(detail.getByText(tool, { exact: true })).toBeVisible();
-  await expect(detail.getByText('This agent has no token')).toBeVisible();
-  // The token shows one time only.
+  // A second token from the agent's page: it shows once, in a snippet per
+  // client.
   await detail.getByRole('button', { name: 'Create token' }).click();
   await page
     .getByRole('dialog')
     .getByRole('button', { name: 'Create token' })
     .click();
-  const connection = page.getByRole('dialog').getByLabel('Connection');
-  // The snippet is a config that an MCP client accepts as it is.
-  await expect(connection).toHaveValue(
-    /"Authorization": "Bearer vda_agent_[\w-]{43}"/,
+  const dialog = page.getByRole('dialog');
+  const command = dialog.getByRole('region', { name: 'Claude Code command' });
+  await expect(command).toContainText(
+    'claude mcp add --transport http visp-gate',
   );
-  await expect(connection).toHaveValue(/"type": "http"/);
+  const token = TOKEN.exec((await command.textContent())!)![0];
+  // While the token shows, Escape does not lose it.
+  await page.keyboard.press('Escape');
+  await expect(command).toBeVisible();
+  await dialog.getByRole('button', { name: 'Cursor' }).click();
+  await expect(
+    dialog.getByRole('region', { name: 'Cursor config' }),
+  ).toContainText(`"Authorization": "Bearer ${token}"`);
+  await dialog.getByRole('button', { name: 'Other' }).click();
+  await expect(
+    dialog.getByRole('region', { name: 'MCP config' }),
+  ).toContainText('"type": "http"');
   // Copying always says what happened, also when the browser refuses.
-  await page
-    .getByRole('dialog')
-    .getByRole('button', { name: 'Copy token' })
-    .click();
+  await dialog.getByRole('button', { name: 'Copy', exact: true }).click();
   await expect(page.getByText(/^(Copied|Could not copy)/)).toBeVisible();
-  await expect(connection).toHaveValue(/\/api\/v1\/mcp"/);
-  const token = /vda_agent_[\w-]{43}/.exec(await connection.inputValue())![0];
-  await page.getByRole('dialog').getByRole('button', { name: 'Done' }).click();
+  await dialog.getByRole('button', { name: 'Done' }).click();
   await expect(page.locator('body')).not.toContainText(token);
   // The secret is gone: opening the dialog again offers a new token, never
   // the old one.
@@ -188,9 +430,7 @@ test('an agent is connected, given a token once, paused, and deleted', async ({
   await expect(
     detail.getByText(`vda_agent_••••${token.slice(-4)}`),
   ).toBeVisible();
-  await expect(detail.getByRole('table', { name: 'Tokens' })).toContainText(
-    'Active',
-  );
+  await expect(row).toContainText('2 active');
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await page.screenshot({
     path: 'screenshots/agents-dark.png',
@@ -207,12 +447,17 @@ test('an agent is connected, given a token once, paused, and deleted', async ({
   // Pause, resume, revoke, edit, delete.
   await detail.getByRole('button', { name: 'Pause agent' }).click();
   await expect(detail.getByText('This agent is paused')).toBeVisible();
+  await expect(row).toContainText('Paused');
   await detail.getByRole('button', { name: 'Resume agent' }).click();
   await expect(detail.getByText('This agent is paused')).toHaveCount(0);
-  await detail.getByRole('button', { name: /^Revoke token ending/ }).click();
+  await detail
+    .getByRole('button', { name: /^Revoke token ending/ })
+    .first()
+    .click();
   await expect(detail.getByRole('table', { name: 'Tokens' })).toContainText(
     'Revoked',
   );
+  await expect(row).toContainText('1 active');
   await detail.getByRole('button', { name: 'Edit', exact: true }).click();
   // Nothing changed yet, so there is nothing to save.
   await expect(
@@ -229,7 +474,9 @@ test('an agent is connected, given a token once, paused, and deleted', async ({
     .getByRole('dialog')
     .getByRole('button', { name: 'Confirm', exact: true })
     .click();
-  await expect(page.getByText('No agents yet')).toBeVisible();
+  await expect(
+    page.getByRole('region', { name: 'No agents yet' }),
+  ).toBeVisible();
   // It works at a narrow width too.
   await page.setViewportSize({ width: 768, height: 1024 });
   expect(
