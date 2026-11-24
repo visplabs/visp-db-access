@@ -1,5 +1,12 @@
 import { ApiError, type Transport } from './errors';
-import { fixtures, defaultPolicy, demoSchema, now, uuid } from './fixtures';
+import {
+  fixtures,
+  defaultPolicy,
+  demoSchema,
+  DEMO_AGENT,
+  now,
+  uuid,
+} from './fixtures';
 import { analyzeDemo, constantSelect, preflightDemo } from './mock-guard';
 import { createMockDiscovery } from './mock-discovery';
 import { endpointChanged } from '../lib/connection';
@@ -330,6 +337,21 @@ export function createMockTransport({
       return cluster;
     },
   });
+  /** The demo agent acts for the member, on databases the member reaches. */
+  function demoAgent() {
+    const owner = state.users.find((user) => user.org_role === 'member');
+    const clusterIds = DEMO_AGENT.clusters
+      .map((index) => state.clusters[index]?.id)
+      .filter((id): id is string => !!id);
+    if (!owner || clusterIds.length === 0) return undefined;
+    return {
+      id: DEMO_AGENT.id,
+      name: DEMO_AGENT.name,
+      description: DEMO_AGENT.description,
+      owner: { id: owner.id, email: owner.email, name: owner.name },
+      cluster_ids: clusterIds.sort((a, b) => a.localeCompare(b)),
+    };
+  }
   const agents = createAgents({
     clusters: () => state.clusters,
     access: (cluster) => clusterAccess(cluster) ?? undefined,
@@ -337,6 +359,7 @@ export function createMockTransport({
     audit: (action, type, id, details) => audit(action, type, id, details),
     now,
     firstCallMs,
+    seed: demoAgent(),
   });
   const approvals = createApprovals({
     state,
@@ -396,10 +419,13 @@ export function createMockTransport({
       const accessible = state.clusters.filter((cluster) =>
         clusterAccess(cluster),
       );
+      // As the server counts: every row of the last 24 hours on a cluster
+      // the caller can reach, whoever ran it.
+      const since = Date.now() - 86_400_000;
       const entries = state.history.filter(
         (row) =>
-          accessible.some((cluster) => cluster.id === row.cluster_id) &&
-          (session?.org_role === 'admin' || row.user_id === session?.id),
+          Date.parse(row.created_at) > since &&
+          accessible.some((cluster) => cluster.id === row.cluster_id),
       );
       return {
         discovery: actor.org_role === 'admin' ? discovery.summary() : null,
@@ -417,7 +443,13 @@ export function createMockTransport({
             a.status === 'pending' &&
             accessible.some((c) => c.id === a.cluster_id),
         ).length,
-        recent_queries: entries.slice(0, 10),
+        // The history list's first page, as `GET /history` gives it.
+        recent_queries: state.history
+          .filter(
+            (row) =>
+              session?.org_role === 'admin' || row.user_id === session?.id,
+          )
+          .slice(0, 10),
         unhealthy_clusters: accessible.filter(
           (c) => c.health.status !== 'healthy',
         ),

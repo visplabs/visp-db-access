@@ -52,8 +52,7 @@
   color: var(--label-secondary);
   font-size: var(--text-sm);
 }
-.ov-calm a,
-.ov-setup-agent a {
+.ov-calm a {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -148,8 +147,22 @@
   outline: 2px solid var(--focus-ring);
   outline-offset: -4px;
 }
-.ov-tile .verdict-chip {
+.ov-tile-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 10px;
+}
+/* The time a tile covers: "24 h" or "Now", so two windows never read as one. */
+.ov-tile-window {
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  color: var(--label-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
 }
 .ov-tile-number {
   font-size: 48px;
@@ -199,6 +212,10 @@
 }
 .ov-split > i[data-verdict='blocked'] {
   background: var(--verdict-blocked-fg);
+}
+/* Failed on the database: no verdict, so no verdict colour. */
+.ov-split > i[data-verdict='failed'] {
+  background: var(--label-tertiary);
 }
 
 /* Two columns when there is room: work on the left, databases on the right. */
@@ -584,7 +601,7 @@
 }
 @container (min-width: 760px) {
   .ov-setup-steps {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 }
 .ov-setup-steps > li {
@@ -647,20 +664,163 @@ li[data-state='done'] > .ov-setup-mark {
   background: var(--verdict-allowed-bg);
   color: var(--verdict-allowed-fg);
 }
-.ov-setup-agent {
+/* The toggle that shows every step; only phones hide any. */
+.ov-setup-all {
+  display: none;
+  margin-top: 10px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--action);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* Agents: who acts through the gate, and what each did last. */
+.ov-agents {
+  margin-bottom: var(--space-8);
+}
+.ov-agents .ov-head-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+/* One row per agent: who, where, its state, and its last session. */
+.ov-agent-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.ov-agent {
+  display: grid;
+  grid-template-columns:
+    minmax(200px, 1.1fr) minmax(160px, 1fr) 88px
+    minmax(240px, 1.6fr);
+  align-items: center;
+  gap: 10px 16px;
+  min-width: 0;
+  padding: 10px 12px 10px 16px;
+}
+.ov-agent + .ov-agent {
+  border-top: 1px solid var(--rule);
+}
+.ov-agent-who,
+.ov-agent-reach {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px 10px;
-  margin: 14px 0 0;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.ov-agent-reach {
   font-size: var(--text-sm);
+}
+@media (max-width: 980px) {
+  .ov-agent {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 12px 14px;
+  }
+  .ov-agent-reach {
+    grid-column: 1;
+  }
+  .ov-agent > .agent-state {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+  .ov-agent-session {
+    grid-column: 1 / -1;
+  }
+}
+.ov-agent-open {
+  display: inline-flex;
+  max-width: 100%;
+  border-radius: 7px;
+  color: inherit;
+  text-decoration: none;
+}
+.ov-agent-open:hover .actor-name {
+  text-decoration: underline;
+}
+.ov-agent-open:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.ov-agent-session {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--subtle);
+  color: var(--label-primary);
+  font-size: var(--text-sm);
+  text-decoration: none;
+}
+span.ov-agent-session {
+  display: block;
   color: var(--label-secondary);
 }
-.ov-setup-agent > svg {
-  flex: none;
+a.ov-agent-session:hover {
+  background: color-mix(in srgb, var(--subtle) 70%, var(--rule));
 }
-.ov-setup-agent > span {
-  flex: 1 1 280px;
+a.ov-agent-session:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.ov-agent-session > svg {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  color: var(--label-tertiary);
+}
+.ov-agent-session-when {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.ov-agent-session-what {
+  overflow: hidden;
+  color: var(--label-secondary);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-agent-live {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--verdict-allowed-fg);
+}
+.ov-agents-empty {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-4);
+  padding: var(--space-4);
+  border: 1px dashed var(--rule);
+  border-radius: 10px;
+  color: var(--label-secondary);
+  font-size: var(--text-sm);
+}
+.ov-agents-empty > svg {
+  flex: none;
+  color: var(--label-primary);
+}
+.ov-agents-empty p {
+  flex: 1 1 320px;
+  margin: 0;
+}
+.ov-agents-empty strong {
+  color: var(--label-primary);
 }
 
 /* Phones: tiles stack as rows, the number at the end. */
@@ -677,7 +837,7 @@ li[data-state='done'] > .ov-setup-mark {
     column-gap: 12px;
     padding: 14px 16px;
   }
-  .ov-tile .verdict-chip {
+  .ov-tile-top {
     margin-bottom: 4px;
   }
   .ov-tile-number {
@@ -693,6 +853,28 @@ li[data-state='done'] > .ov-setup-mark {
   }
   .ov-setup {
     padding: 16px;
+  }
+  /* Setup does not fill a phone's first screen: the next step shows, the
+     others wait behind "Show all steps". */
+  .ov-setup:not([data-all]) .ov-setup-steps > li:not([data-state='next']) {
+    display: none;
+  }
+  .ov-setup-all {
+    display: inline-block;
+  }
+  .ov-agents-empty > svg {
+    display: none;
+  }
+  .ov-setup-meter {
+    margin: 10px 0 12px;
+  }
+  .ov-heading {
+    margin-bottom: var(--space-4);
+  }
+  .ov-agents,
+  .ov-setup,
+  .ov-gate {
+    margin-bottom: var(--space-6);
   }
 }
 @media (prefers-reduced-motion: reduce) {

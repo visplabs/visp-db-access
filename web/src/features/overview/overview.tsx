@@ -12,7 +12,8 @@ import { VerdictChip } from '../../components/ui/verdict';
 import { useUser } from '../auth/session';
 import { SetupChecklist } from './setup';
 import { MyWork, NeedsYou } from './my-work';
-import { gateTiles, type Overview } from './model';
+import { allowedCount, gateTiles, type Overview } from './model';
+import { AgentActivity } from './agents';
 
 const plural = (n: number, one: string, many = `${one}s`) =>
   `${n.toLocaleString('en')} ${n === 1 ? one : many}`;
@@ -31,19 +32,20 @@ function Heading() {
   );
 }
 
-/** The gate's last 24 hours: one tile per verdict the API can count. */
+/** What the gate did: one tile per verdict the API can count, each with
+ * the time it covers. */
 function GateTiles({ data }: { data: Overview }) {
   const tiles = gateTiles(data);
-  const allowed = tiles[0]?.count ?? 0;
+  const allowed = allowedCount(data);
   const total = data.queries_24h;
   return (
     <section className="ov-gate" aria-labelledby="ov-gate-title">
       <div className="ov-section-head">
-        <h2 id="ov-gate-title">Last 24 hours</h2>
+        <h2 id="ov-gate-title">At the gate</h2>
         <span className="ov-count">
           {total
-            ? `${plural(total, 'statement')} reached the gate`
-            : 'No statement reached the gate yet'}
+            ? `${plural(total, 'statement')} in the last 24 hours`
+            : 'No statement reached the gate in 24 hours'}
         </span>
       </div>
       <ul className="ov-tiles">
@@ -55,7 +57,13 @@ function GateTiles({ data }: { data: Overview }) {
               data-verdict={tile.verdict}
               data-zero={tile.count === 0 || undefined}
             >
-              <VerdictChip verdict={tile.verdict} size="md" />
+              <span className="ov-tile-top">
+                <VerdictChip verdict={tile.verdict} size="md" />
+                <span className="ov-tile-window">
+                  <span className="sr-only">, </span>
+                  {tile.window}
+                </span>
+              </span>
               <span className="ov-tile-number">
                 {tile.count.toLocaleString('en')}
               </span>
@@ -69,12 +77,19 @@ function GateTiles({ data }: { data: Overview }) {
         <div
           className="ov-split"
           role="img"
-          aria-label={`${allowed} of ${total} statements let through, ${data.blocked_24h} stopped`}
+          aria-label={`Of ${total} statements in 24 hours: ${allowed} let through and did not fail, ${data.errors_24h} failed on the database, ${data.blocked_24h} stopped`}
         >
           {allowed > 0 && (
             <i
               data-verdict="allowed"
               style={{ flexGrow: allowed }}
+              aria-hidden
+            />
+          )}
+          {data.errors_24h > 0 && (
+            <i
+              data-verdict="failed"
+              style={{ flexGrow: data.errors_24h }}
               aria-hidden
             />
           )}
@@ -196,6 +211,7 @@ export function OverviewPage() {
     <div className="ov">
       <Heading />
       {admin && <SetupChecklist />}
+      <AgentActivity />
       <GateTiles data={data} />
       <div className="ov-columns">
         <div className="ov-main">

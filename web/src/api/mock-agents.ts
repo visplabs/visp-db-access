@@ -142,9 +142,33 @@ export function createAgents(context: {
   /** How long after a token is made its agent first calls. The connect
    * screen waits for that call; zero makes the demo calls exist at once. */
   firstCallMs?: number;
+  /** An agent that is there from the start, with a token made days ago. */
+  seed?: Pick<Agent, 'id' | 'name' | 'description' | 'owner' | 'cluster_ids'>;
 }) {
   const { fail, audit, now } = context;
   const agents: Agent[] = [];
+  if (context.seed) {
+    const days = (n: number) =>
+      new Date(Date.now() + n * 86_400_000).toISOString();
+    agents.push({
+      ...context.seed,
+      max_level: 'write',
+      paused: false,
+      hourly_query_budget: 300,
+      tokens: [
+        {
+          id: crypto.randomUUID(),
+          hint: secret().slice(-4),
+          created_at: days(-6),
+          expires_at: days(24),
+          revoked_at: null,
+          last_used_at: null,
+        },
+      ],
+      created_at: days(-6),
+      updated_at: days(-6),
+    });
+  }
   // Demo sessions of an agent that has a token: one that ended yesterday,
   // and one that is going on and gets a new step while someone reads it.
   type Trail = { session: AgentSession; steps: AgentStep[]; grown?: number };
@@ -202,10 +226,15 @@ export function createAgents(context: {
     const first =
       new Date(token.created_at).getTime() + (context.firstCallMs ?? 0);
     if (Date.now() < first) return [];
-    const day = 26 * 3_600_000;
-    const past = PAST.map((draft, index) =>
-      stepOf(draft, agent, index + 1, Date.now() - day + index * 21_000),
-    );
+    // A session of yesterday only for a token that was there yesterday: a
+    // new agent has no past.
+    const yesterday = Date.now() - 26 * 3_600_000;
+    const past =
+      first <= yesterday
+        ? PAST.map((draft, index) =>
+            stepOf(draft, agent, index + 1, yesterday + index * 21_000),
+          )
+        : [];
     // The live session began with that first call, not before it.
     const live = LIVE.slice(0, LIVE_START).map((draft, index) =>
       stepOf(
@@ -221,24 +250,44 @@ export function createAgents(context: {
         ),
       ),
     );
-    const made = [
+    const made: Trail[] = [
       {
         session: summary(agent, token, live, true),
         steps: live,
       },
-      { session: summary(agent, token, past, false), steps: past },
     ];
+    if (past.length)
+      made.push({ session: summary(agent, token, past, false), steps: past });
     trails.set(agent.id, made);
     return made;
+  };
+  /** As the server: a call with a token sets its `last_used_at`, at most
+   * once a minute. */
+  const markUse = (agent: Agent) => {
+    const all = trailsOf(agent);
+    for (const token of agent.tokens) {
+      const calls = all
+        .filter((trail) => trail.session.token.id === token.id)
+        .flatMap((trail) => trail.steps.map((step) => step.created_at))
+        .sort((a, b) => a.localeCompare(b));
+      for (const at of calls) {
+        const last = token.last_used_at ? Date.parse(token.last_used_at) : null;
+        if (last === null || Date.parse(at) - last >= 60_000)
+          token.last_used_at = at;
+      }
+    }
+    return agent;
   };
   /** The live session goes on while its agent may act and someone reads it. */
   const grow = (agent: Agent, trail: Trail) => {
     const time = Date.now();
     trail.grown ??= time;
-    const live = agent.tokens.some(
-      (token) =>
-        !token.revoked_at && new Date(token.expires_at).getTime() > Date.now(),
-    );
+    // The session is one token's calls: they stop when that token does.
+    const token = agent.tokens.find((t) => t.id === trail.session.token.id);
+    const live =
+      !!token &&
+      !token.revoked_at &&
+      new Date(token.expires_at).getTime() > Date.now();
     const draft = LIVE[trail.steps.length];
     if (
       !trail.session.active ||
@@ -254,6 +303,7 @@ export function createAgents(context: {
     trail.session.last_step_at = step.created_at;
     trail.session.steps = trail.steps.length;
     trail.session.refusals += step.outcome === 'ok' ? 0 : 1;
+    markUse(agent);
   };
   function sessions(
     agent: Agent,
@@ -362,7 +412,7 @@ export function createAgents(context: {
         const limit = Math.min(Number(query.get('limit') ?? 50), 200);
         const start = Number(query.get('cursor') ?? 0);
         return {
-          items: visible.slice(start, start + limit),
+          items: visible.slice(start, start + limit).map(markUse),
           next_cursor:
             start + limit < visible.length ? String(start + limit) : null,
         };
@@ -387,6 +437,7 @@ export function createAgents(context: {
       return agent;
     }
     const [agent, owner] = find(id, user);
+    markUse(agent);
     if (sub === 'sessions') return sessions(agent, segments.slice(3), query);
     if (sub === 'tokens') {
       if (method === 'POST') {

@@ -51,7 +51,7 @@ test('setup checklist uses API state and deep-links the first-run steps', async 
   await installAuditTransport(page, { path: '/', kind: 'empty' });
   await signIn(page);
   const setup = page.getByRole('region', { name: 'Workspace setup' });
-  await expect(setup).toContainText('0 of 4 done');
+  await expect(setup).toContainText('0 of 5 done');
   await setup
     .getByRole('link', { name: 'Add a database', exact: true })
     .click();

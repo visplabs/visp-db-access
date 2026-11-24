@@ -8,34 +8,76 @@ async function signIn(page: Page, email?: string) {
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.getByRole('heading', { name: 'Workspace overview' }).waitFor();
 }
-const gate = (page: Page) =>
-  page.getByRole('region', { name: 'Last 24 hours' });
+const gate = (page: Page) => page.getByRole('region', { name: 'At the gate' });
+const agents = (page: Page) => page.getByRole('region', { name: 'Agents' });
 const needs = (page: Page) => page.getByRole('region', { name: 'Needs you' });
 
-test('the gate tiles count the last 24 hours and open the matching lists', async ({
+test('the gate tiles say their window, and each number is the list it opens', async ({
   page,
 }) => {
   await signIn(page);
-  await expect(gate(page)).toContainText('36 statements reached the gate');
+  await expect(gate(page)).toContainText('34 statements in the last 24 hours');
   const tiles = gate(page).getByRole('link');
   await expect(tiles).toHaveCount(3);
   await expect(tiles.nth(0)).toContainText('Allowed');
-  await expect(tiles.nth(0)).toContainText('30');
+  await expect(tiles.nth(0)).toContainText('24 h');
+  await expect(tiles.nth(0)).toContainText('28');
+  await expect(tiles.nth(0)).toContainText('let through, and did not fail');
   await expect(tiles.nth(1)).toContainText('Held');
+  await expect(tiles.nth(1)).toContainText('Now');
   await expect(tiles.nth(1)).toContainText('7');
   await expect(tiles.nth(2)).toContainText('Blocked');
+  await expect(tiles.nth(2)).toContainText('24 h');
   await expect(tiles.nth(2)).toContainText('6');
-  await expect(tiles.nth(2)).toContainText('held writes included');
+  // No tile claims to hold another: Held is now, Blocked is 24 hours.
+  await expect(gate(page)).not.toContainText('included');
   // No masked count comes from the API, so there is no Masked tile.
   await expect(gate(page).getByText('Masked')).toHaveCount(0);
   await expect(
-    gate(page).getByRole('img', { name: /30 of 36 statements let through/ }),
+    gate(page).getByRole('img', { name: /28 let through and did not fail/ }),
   ).toBeVisible();
-  await tiles.nth(2).click();
+  // Allowed opens the list of its 28 statements.
+  await tiles.nth(0).click();
+  await expect(page).toHaveURL(/\/history\?status=ok$/);
+  await expect(page.locator('.loaded-note')).toContainText(
+    '28 matching of 28 loaded',
+  );
+  await page.goBack();
+  await gate(page).getByRole('link').nth(2).click();
   await expect(page).toHaveURL(/\/history\?status=blocked$/);
   await page.goBack();
   await gate(page).getByRole('link').nth(1).click();
   await expect(page).toHaveURL(/\/approvals$/);
+});
+
+test('agents lead the page: each with its owner, state and last session', async ({
+  page,
+}) => {
+  await signIn(page);
+  const list = agents(page);
+  await expect(list).toContainText('1 in the workspace');
+  const row = list.getByRole('listitem').first();
+  await expect(row.locator('.actor-badge[data-actor="agent"]')).toContainText(
+    'support-assistant',
+  );
+  await expect(row).toContainText('for Jordan Lee');
+  await expect(row).toContainText('Active');
+  await expect(row).toContainText('Live session');
+  // Agents come before what the gate did.
+  expect((await list.boundingBox())!.y).toBeLessThan(
+    (await gate(page).boundingBox())!.y,
+  );
+  await row.getByRole('link', { name: /Live session/ }).click();
+  await expect(page).toHaveURL(
+    /\/agents\/[0-9a-f-]{36}\/sessions\/[0-9a-f-]{36}$/,
+  );
+  await page.goBack();
+  await agents(page)
+    .getByRole('link', { name: 'Agent support-assistant, for Jordan Lee' })
+    .click();
+  await expect(
+    page.getByRole('heading', { level: 1, name: 'Agent support-assistant' }),
+  ).toBeVisible();
 });
 
 test('needs you ranks reviews, caps them, and keeps database health apart', async ({
@@ -81,16 +123,22 @@ test('recent activity shows the verdict and who ran each query', async ({
   await expect(rows.first()).toContainText('You');
   await activity.getByRole('button', { name: 'Everyone' }).click();
   await expect(activity).toContainText('reviewer@visp.dev');
+  // A statement an agent ran says so, and for whom.
+  const byAgent = rows.filter({
+    has: page.locator('.actor-badge[data-actor="agent"]'),
+  });
+  await expect(byAgent.first()).toContainText('support-assistant');
+  await expect(byAgent.first()).toContainText('for member@visp.dev');
   await rows.first().getByRole('link').click();
   await expect(page).toHaveURL(/\/history\?cluster_id=.+&entry=.+/);
 });
 
-test('setup leads until it is dismissed, then the tiles lead', async ({
+test('setup leads until it is dismissed, then the agents lead', async ({
   page,
 }) => {
   await signIn(page);
   const setup = page.getByRole('region', { name: 'Workspace setup' });
-  await expect(setup).toContainText('3 of 4 done');
+  await expect(setup).toContainText('4 of 5 done');
   // The next unfinished step is the one main action.
   await expect(
     setup.getByRole('link', { name: 'Review its safety policy' }),
@@ -99,7 +147,11 @@ test('setup leads until it is dismissed, then the tiles lead', async ({
   expect(setupTop).toBeLessThan((await gate(page).boundingBox())!.y);
   await setup.getByRole('button', { name: 'Dismiss setup' }).click();
   await expect(setup).toHaveCount(0);
-  expect((await gate(page).boundingBox())!.y).toBeLessThanOrEqual(setupTop);
+  // Then the agents lead, and what the gate did follows them.
+  expect((await agents(page).boundingBox())!.y).toBeLessThanOrEqual(setupTop);
+  expect((await agents(page).boundingBox())!.y).toBeLessThan(
+    (await gate(page).boundingBox())!.y,
+  );
   // The dismissal outlives the visit.
   await page.getByRole('link', { name: 'Clusters', exact: true }).click();
   await page.getByRole('link', { name: 'Overview', exact: true }).click();
@@ -113,11 +165,17 @@ test('a new workspace starts with setup and calm zeros', async ({ page }) => {
   await installAuditTransport(page, { path: '/', kind: 'empty' });
   await signIn(page);
   const setup = page.getByRole('region', { name: 'Workspace setup' });
-  await expect(setup).toContainText('0 of 4 done');
+  await expect(setup).toContainText('0 of 5 done');
   await expect(
     setup.getByRole('link', { name: 'Connect an agent' }),
   ).toHaveAttribute('href', '/agents?connect=1');
-  await expect(gate(page)).toContainText('No statement reached the gate yet');
+  await expect(agents(page)).toContainText('No agent is connected yet.');
+  await expect(
+    agents(page).getByRole('link', { name: 'Connect an agent' }),
+  ).toHaveAttribute('href', '/agents?connect=1');
+  await expect(gate(page)).toContainText(
+    'No statement reached the gate in 24 hours',
+  );
   await expect(gate(page)).toContainText('Nothing ran in 24 hours');
   await expect(gate(page)).toContainText('Nobody is waiting for a review');
   await expect(gate(page)).toContainText('Nothing blocked in 24 hours');
@@ -126,6 +184,63 @@ test('a new workspace starts with setup and calm zeros', async ({ page }) => {
   await expect(
     page.getByRole('region', { name: 'Database health' }),
   ).toContainText('No database is connected yet.');
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+});
+
+test('a workspace with everything done but an agent has one next step: connect one', async ({
+  page,
+}) => {
+  await page.route('**/src/api/mock.ts*', async (route) => {
+    const response = await route.fetch();
+    const text = (await response.text()).replace(
+      'export function createMockTransport(',
+      'function createOriginalMockTransport(',
+    );
+    await route.fulfill({
+      response,
+      body:
+        text +
+        `\nexport function createMockTransport(options) {
+  const original = createOriginalMockTransport(options);
+  return async (path, init) => {
+    const value = await original(path, init);
+    if (path.startsWith('/agents?')) return { items: [], next_cursor: null };
+    if (path.startsWith('/audit?action=policy.update'))
+      return { items: [{ target_id: '00000000-0000-4000-8000-000000000100' }], next_cursor: null };
+    return value;
+  };
+}`,
+    });
+  });
+  await signIn(page);
+  const setup = page.getByRole('region', { name: 'Workspace setup' });
+  await expect(setup).toContainText('4 of 5 done');
+  await expect(
+    setup
+      .getByRole('link', { name: 'Connect an agent' })
+      .and(page.locator('.button')),
+  ).toHaveAttribute('href', '/agents?connect=1');
+  await expect(setup.locator('li[data-state="next"]')).toHaveCount(1);
+  await expect(setup.locator('li[data-state="next"]')).toContainText(
+    'Connect an agent',
+  );
+});
+
+test('on a phone the first screen shows the next step and the agents, not only setup', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signIn(page);
+  const setup = page.getByRole('region', { name: 'Workspace setup' });
+  await expect(setup.locator('li:visible')).toHaveCount(1);
+  await expect(agents(page)).toBeInViewport();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await setup.getByRole('button', { name: 'Show all 5 steps' }).click();
+  await expect(setup.locator('li:visible')).toHaveCount(5);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 
@@ -139,6 +254,9 @@ test('a member sees the tiles and work, with no setup or discovery', async ({
   ).toHaveCount(0);
   await expect(page.getByRole('link', { name: /Discovery/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Everyone' })).toHaveCount(0);
+  // Their own agents: the demo agent is the member's.
+  await expect(agents(page)).toContainText('1 of yours');
+  await expect(agents(page)).toContainText('for you');
 });
 
 test('the tiles are reachable by keyboard with a visible focus', async ({
@@ -146,7 +264,10 @@ test('the tiles are reachable by keyboard with a visible focus', async ({
 }) => {
   await signIn(page);
   await page.getByRole('button', { name: 'Dismiss setup' }).click();
-  await page.getByRole('link', { name: /Open console/ }).focus();
+  await gate(page).getByRole('heading', { name: 'At the gate' }).waitFor();
+  const session = agents(page).getByRole('link', { name: /Live session/ });
+  await expect(session).toBeVisible();
+  await session.focus();
   await page.keyboard.press('Tab');
   const tile = gate(page).getByRole('link').first();
   await expect(tile).toBeFocused();

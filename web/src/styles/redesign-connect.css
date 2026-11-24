@@ -404,6 +404,35 @@
 .connect-snippets .connect-note {
   margin-top: 0;
 }
+/* Copy says what happened beside its button: no toast over the token. */
+.connect-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+}
+.connect-copied {
+  color: var(--snippet-dim, var(--label-secondary));
+  font-size: var(--text-xs);
+}
+.connect-copied:empty {
+  display: none;
+}
+.dialog-actions .connect-copied {
+  margin-right: auto;
+  align-self: center;
+  color: var(--label-secondary);
+}
+.connect-panel {
+  scroll-margin-top: var(--space-4);
+}
+.connect-panel > h2:focus {
+  outline: none;
+}
+.connect-panel > h2:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 
 /* ---------- Verify ---------- */
 .connect-wait {
@@ -628,6 +657,7 @@
   border-radius: 7px;
   background: none;
   color: inherit;
+  text-decoration: none;
   cursor: pointer;
 }
 .agent-open:focus-visible {
@@ -737,6 +767,282 @@
 }
 .agents-empty .agents-gate .verdict-chip {
   width: fit-content;
+}
+
+/* ---------- One agent's page ---------- */
+.agent-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: 1280px;
+}
+.agent-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.agent-head-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+/* The agent's badge is the page's title, a size up from the lists. */
+.agent-title {
+  margin: 0;
+  font-size: var(--text-title);
+  line-height: 1.2;
+}
+.agent-title:focus {
+  outline: none;
+}
+.agent-title:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+.agent-title .actor-badge {
+  font-size: 20px;
+  border-radius: 9px;
+}
+.agent-title .actor-kind {
+  font-size: 13px;
+}
+.agent-who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  color: var(--label-secondary);
+  font-size: var(--text-sm);
+}
+.agent-who > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-description {
+  max-width: 70ch;
+  margin: 0;
+}
+.agent-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.agent-page .agent-paused {
+  margin: 0;
+}
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+  gap: var(--space-4);
+}
+.agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-5);
+  border: var(--stroke) solid var(--rule);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+}
+.agent-page h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.agent-card .agent-level {
+  margin: 0;
+  color: var(--label-primary);
+  font-size: var(--text-sm);
+}
+.agent-card .agent-reach li {
+  gap: var(--space-2) var(--space-3);
+}
+.agent-small {
+  margin: 0;
+  font-size: var(--text-xs);
+}
+.agent-card .connect-answers {
+  margin: 0;
+}
+.agent-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.agent-section-head p {
+  max-width: 75ch;
+  margin: 2px 0 0;
+  font-size: var(--text-sm);
+}
+.agent-section-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.agent-section-head h2:focus {
+  outline: none;
+}
+.agent-section-head h2:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.agent-section > .button {
+  align-self: flex-start;
+}
+.agent-token-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-token-state::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--label-tertiary);
+}
+.agent-token-state[data-state='active']::before {
+  background: var(--verdict-allowed-fg);
+}
+.agent-tokens tr[data-state='revoked'] td,
+.agent-tokens tr[data-state='expired'] td {
+  color: var(--label-secondary);
+}
+.agent-tokens td {
+  vertical-align: middle;
+}
+.agent-tokens td.card-actions {
+  text-align: right;
+}
+.agent-tools li {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) minmax(0, 1fr);
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+.agent-tools code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.agent-card .agent-guardrails {
+  grid-template-columns: minmax(0, 1fr);
+}
+.agent-danger {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border: var(--stroke) solid var(--verdict-blocked-line);
+  border-radius: var(--radius-panel);
+}
+.agent-danger p {
+  margin: 2px 0 0;
+  font-size: var(--text-sm);
+}
+
+/* ---------- Card rows: a table on a wide screen, cards on a phone ---------- */
+@media (max-width: 700px) {
+  .table-wrap:has(> .card-rows) {
+    overflow: visible;
+    border: 0;
+    background: none;
+  }
+  .card-rows,
+  .card-rows tbody,
+  .card-rows tr,
+  .card-rows td {
+    display: block;
+  }
+  .card-rows thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .card-rows tbody {
+    display: grid;
+    gap: var(--space-2);
+  }
+  .card-rows tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-2) var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border: var(--stroke) solid var(--rule);
+    border-radius: var(--radius-panel);
+    background: var(--surface);
+  }
+  .card-rows tbody tr:hover {
+    background: var(--surface);
+  }
+  .card-rows td {
+    min-width: 0;
+    height: auto;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    white-space: normal;
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
+  /* Each cell names itself, since the header row is not shown. */
+  .card-rows td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 2px;
+    color: var(--label-tertiary);
+    font-size: var(--text-xs);
+    font-weight: 500;
+  }
+  .card-rows td.card-title {
+    grid-column: 1 / -1;
+  }
+  .card-rows td.card-title::before {
+    display: none;
+  }
+  .card-rows td.card-actions {
+    grid-column: 1 / -1;
+    text-align: left;
+  }
+  .card-rows td.card-actions:empty {
+    display: none;
+  }
+  .card-rows td.numeric {
+    text-align: left;
+  }
+  .card-rows .session-task {
+    grid-column: 1 / -1;
+    max-width: none;
+    white-space: normal;
+  }
+  .agents-table td {
+    white-space: normal;
+  }
+  .agent-tools li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .agent-card {
+    padding: var(--space-4);
+  }
+  .agent-head-actions {
+    width: 100%;
+  }
+  .agent-head-actions .button {
+    flex: 1 1 auto;
+  }
 }
 
 /* ---------- Narrow screens ---------- */

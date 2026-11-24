@@ -43,6 +43,21 @@ async function agentWithToken(page: Page, name: string) {
   });
   return detail;
 }
+/** The demo agent: its token is days old, so it has a session that ended
+ * yesterday as well as the live one. */
+async function demoAgent(page: Page) {
+  await page
+    .getByRole('navigation')
+    .getByRole('link', { name: 'Agents', exact: true })
+    .click();
+  await page
+    .getByRole('table', { name: 'Agents' })
+    .getByRole('link', { name: 'Agent support-assistant' })
+    .click();
+  const detail = page.getByRole('region', { name: 'Agent support-assistant' });
+  await expect(detail.getByRole('table', { name: 'Sessions' })).toBeVisible();
+  return detail;
+}
 /** Go to an address inside the app without a reload: the mock API lives in
  * the page, so a reload would forget the agent. */
 async function goInApp(page: Page, path: string) {
@@ -77,12 +92,13 @@ test('a live session has its own page that grows as the agent calls', async ({
   test.slow();
   const detail = await agentWithToken(page, 'support-triage');
   const table = detail.getByRole('table', { name: 'Sessions' });
-  // Newest first: the one that is going on, then the one that ended.
-  await expect(table.getByRole('row')).toHaveCount(3);
+  // A new agent has one session, the one its first call began: nothing
+  // from before its token was made.
+  await expect(table.getByRole('row')).toHaveCount(2);
   const first = table.getByRole('row').nth(1);
   await expect(first.getByText('Live', { exact: true })).toBeVisible();
   await expect(first).toContainText('See which databases I can use');
-  await expect(table.getByRole('row').nth(2)).toContainText('6');
+  await expect(table).not.toContainText('day ago');
   const view = await openSession(page, 'support-triage', 0);
   // A real address, a way back, and who did it.
   expect(new URL(page.url()).pathname).toMatch(
@@ -149,6 +165,10 @@ test('a live session has its own page that grows as the agent calls', async ({
   await expect(count(page, /Blocked$/)).toHaveText(/^1/);
   await expect(count(page, /Rows returned$/)).toHaveText(/^200/);
   await expect(view).toContainText('5 steps, 1 refused.');
+  // A time inside a sentence keeps the sentence's case.
+  await expect(view.locator('.trail-times')).toHaveText(
+    /^Last step (just now|\d+ min ago)\. /,
+  );
   // A count filters the trail; again, or Steps, shows all.
   await count(page, /Blocked$/).click();
   await expect(count(page, /Blocked$/)).toHaveAttribute('aria-pressed', 'true');
@@ -164,7 +184,11 @@ test('a live session has its own page that grows as the agent calls', async ({
   await count(page, /Steps$/).click();
   await expect(count(page, /Steps$/)).toHaveAttribute('aria-pressed', 'true');
   // Pause is one click away. A paused agent makes no call: the list stops.
+  // The focus stays on the button, which now offers Resume.
   await view.getByRole('button', { name: 'Pause agent' }).click();
+  await expect(
+    view.getByRole('button', { name: 'Resume agent' }),
+  ).toBeFocused();
   await expect(
     view.getByText('Agent paused', { exact: true }).first(),
   ).toBeVisible();
@@ -218,8 +242,8 @@ test('a live session has its own page that grows as the agent calls', async ({
 test('a session that is over is read once and stays as it is', async ({
   page,
 }) => {
-  await agentWithToken(page, 'night-report');
-  const view = await openSession(page, 'night-report', 1);
+  await demoAgent(page);
+  const view = await openSession(page, 'support-assistant', 1);
   await expect(view.getByText('Ended', { exact: true })).toBeVisible();
   await expect(steps(page)).toHaveCount(6);
   await expect(view).toContainText('6 steps, 1 refused.');
@@ -281,7 +305,7 @@ test('a session that is not there says so', async ({ page }) => {
     '/agents/00000000-0000-4000-8000-000000000001/sessions/00000000-0000-4000-8000-000000000002',
   );
   await expect(
-    page.getByRole('heading', { name: 'Session not found' }),
+    page.getByRole('heading', { level: 1, name: 'Session not found' }),
   ).toBeVisible();
   await page.getByRole('link', { name: 'Back to agents' }).click();
   await expect(
@@ -315,9 +339,9 @@ for (const { width, height, themes } of sizes)
       await setTheme(page, theme);
       if (width < 768)
         await page.getByRole('button', { name: 'Open navigation' }).click();
-      await agentWithToken(page, 'watched');
+      await demoAgent(page);
       expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
-      const view = await openSession(page, 'watched', 1);
+      const view = await openSession(page, 'support-assistant', 1);
       await expect(steps(page)).toHaveCount(6);
       expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
       // A filter in use and a folded statement are accessible too.

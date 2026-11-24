@@ -36,29 +36,49 @@ describe('gate tiles', () => {
       ['blocked', 6, '/history?status=blocked'],
     ]);
   });
-  it('says that the blocked count includes writes held for review', () => {
-    const blocked = gateTiles(overview({ queries_24h: 2, blocked_24h: 1 }))[2];
-    expect(blocked?.meaning).toMatch(/held writes included/);
+  it('counts as Allowed only what did not fail, as the list it opens', () => {
+    // The History list of status ok holds no failed run: neither does the
+    // number on the tile.
+    const [allowed] = gateTiles(
+      overview({ queries_24h: 36, blocked_24h: 6, errors_24h: 2 }),
+    );
+    expect(allowed).toMatchObject({ count: 28, to: '/history?status=ok' });
+    expect(allowed?.meaning).toBe('let through, and did not fail');
   });
-  it('words zeros as results', () => {
+  it('says the time each tile covers, and claims no tile holds another', () => {
+    const tiles = gateTiles(
+      overview({ queries_24h: 9, blocked_24h: 2, pending_approvals: 3 }),
+    );
+    expect(tiles.map((tile) => tile.window)).toEqual(['24 h', 'Now', '24 h']);
+    for (const tile of tiles) expect(tile.meaning).not.toMatch(/includ/);
+    expect(tiles[2]?.meaning).toBe('stopped by the guard');
+  });
+  it('words zeros as results, and one request as one', () => {
     expect(gateTiles(overview()).map((tile) => tile.meaning)).toEqual([
       'Nothing ran in 24 hours',
       'Nobody is waiting for a review',
       'Nothing blocked in 24 hours',
     ]);
+    expect(gateTiles(overview({ pending_approvals: 1 }))[1]?.meaning).toBe(
+      'request waits for a person',
+    );
   });
   it('notes failures on the database under Allowed, only when there are some', () => {
     expect(gateTiles(overview({ queries_24h: 5 }))[0]?.note).toBeUndefined();
     expect(
       gateTiles(overview({ queries_24h: 5, errors_24h: 1 }))[0]?.note,
-    ).toBe('1 query then failed on the database');
+    ).toBe('1 more let through, then failed on the database');
     expect(
       gateTiles(overview({ queries_24h: 5, errors_24h: 3 }))[0]?.note,
-    ).toBe('3 queries then failed on the database');
+    ).toBe('3 more let through, then failed on the database');
   });
   it('never shows a negative count', () => {
     expect(
       gateTiles(overview({ queries_24h: 1, blocked_24h: 2 }))[0]?.count,
+    ).toBe(0);
+    expect(
+      gateTiles(overview({ queries_24h: 3, blocked_24h: 2, errors_24h: 2 }))[0]
+        ?.count,
     ).toBe(0);
   });
 });
