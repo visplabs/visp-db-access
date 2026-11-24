@@ -33,24 +33,24 @@ export function ReceiptSection({ approval }: { approval: Approval }) {
   const copy = useCopy();
   if (check.isPending)
     return (
-      <section className="approval-receipt" aria-label="Receipt">
-        <h3>Receipt</h3>
+      <section className="ar-receipt" aria-label="Receipt">
+        <h4>Signed receipt</h4>
         <Skeleton />
       </section>
     );
   if (check.error)
     return (
-      <section className="approval-receipt" aria-label="Receipt">
-        <h3>Receipt</h3>
+      <section className="ar-receipt" aria-label="Receipt">
+        <h4>Signed receipt</h4>
         <ErrorPanel error={check.error} retry={() => void check.refetch()} />
       </section>
     );
   const { receipt } = check.data,
     state = receiptState(check.data, approval);
   return (
-    <section className="approval-receipt" aria-label="Receipt">
-      <div className="section-heading">
-        <h3>Receipt</h3>
+    <section className="ar-receipt" aria-label="Receipt">
+      <div className="ar-subhead">
+        <h4>Signed receipt</h4>
         {/* A record that is not plainly valid is a risk: risk colour, with words. */}
         <Badge
           variant={state === 'valid' ? 'status' : 'verdict'}
@@ -60,9 +60,9 @@ export function ReceiptSection({ approval }: { approval: Approval }) {
         </Badge>
       </div>
       {receiptStateDetail[state] && (
-        <p className="receipt-warning">{receiptStateDetail[state]}</p>
+        <p className="ar-receipt-warning">{receiptStateDetail[state]}</p>
       )}
-      <dl className="receipt-list">
+      <dl className="ar-receipt-list">
         <div>
           <dt>Asked by</dt>
           <dd>
@@ -126,7 +126,7 @@ export function ReceiptSection({ approval }: { approval: Approval }) {
           </dd>
         </div>
       </dl>
-      <p className="muted">
+      <p className="ar-fine">
         The receipt proves who asked, who approved and what ran. It is not a
         backup and cannot undo the write.
       </p>

@@ -30,7 +30,7 @@ test('desktop console keeps editor and results inside a fixed viewport', async (
       .evaluate((el) => el.scrollHeight <= el.clientHeight),
   ).toBe(true);
 });
-test('mobile approval sheet keeps decisions visible while SQL scrolls', async ({
+test('mobile approval view keeps decisions visible while the request scrolls', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -41,14 +41,18 @@ test('mobile approval sheet keeps decisions visible while SQL scrolls', async ({
     .first()
     .click();
   await page.getByRole('button', { name: 'Approve', exact: true }).waitFor();
-  const dialog = await page.getByRole('dialog').boundingBox(),
+  // The request is its own view, as wide as the screen, with its decision
+  // in view.
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  const view = await page
+      .getByRole('region', { name: 'Query approval' })
+      .boundingBox(),
     approve = await page
       .getByRole('button', { name: 'Approve', exact: true })
       .boundingBox();
-  expect(dialog!.x).toBe(0);
-  expect(dialog!.y).toBe(0);
-  expect(dialog!.width).toBe(390);
-  expect(dialog!.height).toBe(844);
+  expect(view!.x).toBeLessThanOrEqual(16);
+  expect(view!.x + view!.width).toBeGreaterThanOrEqual(390 - 16);
+  expect(view!.y + view!.height).toBeLessThanOrEqual(844);
   expect(approve!.y + approve!.height).toBeLessThanOrEqual(844);
   expect((await page.locator('.skip-link').boundingBox())!.x).toBeLessThan(0);
   const before = await page
