@@ -88,21 +88,24 @@ export function verdictOfHistory(
   }
 }
 
-/** A write request. `pending` waits for a person; once approved it runs;
- * `rejected` is a person's block. `failed`, `expired` and `withdrawn` end
- * the request without a decision to show. */
+/** A write request, where the gate's decision is the point: `pending` waits
+ * for a person (held), `rejected` is a person's block, `executed` ran as
+ * approved. `approved` and `executing` have no verdict: nothing has run
+ * yet, so they must not read as Allowed; show the request's status
+ * ("Approved — not run yet", "Running") instead. `failed`, `expired` and
+ * `withdrawn` end the request without a decision to show. */
 export function verdictOfApproval(
   status: Approval['status'],
 ): GateVerdict | undefined {
   switch (status) {
     case 'pending':
       return 'held';
-    case 'approved':
-    case 'executing':
     case 'executed':
       return 'allowed';
     case 'rejected':
       return 'blocked';
+    case 'approved':
+    case 'executing':
     case 'failed':
     case 'expired':
     case 'withdrawn':

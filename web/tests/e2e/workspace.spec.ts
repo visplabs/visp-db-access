@@ -201,6 +201,8 @@ test('mobile approval review has no horizontal page overflow and respects four-e
     .getByRole('button', { name: 'Review', exact: true })
     .first()
     .click();
+  // On a phone the note opens from the one-row decision bar.
+  await page.getByRole('button', { name: 'Add note', exact: true }).click();
   await page.getByLabel('Review note').fill('Verified target rows');
   await expect(
     page.getByRole('button', { name: 'Approve', exact: true }),

@@ -74,6 +74,35 @@ export function KitchenSink() {
           </div>
         </div>
       </section>
+      <section className="settings-section" aria-labelledby="env-heading">
+        <h2 id="env-heading">Environment and verdict</h2>
+        <p className="muted">
+          Environment is where it runs: a square slate tag, no icon. Verdict is
+          what the gate decided: a rounded chip with an icon. One never looks
+          like the other, and a card's edge means one of them, not both.
+        </p>
+        <div className="kitchen-env" data-testid="kitchen-env-vs-verdict">
+          {(
+            [
+              ['production', 'blocked'],
+              ['staging', 'allowed'],
+              ['development', 'held'],
+            ] as const
+          ).map(([environment, verdict]) => (
+            <div className="kitchen-env-row" key={environment}>
+              <span
+                className="kitchen-env-rail"
+                data-environment={environment}
+              />
+              <EnvBadge environment={environment} />
+              <VerdictChip verdict={verdict} />
+              <span className="muted">
+                {environment} database, {verdict} statement
+              </span>
+            </div>
+          ))}
+        </div>
+      </section>
       <section className="settings-section" aria-labelledby="marks-heading">
         <h2 id="marks-heading">Risk, environment and SQL</h2>
         <div className="inline wrap">
@@ -81,11 +110,6 @@ export function KitchenSink() {
             <RiskMeter key={risk} risk={risk} />
           ))}
           <RiskMeter risk="high" compact />
-        </div>
-        <div className="inline wrap">
-          {['production', 'staging', 'development'].map((environment) => (
-            <EnvBadge key={environment} environment={environment} />
-          ))}
         </div>
         <SqlPreview sql="UPDATE orders SET status = 'paid' WHERE id = 42" />
       </section>

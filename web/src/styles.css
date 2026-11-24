@@ -3153,16 +3153,16 @@ summary:focus-visible,
   border-top: 8px solid;
   border-image: repeating-linear-gradient(
       -45deg,
-      var(--env-prod) 0 7px,
-      var(--env-prod-soft) 7px 14px
+      var(--env-prod-fill) 0 7px,
+      var(--env-prod-gap) 7px 14px
     )
     8;
 }
 .environment-frame[data-environment='staging'] {
-  border-top: 4px solid var(--env-staging);
+  border-top: 4px solid var(--env-rail-staging);
 }
 .environment-frame[data-environment='development'] {
-  border-top: 2px solid var(--env-dev-rail);
+  border-top: 2px solid var(--env-rail-dev);
 }
 .button.primary.run-production,
 .button.primary.run-production:hover:not(:disabled) {
@@ -3208,27 +3208,27 @@ summary:focus-visible,
 .environment-group-heading.production::before {
   background: repeating-linear-gradient(
     -45deg,
-    var(--env-prod) 0 7px,
-    var(--env-prod-soft) 7px 14px
+    var(--env-prod-fill) 0 7px,
+    var(--env-prod-gap) 7px 14px
   );
 }
 .environment-group-heading.staging::before {
-  background: var(--env-staging);
+  background: var(--env-rail-staging);
 }
 .environment-group-heading.development::before {
-  background: var(--env-dev-rail);
+  background: var(--env-rail-dev);
 }
 .environment-group-heading h2 {
   font-size: var(--text-base);
 }
 .environment-group-heading.production h2 {
-  color: var(--env-prod);
+  color: var(--label-primary);
 }
 .environment-group-heading.staging h2 {
-  color: var(--env-staging-text);
+  color: var(--label-primary);
 }
 .environment-group-heading.development h2 {
-  color: var(--env-dev-text);
+  color: var(--label-primary);
 }
 .environment-group-heading > span {
   font-size: var(--text-xs);

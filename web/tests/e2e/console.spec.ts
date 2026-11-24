@@ -517,7 +517,8 @@ test('hardened history and approval states show their badges and execution error
     .first()
     .click();
   await page.getByRole('tab', { name: /^All/ }).click();
-  await expect(page.locator('.badge.info')).toHaveText('Executing');
+  // A running request has not finished: its status, not a verdict.
+  await expect(page.locator('.badge.info')).toHaveText('Running');
   // Three requests failed: one could not reach its database, one found
   // that its data had changed after the approval, and one lost its node.
   const failures = page.getByRole('listitem').filter({
