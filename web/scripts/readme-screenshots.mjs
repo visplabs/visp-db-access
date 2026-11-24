@@ -114,7 +114,7 @@ await light
 await light.getByRole('dialog').getByRole('button', { name: 'Done' }).click();
 await agent
   .getByRole('table', { name: 'Sessions' })
-  .getByRole('button', { name: /^Open session started / })
+  .getByRole('link', { name: /^Open session started / })
   .first()
   .click();
 await light

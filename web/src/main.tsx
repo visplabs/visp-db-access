@@ -60,6 +60,11 @@ const AgentsPage = lazy(() =>
     default: module.AgentsPage,
   })),
 );
+const SessionPage = lazy(() =>
+  import('./features/agents/session-page').then((module) => ({
+    default: module.SessionPage,
+  })),
+);
 const UsersPage = lazy(() =>
   import('./features/admin/users').then((module) => ({
     default: module.UsersPage,
@@ -146,6 +151,10 @@ if (root)
                         <Route path="/approvals" element={<ApprovalsPage />} />
                         <Route path="/history" element={<HistoryPage />} />
                         <Route path="/agents" element={<AgentsPage />} />
+                        <Route
+                          path="/agents/:agentId/sessions/:sessionId"
+                          element={<SessionPage />}
+                        />
                         <Route
                           path="/users"
                           element={
