@@ -75,9 +75,9 @@ and the gate sits on top of it. On its own, a role does not:
   protected columns and hides blocked tables.
 - **stop runaway queries.** The gate adds a row cap, timeouts, a call rate
   and an hourly query budget.
-- **say which agent ran what, and why.** Queries and tool calls are
-  recorded with the agent, its owner and its task, in a hash-chained audit
-  log.
+- **say which agent ran what, and why.** Every query is kept in history
+  with the agent, its owner and its task. An audit event for each query and
+  tool call is sealed into a hash chain; the SQL text itself is not.
 - **let an agent prepare a change.** An agent proposes a write; a person
   sees the affected rows and approves it.
 
@@ -196,6 +196,8 @@ Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [SECURITY.md](SECURITY.md) describes.
 
 ## License
+
+<!-- OWNER: confirm this promise before launch -->
 
 [Apache License 2.0](LICENSE). Nothing is held back for a paid edition. See
 [NOTICE](NOTICE) for attributions.

@@ -189,12 +189,15 @@ The gate is running. Three things to do:
    The owner of an agent cannot approve its writes, so use the reviewer.
 
 3. Connect your own agent instead of the script. Any MCP client that speaks
-   Streamable HTTP works. Most take a block like this one:
+   Streamable HTTP works. Claude Code:
+
+     claude mcp add --transport http visp-gate $public_url/api/v1/mcp --header "Authorization: Bearer $agent_token"
+
+   Cursor (.cursor/mcp.json) and other clients that take a URL and headers:
 
      {
        "mcpServers": {
-         "database-gateway": {
-           "type": "http",
+         "visp-gate": {
            "url": "$public_url/api/v1/mcp",
            "headers": { "Authorization": "Bearer $agent_token" }
          }

@@ -192,7 +192,8 @@ clients that take a JSON block:
 }
 ```
 
-To print the block with the token again:
+The setup step prints both of these with the demo's URL and token filled in
+(step 3 of its output). To print them again, with the same token:
 
 ```sh
 docker compose -f deploy/demo/docker-compose.yml run --rm seed
