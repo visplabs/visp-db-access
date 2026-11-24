@@ -208,7 +208,11 @@ test('mobile approval review has no horizontal page overflow and respects four-e
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
-  await expect(page.getByRole('dialog').getByText(/Expires in/)).toBeVisible();
+  await expect(
+    page
+      .getByRole('region', { name: 'Query approval' })
+      .getByText(/Expires in/),
+  ).toBeVisible();
   await page.screenshot({
     path: 'screenshots/audit/after/mobile-approval-review.png',
     fullPage: true,
@@ -242,7 +246,7 @@ test('approval actions expire promptly in both themes and viewport sizes', async
         page.getByRole('button', { name: 'Approve', exact: true }),
       ).toHaveCount(0);
       await expect(
-        page.getByRole('button', { name: 'Execute approved query' }),
+        page.getByRole('button', { name: 'Run approved write' }),
       ).toHaveCount(0);
       const mode = `${width}-${theme}`,
         axe = await new AxeBuilder({ page }).analyze();

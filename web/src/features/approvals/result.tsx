@@ -1,36 +1,35 @@
 import type { QueryResult } from '../../api/types';
-import { Badge, Button } from '../../components/ui';
+import { Button } from '../../components/ui';
 import { presentCell } from '../../lib/result-presentation';
 import { resultCsv, resultJson } from '../../lib/result-export';
 import { cellText, download } from '../../lib/utils';
 
-/** Lightweight durable execution receipt; the interactive grid stays in the console. */
+/** What the write returned; the interactive grid stays in the console. */
 export function ApprovalResult({ result }: { result: QueryResult }) {
   return (
-    <section aria-label="Execution result" className="approval-result">
-      <div className="section-heading">
-        <h3>Execution result</h3>
-        <Badge tone="success">
-          {result.elapsed_ms} ms · {result.routed_to}
-        </Badge>
-      </div>
-      <p className="muted">
-        {result.affected_rows !== null
-          ? `${result.affected_rows.toLocaleString()} ${result.affected_rows === 1 ? 'row' : 'rows'} affected.`
-          : `${result.rows.length.toLocaleString()} fetched rows.`}
-        {result.truncated &&
-          ' The returned snapshot was truncated by the safety limit.'}
-        {result.columns.some((column) => column.masked) &&
-          ' Sensitive columns remain masked.'}
+    <section aria-label="Execution result" className="ar-result">
+      <p>
+        <strong>
+          {result.affected_rows !== null
+            ? `${result.affected_rows.toLocaleString()} ${result.affected_rows === 1 ? 'row' : 'rows'} affected.`
+            : `${result.rows.length.toLocaleString()} fetched rows.`}
+        </strong>{' '}
+        <span className="muted">
+          {result.elapsed_ms} ms on the {result.routed_to}.
+          {result.truncated &&
+            ' The returned snapshot was truncated by the safety limit.'}
+          {result.columns.some((column) => column.masked) &&
+            ' Sensitive columns remain masked.'}
+        </span>
       </p>
       {result.columns.length > 0 && (
         <div
-          className="table-wrap"
+          className="table-wrap ar-table-wrap"
           tabIndex={0}
           role="region"
           aria-label="Fetched execution rows"
         >
-          <table>
+          <table className="ar-table">
             <thead>
               <tr>
                 {result.columns.map((column, index) => (
@@ -64,8 +63,9 @@ export function ApprovalResult({ result }: { result: QueryResult }) {
           </table>
         </div>
       )}
-      <div className="inline wrap">
+      <div className="ar-inline">
         <Button
+          size="small"
           onClick={() =>
             download(
               `approval-${result.query_id}.csv`,
@@ -77,6 +77,7 @@ export function ApprovalResult({ result }: { result: QueryResult }) {
           Export CSV
         </Button>
         <Button
+          size="small"
           onClick={() =>
             download(
               `approval-${result.query_id}.json`,
