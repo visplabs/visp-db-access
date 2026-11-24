@@ -1,8 +1,17 @@
-# Five-minute demo
+# Demo
 
 One command starts the gateway, a demo database and an agent that is ready to
-use it. You then watch the gate stop what is unsafe, let a safe read through,
-and hold a write until you approve it.
+use it. In about five minutes, once the images are downloaded, you see:
+
+- **A blocked statement.** The agent sends an `UPDATE` with no `WHERE`, or
+  reads a blocked table, and is refused with a hint it can act on.
+- **A masked column.** The agent reads customers and gets `email` and `phone`
+  as `••••••`.
+- **A write that waits for a person.** The agent asks to cancel three orders.
+  Nothing runs until you, as a second person, preview it and see the exact
+  three rows before and after.
+- **The receipt.** After you approve, the write runs on those rows only, and
+  you get a signed receipt and a record of the calls the agent made.
 
 **Demo only.** The demo uses well-known passwords, plain HTTP and made-up shop
 data, and it listens on `127.0.0.1` only. Do not put real data behind it. For a
@@ -75,8 +84,8 @@ its password.
 docker compose -f deploy/demo/docker-compose.yml run --rm agent --follow
 ```
 
-This plays an agent over the real agent door: the Model Context Protocol
-endpoint at `/api/v1/mcp`, with the agent's token. It prints each call and
+This plays an agent over the real Model Context Protocol (MCP) endpoint at
+`/api/v1/mcp`, with the agent's token. It prints each call and
 what came back, and it stops with an error if the gate does not behave as
 this page says. What to look for:
 
@@ -156,16 +165,26 @@ to let it work again.
 
 ## Connect a real MCP client
 
-Any client that speaks MCP over Streamable HTTP can use the agent door in
-place of the script. The setup step printed the token and a block like the
-one below; most clients take it as it is, or ask for the same three values
-(a URL, a header name and a header value):
+Any client that speaks MCP over Streamable HTTP can use the gate in place of
+the script. It needs three values: the URL `http://localhost:8080/api/v1/mcp`,
+the header name `Authorization` and the value `Bearer ` followed by the agent
+token that the setup step printed. No database password goes into the
+client's configuration.
+
+Claude Code:
+
+```sh
+claude mcp add --transport http visp-gate http://localhost:8080/api/v1/mcp \
+  --header "Authorization: Bearer vda_agent_…"
+```
+
+Cursor (`.cursor/mcp.json` in a project, or `~/.cursor/mcp.json`) and other
+clients that take a JSON block:
 
 ```json
 {
   "mcpServers": {
-    "database-gateway": {
-      "type": "http",
+    "visp-gate": {
       "url": "http://localhost:8080/api/v1/mcp",
       "headers": { "Authorization": "Bearer vda_agent_…" }
     }
@@ -188,7 +207,7 @@ Then ask your agent, for example:
 
 Watch what it does under **Agents → demo-agent** while it works.
 
-The agent door refuses a request that carries an `Origin` header, so a client
+The MCP endpoint refuses a request that carries an `Origin` header, so a client
 that runs inside a web page cannot use it. The tools and their answers are in
 the [API reference](api.md#agent-door-bearer-token-no-session).
 
@@ -219,7 +238,7 @@ read these first:
   [threat model](threat-model.md).
 - **TLS.** The demo speaks plain HTTP to the browser and to the database.
 - **Notices.** A webhook can tell approvers that a request waits; it is off.
-- **MySQL.** The gate works with MySQL too, without the measured preview.
+- **MySQL.** The gate works with MySQL too, without the row preview.
 
 ## Without Docker
 
