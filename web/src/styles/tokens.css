@@ -96,6 +96,28 @@
   --editor-default-height: 280px;
   --receipt-max-height: 320px;
   --preview-height: 96px;
+  /* Verdicts: the four answers of the gate, its signature. Each has a
+     foreground (text and icon), a soft ground and a hairline. Text on its
+     ground is AA (4.5:1) or better in both themes; see components/ui/README.md.
+     Hues sit beside the risk colours, never on them: green leans away from the
+     development teal, red is deeper than production. */
+  --verdict-allowed-fg: #156b48;
+  --verdict-allowed-bg: #e3f3eb;
+  --verdict-allowed-line: #9fd3b9;
+  --verdict-masked-fg: #5a3ea3;
+  --verdict-masked-bg: #eeeafa;
+  --verdict-masked-line: #c6b8ee;
+  --verdict-held-fg: #8a4a00;
+  --verdict-held-bg: #fcefd6;
+  --verdict-held-line: #e8c27f;
+  --verdict-blocked-fg: #b01f2e;
+  --verdict-blocked-bg: #fbe7e9;
+  --verdict-blocked-line: #eeb0b7;
+  /* Who acted. An agent is marked by an inverted "Agent" tab; a person has
+     no fill. */
+  --actor-agent-fg: var(--on-ink);
+  --actor-agent-bg: var(--ink);
+  --actor-line: var(--rule);
   color-scheme: light;
   font-family: var(--font-ui);
   font-size: var(--text-base);
@@ -139,5 +161,17 @@
   --syntax-comment: #8794a2;
   --overlay: rgb(0 0 0 / 0.65);
   --shadow: var(--floating-shadow);
+  --verdict-allowed-fg: #6fd5a3;
+  --verdict-allowed-bg: #102a20;
+  --verdict-allowed-line: #265a43;
+  --verdict-masked-fg: #c4b2ff;
+  --verdict-masked-bg: #221c3a;
+  --verdict-masked-line: #463a72;
+  --verdict-held-fg: #f1bd63;
+  --verdict-held-bg: #2e2410;
+  --verdict-held-line: #634b22;
+  --verdict-blocked-fg: #ff9ca4;
+  --verdict-blocked-bg: #371a1f;
+  --verdict-blocked-line: #6e3039;
   color-scheme: dark;
 }

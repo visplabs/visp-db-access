@@ -24,3 +24,26 @@ use a bounded editor/results split and collapsible schema/safety columns. Standa
 buttons are 36px tall; mobile approval actions are 40px. Use sentence case and
 explicit action names, preserve API error messages and offer retries for failed
 reads. Destructive confirmations state their scope.
+
+## Verdicts and actors
+
+The gate has one vocabulary, used on every screen: `VerdictChip` from
+`verdict.tsx`, with the value mapped from the API by `lib/verdict.ts`
+(`verdictOfAnalysis`, `verdictOfStep`, `verdictOfHistory` and the rest; never
+map a raw status by hand).
+
+- **Allowed**: the gate let the statement or call through as written.
+- **Masked**: it ran, and the policy hid one or more columns of the rows.
+- **Held**: a write waits for a person to approve it (dashed edge: not final).
+- **Blocked**: the gate refused it, or a reviewer rejected the request.
+
+A failure that is not a gate decision (a timeout, an expired request) has no
+verdict: the mapper returns `undefined`; show the run status instead.
+
+Rule: the status of a guard decision is a `VerdictChip`; who did it is an
+`ActorBadge` (`kind="agent"` shows an inverted "Agent" tab, then name and
+client; `kind="human"` an outline person and a name). Do not use `Badge`
+tones or colour alone for either. Colours are the `--verdict-*-fg/-bg/-line`
+tokens in `styles/tokens.css`; text on its ground is AA in both themes.
+Screen styles go in `styles/redesign-<screen>.css`, shared ones in
+`styles/redesign.css`.

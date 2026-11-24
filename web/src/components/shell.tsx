@@ -215,7 +215,7 @@ export function Shell() {
           location.pathname.startsWith(item.to),
         )?.text ?? 'Cluster');
   useEffect(() => {
-    document.title = `${page}${current ? ` · ${current.name}` : ''} — visp`;
+    document.title = `${page}${current ? ` · ${current.name}` : ''} — visp gate`;
   }, [page, current]);
   return (
     <PopoverLayerContext.Provider value={popoverLayer}>
@@ -243,10 +243,14 @@ export function Shell() {
               closeMobileNav();
           }}
         >
-          <NavLink className="brand" to="/overview" aria-label="visp overview">
+          <NavLink
+            className="brand"
+            to="/overview"
+            aria-label="visp gate overview"
+          >
             <BrandMark size={28} />
             <span>
-              <strong>visp</strong>
+              <strong>visp gate</strong>
             </span>
           </NavLink>
           <div className="workspace-label">Workspace</div>

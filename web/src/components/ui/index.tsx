@@ -767,3 +767,5 @@ export function ChipInput({
     </Field>
   );
 }
+export { VerdictChip, ActorBadge } from './verdict';
+export type { GateVerdict } from '../../lib/verdict';

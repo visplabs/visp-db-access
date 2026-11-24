@@ -18,7 +18,10 @@ import {
   Tip,
   SwitchRow,
   SegmentedControl,
+  VerdictChip,
+  ActorBadge,
 } from '.';
+import { VERDICTS } from '../../lib/verdict';
 import { useToast } from './toast';
 import { BrandMark } from './brand';
 export function KitchenSink() {
@@ -46,6 +49,29 @@ export function KitchenSink() {
         </div>
         <BrandMark />
       </div>
+      <section className="settings-section" aria-labelledby="verdicts-heading">
+        <h2 id="verdicts-heading">Verdicts and actors</h2>
+        <div className="kitchen-verdicts" data-testid="kitchen-verdicts">
+          {(['sm', 'md'] as const).map((size) => (
+            <div className="inline wrap" key={size}>
+              {VERDICTS.map((verdict) => (
+                <VerdictChip key={verdict} verdict={verdict} size={size} />
+              ))}
+            </div>
+          ))}
+          <div className="inline wrap">
+            <VerdictChip verdict="held" label="Held for review" />
+            <VerdictChip verdict="blocked" label="Blocked · 3 in a row" />
+          </div>
+          <div className="inline wrap">
+            <ActorBadge kind="agent" />
+            <ActorBadge kind="agent" name="billing-bot" />
+            <ActorBadge kind="agent" name="billing-bot" client="Claude Code" />
+            <ActorBadge kind="human" />
+            <ActorBadge kind="human" name="Ada Lovelace" />
+          </div>
+        </div>
+      </section>
       <section className="settings-section">
         <h2>Actions and feedback</h2>
         <div className="inline wrap">

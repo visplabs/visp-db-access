@@ -54,7 +54,7 @@ test('Harbor is dark by default, uses the bundled Geist fonts and one action blu
         .map((entry) => new URL(entry.name).host),
     ),
   ]);
-  expect(hosts).toEqual(['127.0.0.1:5174']);
+  expect(hosts).toEqual([new URL(page.url()).host]);
   await setTheme(page, 'Light');
   expect(
     await page.evaluate(() =>
