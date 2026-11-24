@@ -3164,17 +3164,19 @@ summary:focus-visible,
 .environment-frame[data-environment='development'] {
   border-top: 2px solid var(--env-rail-dev);
 }
+/* The run button wears its environment's tag colours (slate, never a
+   verdict hue): solid ink on production, a slate outline on staging. */
 .button.primary.run-production,
 .button.primary.run-production:hover:not(:disabled) {
-  background: var(--env-prod-action);
-  border-color: var(--env-prod-action);
-  color: var(--on-risk);
+  background: var(--env-prod-fill);
+  border-color: var(--env-prod-fill);
+  color: var(--env-prod-ink);
 }
 .button.primary.run-staging,
 .button.primary.run-staging:hover:not(:disabled) {
-  background: var(--env-staging-soft);
-  border-color: var(--env-staging);
-  color: var(--env-staging-text);
+  background: var(--env-staging-fill);
+  border-color: var(--env-staging-line);
+  color: var(--env-staging-ink);
 }
 .run-production kbd,
 .run-staging kbd {

@@ -270,7 +270,6 @@
   border-top: 1px solid var(--rule);
 }
 .ov-review {
-  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-areas:
@@ -280,22 +279,7 @@
     'expiry go';
   gap: 6px var(--space-4);
   align-items: center;
-  padding: 12px 16px 12px 18px;
-}
-.ov-review::before {
-  content: '';
-  position: absolute;
-  inset: 10px auto 10px 0;
-  width: 3px;
-  border-radius: 0 2px 2px 0;
-  background: transparent;
-}
-.ov-review[data-risk='high']::before,
-.ov-review[data-risk='critical']::before {
-  background: var(--danger);
-}
-.ov-review[data-risk='medium']::before {
-  background: var(--warning);
+  padding: 12px 16px;
 }
 .ov-review-who {
   grid-area: who;
@@ -619,7 +603,9 @@
   border-style: dashed;
 }
 .ov-setup-steps > li > div {
+  flex: 1 1 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   justify-items: start;
   gap: 2px;
@@ -639,7 +625,14 @@
   color: var(--label-secondary);
 }
 .ov-setup-steps .button {
+  max-width: 100%;
+  height: auto;
+  min-height: 28px;
   margin-top: 8px;
+  padding-block: 4px;
+  /* A narrow step wraps the button's words; they never cross the card. */
+  white-space: normal;
+  text-align: left;
 }
 .ov-setup-mark {
   display: inline-grid;

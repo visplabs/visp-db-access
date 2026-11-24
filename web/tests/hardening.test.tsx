@@ -5,7 +5,7 @@ import { analyzeDemo } from '../src/api/mock-guard';
 import { defaultPolicy } from '../src/api/fixtures';
 import { MemoryRouter } from 'react-router-dom';
 import { HistoryTable } from '../src/features/history/history';
-import { ApprovalBadge } from '../src/features/approvals/approvals';
+import { ApprovalBadge } from '../src/features/approvals/request-state';
 import { fixtures } from '../src/api/fixtures';
 import { ApiError } from '../src/api/errors';
 import { loginMessage, message } from '../src/lib/utils';

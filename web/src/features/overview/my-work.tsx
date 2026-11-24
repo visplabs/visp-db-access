@@ -19,7 +19,8 @@ import {
 } from '../../components/ui';
 import { ActorBadge, VerdictChip } from '../../components/ui/verdict';
 import { RelativeTime, ExpiryTime } from '../../components/ui/time';
-import { verdictOfApproval, verdictOfHistory } from '../../lib/verdict';
+import { verdictOfHistory } from '../../lib/verdict';
+import { RequestState } from '../approvals/request-state';
 import { statementSummary } from '../../lib/activity';
 import {
   actorOfHistory,
@@ -64,12 +65,14 @@ function ReviewRow({
   cluster: Cluster | undefined;
   mine: boolean;
 }) {
-  const verdict = verdictOfApproval(approval.status) ?? 'held';
   const id = `ov-review-${approval.id}`;
+  // Risk is the meter's to show; the row has no coloured edge, so the
+  // chip is the only verdict on it. A request approved but not run yet,
+  // or running, shows its status, never Held.
   return (
-    <li className="ov-review" data-risk={approval.analysis.risk}>
+    <li className="ov-review">
       <div className="ov-review-who">
-        <VerdictChip verdict={verdict} />
+        <RequestState status={approval.status} />
         <Requester approval={approval} />
         <span className="ov-cluster">
           {approval.cluster_name}
