@@ -319,3 +319,67 @@ describe('theme before first paint', () => {
     expect(document.documentElement.dataset.theme).toBe('dark');
   });
 });
+
+describe('connect an agent', () => {
+  const token = `vda_agent_${'a'.repeat(43)}`;
+  const url = 'https://gate.example.com/api/v1/mcp';
+  it('prints a Claude Code command with the gate token, never a password', async () => {
+    const { snippetFor } = await import('../src/features/agents/connect');
+    expect(snippetFor('claude-code', token, url).text).toBe(
+      `claude mcp add --transport http visp-gate ${url} --header "Authorization: Bearer ${token}"`,
+    );
+  });
+  it('prints the Cursor file and the generic MCP config under visp-gate', async () => {
+    const { snippetFor } = await import('../src/features/agents/connect');
+    const cursor = snippetFor('cursor', token, url);
+    expect(cursor.title).toBe('.cursor/mcp.json');
+    expect(JSON.parse(cursor.text)).toEqual({
+      mcpServers: {
+        'visp-gate': { url, headers: { Authorization: `Bearer ${token}` } },
+      },
+    });
+    expect(JSON.parse(snippetFor('other', token, url).text)).toEqual({
+      mcpServers: {
+        'visp-gate': {
+          type: 'http',
+          url,
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      },
+    });
+    for (const client of ['claude-code', 'cursor', 'other'] as const)
+      expect(snippetFor(client, token, url).text).not.toMatch(
+        /database-gateway|password/i,
+      );
+  });
+  it('the mock agent first calls a little after its token is made', async () => {
+    const api = createMockTransport({ delay: 0, firstCallMs: 150 });
+    await api(
+      '/auth/login',
+      send('POST', { email: 'admin@visp.dev', password: 'demo-password' }),
+    );
+    const { items } = await api<{ items: Cluster[] }>('/clusters');
+    const agent = await api<Agent>(
+      '/agents',
+      send('POST', { name: 'first-call', cluster_ids: [items[0]!.id] }),
+    );
+    const made = await api<NewAgentToken>(
+      `/agents/${agent.id}/tokens`,
+      send('POST', {}),
+    );
+    type Sessions = {
+      items: { token: { id: string }; started_at: string; active: boolean }[];
+    };
+    const before = await api<Sessions>(`/agents/${agent.id}/sessions`);
+    expect(before.items).toEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const after = await api<Sessions>(`/agents/${agent.id}/sessions`);
+    const live = after.items.find((session) => session.active);
+    expect(live?.token.id).toBe(made.id);
+    // The session that the connect page shows began with that first call.
+    const created = (await api<Agent>(`/agents/${agent.id}`)).tokens[0]!;
+    expect(Date.parse(live!.started_at)).toBeGreaterThanOrEqual(
+      Date.parse(created.created_at),
+    );
+  });
+});

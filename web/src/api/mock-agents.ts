@@ -139,6 +139,9 @@ export function createAgents(context: {
   fail: Fail;
   audit: (action: string, type: string, id: string, details?: unknown) => void;
   now: () => string;
+  /** How long after a token is made its agent first calls. The connect
+   * screen waits for that call; zero makes the demo calls exist at once. */
+  firstCallMs?: number;
 }) {
   const { fail, audit, now } = context;
   const agents: Agent[] = [];
@@ -194,12 +197,29 @@ export function createAgents(context: {
     const token = agent.tokens.at(-1);
     // An agent with no token has never called.
     if (!token) return [];
+    // Its first call comes a little after the token is made, as when a
+    // person pastes the token into a client; until then it has no session.
+    const first =
+      new Date(token.created_at).getTime() + (context.firstCallMs ?? 0);
+    if (Date.now() < first) return [];
     const day = 26 * 3_600_000;
     const past = PAST.map((draft, index) =>
       stepOf(draft, agent, index + 1, Date.now() - day + index * 21_000),
     );
+    // The live session began with that first call, not before it.
     const live = LIVE.slice(0, LIVE_START).map((draft, index) =>
-      stepOf(draft, agent, index + 1, Date.now() - (LIVE_START - index) * 9000),
+      stepOf(
+        draft,
+        agent,
+        index + 1,
+        Math.min(
+          Date.now(),
+          Math.max(
+            Date.now() - (LIVE_START - index) * 9000,
+            first + index * 600,
+          ),
+        ),
+      ),
     );
     const made = [
       {

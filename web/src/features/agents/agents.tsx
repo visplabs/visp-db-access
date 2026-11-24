@@ -1,19 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, useSearchParams } from 'react-router-dom';
-import { Bot } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import type { Agent, Cluster, NewAgentToken } from '../../api/types';
 import { useCopy } from '../../lib/clipboard';
 import { useAction, useAllPages, useResource } from '../../lib/query';
 import {
-  Badge,
+  ActorBadge,
   Button,
   Confirm,
-  Empty,
   ErrorPanel,
   Field,
   Modal,
   Picker,
   Skeleton,
+  VerdictChip,
 } from '../../components/ui';
 import { CloudLabel } from '../../components/ui/cluster-heading';
 import { RelativeTime } from '../../components/ui/time';
@@ -21,10 +21,11 @@ import { formatTime } from '../../lib/utils';
 import { useUser } from '../auth/session';
 import { SessionList } from './sessions';
 import { sessionPath } from './session-trail';
+import { ClientSnippets, ConnectWizard } from './connect';
 
 const levelText = {
   read: 'Read only',
-  write: 'Read, and may ask for writes',
+  write: 'May ask for writes',
 } as const;
 /** The tools every agent gets at the agent door, in the order it uses them. */
 const tools = [
@@ -44,8 +45,6 @@ const tokenState = (token: Agent['tokens'][number]) =>
     : new Date(token.expires_at).getTime() <= Date.now()
       ? 'Expired'
       : 'Active';
-const liveTokens = (agent: Agent) =>
-  agent.tokens.filter((token) => tokenState(token) === 'Active').length;
 
 export function AgentsPage() {
   const user = useUser();
@@ -53,7 +52,7 @@ export function AgentsPage() {
   const agents = useAllPages<Agent>('/agents'),
     clusters = useResource<{ items: Cluster[] }>('/clusters');
   const [params, setParams] = useSearchParams();
-  const [editing, setEditing] = useState<Agent | 'new' | null>(null);
+  const [editing, setEditing] = useState<Agent | null>(null);
   const selected = agents.data?.items.find((a) => a.id === params.get('agent'));
   const names = useMemo(
     () => new Map(clusters.data?.items.map((c) => [c.id, c]) ?? []),
@@ -63,37 +62,52 @@ export function AgentsPage() {
   const legacy = params.get('session');
   if (legacy && params.get('agent'))
     return <Navigate replace to={sessionPath(params.get('agent')!, legacy)} />;
+  const connect = () => setParams({ connect: '1' });
+  // The wizard is a page of its own: `?connect`, so Back in the browser
+  // returns to the list.
+  if (params.has('connect'))
+    return clusters.isPending || agents.isPending ? (
+      <Skeleton />
+    ) : clusters.error ? (
+      <ErrorPanel
+        error={clusters.error}
+        retry={() => void clusters.refetch()}
+      />
+    ) : (
+      <ConnectWizard
+        user={user}
+        clusters={clusters.data.items}
+        ownNames={(agents.data?.items ?? [])
+          .filter((agent) => agent.owner.id === user?.id)
+          .map((agent) => agent.name)}
+        onClose={(agent) => setParams(agent ? { agent } : {})}
+      />
+    );
   return (
     <>
-      <div className="page-heading">
+      <div className="page-heading agents-heading">
         <div>
           <h1>Agents</h1>
-          <p>Programs that query for a person.</p>
+          <p>
+            Agents act for a person. An agent can never do more than its owner.
+          </p>
         </div>
-        <Button variant="primary" onClick={() => setEditing('new')}>
+        <Button variant="primary" onClick={connect}>
+          <Plus size={16} aria-hidden="true" />
           Connect an agent
         </Button>
       </div>
-      <p className="agents-rule muted">
-        Each agent has one owner. The owner answers for what the agent does. An
-        agent can never do more than its owner can do at that moment.
-      </p>
       {agents.isPending ? (
         <Skeleton />
       ) : agents.error ? (
         <ErrorPanel error={agents.error} retry={() => void agents.refetch()} />
       ) : agents.data.items.length === 0 ? (
-        <Empty
-          title="No agents yet"
-          description="Connect a program, such as an AI assistant, so that it can read data through the same guard as you."
-          action={
-            <Button onClick={() => setEditing('new')}>Connect an agent</Button>
-          }
-        />
+        <AgentsEmpty onConnect={connect} />
       ) : (
         <div className="agents-layout">
+          <GateLegend />
           <div
-            className="table-wrap"
+            className="table-wrap agents-table"
             tabIndex={0}
             role="region"
             aria-label="Agents list"
@@ -105,46 +119,20 @@ export function AgentsPage() {
                   <th>Owner</th>
                   <th>Reach</th>
                   <th>Level</th>
+                  <th>Tokens</th>
+                  <th>Last active</th>
                   <th>State</th>
                 </tr>
               </thead>
               <tbody>
                 {agents.data.items.map((agent) => (
-                  <tr
+                  <AgentRow
                     key={agent.id}
-                    className={agent.id === selected?.id ? 'selected' : ''}
-                  >
-                    <td>
-                      <button
-                        type="button"
-                        className="link-button strong"
-                        aria-current={
-                          agent.id === selected?.id ? 'true' : undefined
-                        }
-                        onClick={() => setParams({ agent: agent.id })}
-                      >
-                        <Bot size={16} aria-hidden="true" />
-                        {agent.name}
-                      </button>
-                    </td>
-                    <td>{agent.owner.name}</td>
-                    <td>
-                      {agent.cluster_ids.length === 1
-                        ? (names.get(agent.cluster_ids[0]!)?.name ??
-                          '1 database')
-                        : `${agent.cluster_ids.length} databases`}
-                    </td>
-                    <td>{levelText[agent.max_level]}</td>
-                    <td>
-                      <Badge tone={agent.paused ? 'warning' : 'neutral'}>
-                        {agent.paused
-                          ? 'Paused'
-                          : liveTokens(agent) === 0
-                            ? 'No token'
-                            : 'Active'}
-                      </Badge>
-                    </td>
-                  </tr>
+                    agent={agent}
+                    clusters={names}
+                    selected={agent.id === selected?.id}
+                    onOpen={() => setParams({ agent: agent.id })}
+                  />
                 ))}
               </tbody>
             </table>
@@ -162,8 +150,8 @@ export function AgentsPage() {
         </div>
       )}
       <AgentForm
-        key={editing === 'new' ? 'new' : (editing?.id ?? 'closed')}
-        agent={editing === 'new' ? undefined : (editing ?? undefined)}
+        key={editing?.id ?? 'closed'}
+        agent={editing ?? undefined}
         open={editing !== null}
         clusters={clusters.data?.items ?? []}
         onClose={() => setEditing(null)}
@@ -173,6 +161,146 @@ export function AgentsPage() {
         }}
       />
     </>
+  );
+}
+
+/** The newest use of any of the agent's tokens. */
+const lastActive = (agent: Agent) =>
+  agent.tokens
+    .map((token) => token.last_used_at)
+    .filter((value): value is string => !!value)
+    .sort((a, b) => a.localeCompare(b))
+    .at(-1);
+const DAY = 86_400_000;
+const capitalize = (word: string) =>
+  word.charAt(0).toUpperCase() + word.slice(1);
+
+function AgentRow({
+  agent,
+  clusters,
+  selected,
+  onOpen,
+}: {
+  agent: Agent;
+  clusters: Map<string, Cluster>;
+  selected: boolean;
+  onOpen: () => void;
+}) {
+  const live = agent.tokens.filter((token) => tokenState(token) === 'Active');
+  const soonest = live
+    .map((token) => new Date(token.expires_at).getTime())
+    .sort((a, b) => a - b)[0];
+  const days =
+    soonest === undefined ? undefined : Math.ceil((soonest - Date.now()) / DAY);
+  const first = clusters.get(agent.cluster_ids[0] ?? '');
+  const used = lastActive(agent);
+  const state = agent.paused ? 'paused' : live.length === 0 ? 'idle' : 'active';
+  return (
+    <tr className={selected ? 'selected' : ''}>
+      <td>
+        <button
+          type="button"
+          className="agent-open"
+          aria-current={selected ? 'true' : undefined}
+          onClick={onOpen}
+        >
+          <ActorBadge kind="agent" name={agent.name} />
+        </button>
+      </td>
+      <td>
+        <ActorBadge kind="human" name={agent.owner.name} />
+      </td>
+      <td>
+        {agent.cluster_ids.length === 1 ? (
+          first ? (
+            <span className="agent-reach-cell">
+              <span className="identifier">{first.name}</span>
+              <span className={`environment-word ${first.environment}`}>
+                {capitalize(first.environment)}
+              </span>
+            </span>
+          ) : (
+            '1 database'
+          )
+        ) : (
+          `${agent.cluster_ids.length} databases`
+        )}
+      </td>
+      <td>{levelText[agent.max_level]}</td>
+      <td>
+        {live.length === 0 ? (
+          <span className="muted">None active</span>
+        ) : (
+          <>
+            {live.length} active
+            {days !== undefined && days <= 7 && (
+              <span className="agent-expiring">
+                , {days <= 1 ? 'ends today' : `ends in ${days} days`}
+              </span>
+            )}
+          </>
+        )}
+      </td>
+      <td>
+        {used ? (
+          <RelativeTime value={used} />
+        ) : (
+          <span className="muted">Never</span>
+        )}
+      </td>
+      <td>
+        <span className="agent-state" data-state={state}>
+          {state === 'paused'
+            ? 'Paused'
+            : state === 'idle'
+              ? 'No token'
+              : 'Active'}
+        </span>
+      </td>
+    </tr>
+  );
+}
+
+/** What the gate answers every agent, in the four verdicts. */
+function GateLegend() {
+  return (
+    <ul className="agents-gate" aria-label="What the gate answers every agent">
+      <li>
+        <VerdictChip verdict="allowed" />
+        <span>Reads within its owner&apos;s access</span>
+      </li>
+      <li>
+        <VerdictChip verdict="masked" />
+        <span>Protected columns come back hidden</span>
+      </li>
+      <li>
+        <VerdictChip verdict="held" />
+        <span>Writes wait for a person</span>
+      </li>
+      <li>
+        <VerdictChip verdict="blocked" />
+        <span>Blocked tables are refused</span>
+      </li>
+    </ul>
+  );
+}
+
+/** No agent yet: one action, the wizard, and what the gate will answer. */
+function AgentsEmpty({ onConnect }: { onConnect: () => void }) {
+  return (
+    <section className="agents-empty" aria-labelledby="agents-empty-title">
+      <div className="agents-empty-text">
+        <h2 id="agents-empty-title">No agents yet</h2>
+        <p>
+          Connect Claude Code, Cursor or any MCP client in about a minute. It
+          gets its own token and reads through the same guard as you.
+        </p>
+        <Button variant="primary" onClick={onConnect}>
+          Connect an agent
+        </Button>
+      </div>
+      <GateLegend />
+    </section>
   );
 }
 
@@ -203,11 +331,7 @@ function AgentDetail({
   }, []);
   const [deleting, setDeleting] = useState(false),
     [minting, setMinting] = useState(false);
-  const lastUsed = agent.tokens
-    .map((token) => token.last_used_at)
-    .filter((value): value is string => !!value)
-    .sort((a, b) => a.localeCompare(b))
-    .at(-1);
+  const lastUsed = lastActive(agent);
   const path = `/agents/${agent.id}`;
   return (
     <section
@@ -429,6 +553,10 @@ function TokenDialog({ path, onClose }: { path: string; onClose: () => void }) {
       onOpenChange={(open) => {
         if (!open) close();
       }}
+      wide={!!fresh}
+      // While the token shows, only Done closes: a stray Escape or click
+      // must not lose it.
+      dismissible={!fresh}
       title={fresh ? 'Copy the token now' : 'Create a token'}
       description={
         fresh
@@ -438,27 +566,7 @@ function TokenDialog({ path, onClose }: { path: string; onClose: () => void }) {
     >
       {fresh ? (
         <>
-          <Field label="Connection">
-            <textarea
-              readOnly
-              rows={14}
-              className="mono"
-              value={JSON.stringify(
-                {
-                  mcpServers: {
-                    'database-gateway': {
-                      type: 'http',
-                      url: `${globalThis.location?.origin ?? ''}/api/v1/mcp`,
-                      headers: { Authorization: `Bearer ${fresh.token}` },
-                    },
-                  },
-                },
-                null,
-                2,
-              )}
-              onFocus={(event) => event.currentTarget.select()}
-            />
-          </Field>
+          <ClientSnippets token={fresh.token} />
           <p className="muted">Expires {formatTime(fresh.expires_at)}.</p>
           <div className="dialog-actions">
             <Button onClick={() => void copy(fresh.token)}>Copy token</Button>
