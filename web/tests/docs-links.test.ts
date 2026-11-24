@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error plain ESM script without types
 import {
   deadLinks,
   dropImages,
   linkedDocs,
   rewriteLinks,
+  // @ts-expect-error plain ESM script without types
 } from '../scripts/docs-links.mjs';
 
 const published = new Set(['api.md', 'security-model.md']);
