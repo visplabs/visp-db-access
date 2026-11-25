@@ -151,7 +151,7 @@ docker run -p 8080:8080 \
   -e VISP_GATE_MASTER_KEY \
   -e VISP_GATE_BOOTSTRAP_ADMIN_EMAIL=you@example.com \
   -e VISP_GATE_BOOTSTRAP_ADMIN_PASSWORD \
-  ghcr.io/visplabs/visp-gate:0.2.1 serve
+  ghcr.io/visplabs/visp-gate:0.2.2 serve
 ```
 
 Kubernetes, with the chart in this repository:

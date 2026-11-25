@@ -90,7 +90,7 @@ services:
   gateway:
     # The released image. If it cannot be pulled, Compose builds the gateway
     # from this checkout; `up --build` always builds it from this checkout.
-    image: ghcr.io/visplabs/visp-gate:0.2.1
+    image: ghcr.io/visplabs/visp-gate:0.2.2
     pull_policy: missing
     build: ../..
     attach: false
