@@ -12,6 +12,32 @@ import type {
 export const uuid = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 export const now = () => new Date().toISOString();
+/** The demo's own agent. Jordan Lee runs it on the Commerce staging and
+ * development databases; the seeded agent requests come from it. */
+export const DEMO_AGENT = {
+  id: uuid(900),
+  name: 'support-assistant',
+  description: 'Answers support tickets about orders and customer accounts.',
+  /** Clusters by index: checkout-staging and commerce-dev. */
+  clusters: [2, 3],
+} as const;
+/** The agent behind the seeded request of pricing-bot, for the member too. */
+export const PRICING_AGENT = {
+  id: uuid(901),
+  name: 'pricing-bot',
+  description: 'Keeps order prices and loyalty discounts right.',
+  /** Clusters by index: checkout-staging, where its request is. */
+  clusters: [2],
+} as const;
+/** History rows the demo agent ran, by index, with what it said they are for. */
+const AGENT_ROWS: Record<number, string> = {
+  2: 'Read the newest customers for the support summary',
+  23: 'Count the open orders of a customer for ticket 4821',
+  32: 'Check the account state before the anonymize request',
+};
+/** Rows whose outcome is not settled. They are from yesterday, so the last
+ * 24 hours of the demo hold only finished runs. */
+const OLD_ROWS: Record<number, number> = { 18: 25, 19: 26 };
 export function defaultPolicy(environment: string): Policy {
   return {
     max_rows: environment === 'production' ? 1000 : 5000,
@@ -281,8 +307,14 @@ export function fixtures() {
     row_count: i >= 18 || i % 7 === 0 ? null : 100,
     elapsed_ms: i >= 18 || i % 7 === 0 ? null : 21 + i * 2,
     error: i % 7 === 0 ? 'Writes without WHERE are blocked' : null,
-    created_at: new Date(Date.now() - i * 640000).toISOString(),
+    created_at: new Date(
+      Date.now() - (OLD_ROWS[i] ? OLD_ROWS[i] * 3_600_000 : i * 640000),
+    ).toISOString(),
+    agent_id: AGENT_ROWS[i] ? DEMO_AGENT.id : null,
+    task: AGENT_ROWS[i] ?? null,
   }));
+  // Newest first, as the server lists them.
+  history.sort((a, b) => b.created_at.localeCompare(a.created_at));
   const grants: Grant[] = users.map((user, i) => ({
     id: uuid(600 + i),
     user: { id: user.id, email: user.email, name: user.name },

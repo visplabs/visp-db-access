@@ -134,13 +134,6 @@ async function intact(receipt: Receipt) {
   );
 }
 
-/** Agents the seeded requests come from. They are not in the agents list, so
- * the Agents screen starts empty; the mock treats them as active. */
-const SEEDED_AGENTS = new Map([
-  [uuid(900), 'support-assistant'],
-  [uuid(901), 'pricing-bot'],
-]);
-
 export function createApprovals(context: {
   state: State;
   policies: Map<string, Policy>;
@@ -172,9 +165,7 @@ export function createApprovals(context: {
     name: user.name,
   });
   const activeAgent = (approval: Approval) =>
-    !!approval.agent?.id &&
-    (SEEDED_AGENTS.has(approval.agent.id) ||
-      context.agentActive(approval.agent.id) === true);
+    !!approval.agent?.id && context.agentActive(approval.agent.id) === true;
 
   function seed() {
     const [admin, reviewer, member] = state.users;

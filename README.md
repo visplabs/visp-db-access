@@ -1,182 +1,203 @@
 # visp-gate
 
-A free, self-hosted safety gate between AI agents and production PostgreSQL
-and MySQL databases. An agent gets a set of tools instead of a connection
-string. Every statement it sends is parsed, checked against its access and the
-database's policy, limited, run in a guarded transaction, masked and recorded.
-An agent can read. It cannot change data on its own: a person sees what a
-write would change, and approves or rejects it.
+**Let AI agents query production. Writes wait for a human.**
 
-It is for teams that want to let an agent answer questions from real data, or
-prepare changes to it, without handing over database credentials. People use
-the same gate through a web console.
+A self-hosted gate between AI agents (over MCP) and your PostgreSQL or MySQL
+databases. Agents read through a SQL guard with masking and limits. Every
+write an agent asks for keeps a human in the loop: it waits until a second
+person has seen what it changes.
 
-![An agent's session: each tool call, the guard's answer and the fix the agent read](docs/images/agent-session.png)
+[![CI](https://img.shields.io/github/actions/workflow/status/visplabs/visp-gate/ci.yml?branch=main&label=CI)](https://github.com/visplabs/visp-gate/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/github/license/visplabs/visp-gate)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/visplabs/visp-gate)](https://github.com/visplabs/visp-gate/releases)
+[![Container image](https://img.shields.io/badge/image-ghcr.io%2Fvisplabs%2Fvisp--gate-blue)](https://github.com/visplabs/visp-gate/pkgs/container/visp-gate)
 
-## Try it in five minutes
+<img src="docs/images/hero.gif" width="880" alt="In the console, an agent's UPDATE waits in Approvals as Held. The reviewer opens it: asked by the agent support-assistant for Jordan Lee, preview needed before approval. Preview runs the write and rolls it back: it changes 2 rows in users, shown before and after. The reviewer clicks Approve and run, and the request shows Done: it ran, with a signed receipt of 2 rows previewed and 2 rows changed.">
 
-With Docker and a clone of this repository:
+## Quickstart
+
+You need Docker with Compose 2.20 or newer. The demo uses made-up data and
+demo-only passwords, on `127.0.0.1` only.
 
 ```sh
+git clone https://github.com/visplabs/visp-gate.git && cd visp-gate
 docker compose -f deploy/demo/docker-compose.yml up
 ```
 
-This starts the gateway, a demo database and an agent that is ready to use
-it, with demo-only passwords, on `127.0.0.1` only. Then watch a scripted
-agent be stopped, be let through, and wait for your approval:
+When it prints "The gate is running", watch a scripted agent from a second
+terminal:
 
 ```sh
 docker compose -f deploy/demo/docker-compose.yml run --rm agent --follow
 ```
 
-[The demo, step by step](docs/DEMO.md) says what to look for, how to approve
-the agent's write in the console, and how to connect your own MCP client. The
-first start downloads the released image; later starts take seconds. Add
-`--build` to build the gateway from your checkout, which takes several
-minutes.
+You see a statement blocked with a hint, a masked column, and an `UPDATE`
+that waits. Open <http://localhost:8080/approvals> as `reviewer@example.com`
+(password `demo-reviewer-local-only`), preview the write, read the three rows
+it changes, and approve it. The agent prints "changed 3 rows". The
+[demo guide](docs/DEMO.md) has every step.
 
-## What an agent gets
+### Connect your own agent
 
-The agent door is a Model Context Protocol endpoint (`POST /api/v1/mcp`) with
-a bearer token. It offers nine tools, and none of them is "run any SQL":
+The gate is an MCP server (Streamable HTTP) at `/api/v1/mcp` that takes an
+agent token. The demo prints one; in your own installation, create one under
+**Agents → Connect an agent** in the console. No database password appears
+in any MCP config.
 
-| Tool             | What it does                                                            |
-| ---------------- | ----------------------------------------------------------------------- |
-| `list_databases` | The databases this agent can reach now, and its level on each           |
-| `search_schema`  | Find tables and columns by name; blocked tables are left out            |
-| `describe_table` | The columns of a table, with the protected ones marked                  |
-| `check_sql`      | Ask the guard about a statement without running it                      |
-| `run_query`      | Run one guarded read; protected values come back masked                 |
-| `fetch_rows`     | Read the next rows of a result that `run_query` fetched; nothing reruns |
-| `propose_write`  | Ask a person for one `INSERT`, `UPDATE` or `DELETE`; nothing runs       |
-| `get_approval`   | Follow a request: pending, approved, executed, rejected                 |
-| `withdraw`       | Take a request back                                                     |
+Claude Code:
 
-An agent belongs to one person, its owner. It can never do more than its
-owner can do at that moment, on the databases its owner chose.
+```sh
+claude mcp add --transport http visp-gate http://localhost:8080/api/v1/mcp \
+  --header "Authorization: Bearer vda_agent_…"
+```
 
-## The safety layers
+Cursor (`.cursor/mcp.json`) and other clients that take a URL and headers:
 
-- **A SQL guard** that parses the whole statement, including CTEs, subqueries
-  and nested writes (`WITH x AS (DELETE …) SELECT …` is a write). SQL it does
-  not understand is refused.
-- **Limits:** a row cap that the guard writes into the SQL (`LIMIT 1001`),
-  statement and lock timeouts, a byte cap, an optional `EXPLAIN` cost gate,
-  per-database concurrency, counted on each node, and for each agent a call rate and an hourly
-  query budget.
-- **Column masking and blocked tables**, set in each database's policy. On
-  PostgreSQL an optional agent login makes the database itself refuse what
-  the policy hides.
-- **Refusals that teach.** Each refusal carries one action word and a hint
-  (`rewrite_sql`: "Add a WHERE clause …"), so an agent corrects itself and
-  does not guess again. Five refused queries in a row stop it for up to ten
-  minutes.
-- **Approvals with a measured preview.** A write waits for a second person.
-  On PostgreSQL the gateway tries it in a transaction that is rolled back,
-  shows the rows before and after, and later runs it only on those rows. A
-  write that ran leaves a signed receipt.
-- **A stop.** Pausing an agent refuses its next call and cancels the queries
-  it is running on that node.
-- **A record.** Each tool call is recorded as a step of a session that the
-  owner can read. Steps are a convenience record and can be dropped under
-  load (see the [threat model](docs/THREAT-MODEL.md)). Every query is in history with the task the agent gave; the audit
-  log is sealed into a keyed hash chain, so a row changed in the database
-  shows.
+```json
+{
+  "mcpServers": {
+    "visp-gate": {
+      "url": "http://localhost:8080/api/v1/mcp",
+      "headers": { "Authorization": "Bearer vda_agent_…" }
+    }
+  }
+}
+```
 
-Each layer has limits. The [threat model](docs/THREAT-MODEL.md) lists them,
-with what the gate does not protect against, and
-[the comparison](docs/COMPARISON.md) says when a simpler approach is enough.
+## Why not just a read-only role?
 
-| A write, previewed before approval                                      | The console's pre-flight bar                                |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------- |
-| ![What an agent's write would change](docs/images/approval-preview.png) | ![Console on a production cluster](docs/images/console.png) |
-| **Safety policy**                                                       | **Approval inbox**                                          |
-| ![Policy](docs/images/policy.png)                                       | ![Approval inbox](docs/images/approvals.png)                |
+Use one: a read-only role or read-only replica is enforced by the database,
+and the gate sits on top of it. On its own, a role does not:
 
-## For people
+- **keep personal data out of the model's context.** The gate masks
+  protected columns and hides blocked tables.
+- **stop runaway queries.** The gate adds a row cap, timeouts, a call rate
+  and an hourly query budget.
+- **say which agent ran what, and why.** Every query is kept in history
+  with the agent, its owner and its task. An audit event for each query and
+  tool call is sealed into a hash chain; the SQL text itself is not.
+- **let an agent prepare a change.** An agent proposes a write; a person
+  sees the affected rows and approves it.
 
-The web console gives engineers the same guarded path: a SQL editor with a
-pre-flight bar (Safe to run, Needs approval or Blocked, and why), read-only
-access by default, four-eyes approval for writes, expiring grants per project
-or database, network allowlists, query history and the audit log. AWS
-discovery finds RDS and Aurora databases across accounts and imports them
-after a credential check.
+## What an agent can and cannot do
 
-| Overview                              | Clusters                                                     |
-| ------------------------------------- | ------------------------------------------------------------ |
-| ![Overview](docs/images/overview.png) | ![Clusters grouped by environment](docs/images/clusters.png) |
+Nine tools, none of them "run any SQL". An agent never holds a database
+password and never does more than its owner can, on the databases its owner
+chose: a small blast radius by design.
+
+| Tool             | What it does                                                      |
+| ---------------- | ----------------------------------------------------------------- |
+| `list_databases` | The databases this agent can reach, and its level on each         |
+| `search_schema`  | Find tables and columns by name; blocked tables are left out      |
+| `describe_table` | The columns of a table, with the masked ones marked               |
+| `check_sql`      | Ask whether a statement would be allowed, without running it      |
+| `run_query`      | Run one guarded read; masked columns come back as `••••••`        |
+| `fetch_rows`     | Read the next rows of a result; nothing runs again                |
+| `propose_write`  | Ask a person for one `INSERT`, `UPDATE` or `DELETE`; nothing runs |
+| `get_approval`   | Follow a request: pending, approved, executed, rejected           |
+| `withdraw`       | Take a request back                                               |
+
+## Safety layers
+
+- **SQL guard.** Parses the whole statement, CTEs included; refuses what it
+  does not understand.
+- **Limits.** Row cap, statement and lock timeouts, a byte cap, and a call
+  rate and hourly budget per agent.
+- **Masking and blocked tables**, per database. On PostgreSQL an optional
+  agent login makes the database itself refuse what the policy hides.
+- **Refusals that teach.** Each refusal tells the agent what to do next; five
+  in a row stop it for up to ten minutes.
+- **Four-eyes approval for every agent write.** On PostgreSQL a rolled-back
+  dry run shows the rows before and after, the write runs only on those rows,
+  and it leaves a signed receipt.
+- **Pause and record.** Pausing an agent refuses its next call and cancels
+  its running queries on that node. Every query is recorded with the agent's
+  task.
+
+Limits: the gate caps the blast radius of a prompt-injected agent; it does
+not detect injection, and an agent with its own credentials goes around it.
+Read the [threat model](docs/THREAT-MODEL.md).
+
+## Compared with other tools
+
+As of 2026-11-25; the [comparison](docs/COMPARISON.md) has more rows and
+where each tool is stronger.
+
+|                                      | Human approval of agent writes | Row-level preview of a write  | Nothing paywalled                 |
+| ------------------------------------ | ------------------------------ | ----------------------------- | --------------------------------- |
+| [Bytebase](https://www.bytebase.com) | Yes, change review             | No, SQL review                | No: MIT core + enterprise edition |
+| [Kviklet](https://kviklet.dev)       | Yes, four-eyes review          | Dry run; row diff not checked | No: MCP server is enterprise-only |
+| [hoop.dev](https://hoop.dev)         | Yes                            | No                            | No: approvals are enterprise-only |
+| DBHub, Postgres MCP Pro              | Not checked                    | No                            | Yes (MIT)                         |
+| visp-gate                            | Yes, by someone not the owner  | Yes, on PostgreSQL            | Yes (Apache-2.0)                  |
+
+## Screenshots
+
+<img src="docs/images/approval-preview.png" width="880" alt="An agent's UPDATE after Preview: asked by the agent support-assistant for Jordan Lee, with its reason. It changes 2 rows in users; the table shows each row's name before and after, with the email column masked. Below are the statement, the checks, and the buttons Reject, Approve and run, and Approve.">
+
+| An agent's session, call by call                                                                                                                                                        | The console: the guard's check, and masked columns                                                                                                                                                      |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| <img src="docs/images/agent-session.png" width="440" alt="An agent's session: six steps, one allowed, one held, one blocked. Step 4 is blocked, with why and what the agent was told."> | <img src="docs/images/console.png" width="440" alt="The console on a production PostgreSQL database: the statement is safe to run, the guard adds LIMIT 1001, and the email column comes back masked."> |
 
 ## Install
 
-The gateway is one binary with the console embedded. Nodes are stateless; all
-state is in a PostgreSQL metadata database. To run it with Docker Compose,
-choose an administrator password and a master key (the server refuses to
-start without a valid 32-byte key):
+One binary with the console built in. State lives in a PostgreSQL metadata
+database (14 or newer). Keep the 32-byte master key in a secret manager and
+back it up with that database.
 
 ```sh
-export VISP_GATE_MASTER_KEY="$(openssl rand -base64 32)"
-export VISP_GATE_BOOTSTRAP_ADMIN_PASSWORD='choose-a-long-random-password'
-docker compose up --build
+docker run -p 8080:8080 \
+  -e VISP_GATE_DATABASE_URL='postgres://…' \
+  -e VISP_GATE_MASTER_KEY \
+  -e VISP_GATE_BOOTSTRAP_ADMIN_EMAIL=you@example.com \
+  -e VISP_GATE_BOOTSTRAP_ADMIN_PASSWORD \
+  ghcr.io/visplabs/visp-gate:0.2.1 serve
 ```
 
-Open <http://localhost:8080>, sign in as `admin@example.com`, and add a
-database under **Clusters → Add cluster**. Keep the master key in a secret
-manager and back it up with the metadata database: stored credentials cannot
-be decrypted with a different key. [Deployment](docs/DEPLOYMENT.md) covers
-configuration, the Helm chart, health, metrics and operations.
-
-To try the console without any backend, run it in mock mode:
+Kubernetes, with the chart in this repository:
 
 ```sh
-cd web && npm ci && npm run dev:mock
+helm upgrade --install visp-gate deploy/helm/visp-gate \
+  --set existingSecret=visp-gate-secrets
 ```
+
+Put TLS in front, then add a database under **Clusters → Add cluster**.
+[Deployment](docs/DEPLOYMENT.md) has the details.
 
 ## Documentation
 
-| Topic                                    |                                                             |
-| ---------------------------------------- | ----------------------------------------------------------- |
-| [Demo](docs/DEMO.md)                     | The five-minute demo, step by step                          |
-| [Threat model](docs/THREAT-MODEL.md)     | Actors, threats, what the gate does and what remains        |
-| [Security model](docs/SECURITY-MODEL.md) | Guarantees, defense-in-depth layers and known limits        |
-| [Comparison](docs/COMPARISON.md)         | Other ways to give an agent a database, and when to use one |
-| [Architecture](docs/ARCHITECTURE.md)     | Components, data model, access model and query pipeline     |
-| [HTTP API](docs/API.md)                  | The v1 API contract, with the agent door and its tools      |
-| [Deployment](docs/DEPLOYMENT.md)         | Configuration, Docker, Helm, health, metrics and operations |
-| [AWS discovery](docs/DISCOVERY.md)       | IAM setup, cross-account roles, scanning and import         |
-| [Development](docs/DEVELOPMENT.md)       | Local setup without Docker, tests and smoke tests           |
-| [Design system](docs/DESIGN.md)          | The console's visual language and components                |
+| Topic                                    |                                                        |
+| ---------------------------------------- | ------------------------------------------------------ |
+| [Demo](docs/DEMO.md)                     | The demo, step by step, and connecting an MCP client   |
+| [Threat model](docs/THREAT-MODEL.md)     | What the gate protects against, and what it does not   |
+| [Security model](docs/SECURITY-MODEL.md) | Guarantees, layers and known limits                    |
+| [Comparison](docs/COMPARISON.md)         | Other approaches and named tools, and when to use them |
+| [HTTP API](docs/API.md)                  | The v1 API, the MCP endpoint and its tools             |
+| [Architecture](docs/ARCHITECTURE.md)     | Components, data model and query pipeline              |
+| [Deployment](docs/DEPLOYMENT.md)         | Configuration, Docker, Helm, health and metrics        |
+| [AWS discovery](docs/DISCOVERY.md)       | Finding and importing RDS and Aurora databases         |
+| [Development](docs/DEVELOPMENT.md)       | Local setup, tests and smoke tests                     |
 
-## Repository layout
+## Status and roadmap
 
-```
-crates/vda-guard        SQL safety engine (pure, no I/O)
-crates/vda-connectors   Guarded execution against PostgreSQL and MySQL
-crates/vda-discovery    Cloud discovery providers (AWS RDS/Aurora)
-crates/vda-core         Query pipeline: access, policy, masking, audit (no HTTP routes)
-crates/vda-server       HTTP API, auth, approvals, administration (binary)
-web/                    React + TypeScript console, embedded in the binary
-deploy/                 Helm chart, IAM policies, the demo and its seed data
-scripts/                Local development, smoke-test and demo scripts
-```
+Pre-1.0: the API and storage schema may change between releases. It
+supports PostgreSQL and MySQL (with MariaDB, RDS, Aurora, Cloud SQL and Azure
+Database). MySQL writes are approved without a row preview.
 
-## Status
+Planned: OIDC/SAML single sign-on, just-in-time access requests, SIEM export,
+RDS IAM authentication, and more engines and clouds. See the
+[changelog](CHANGELOG.md).
 
-visp-gate is pre-1.0. The API and storage schema may still change between
-releases. Supported targets are PostgreSQL and MySQL (including MariaDB and their
-managed variants such as RDS, Aurora, Cloud SQL and Azure Database).
+## Community and security
 
-Roadmap: RDS IAM authentication; GCP Cloud SQL and Azure discovery; OIDC/SAML
-SSO and SCIM; group grants; just-in-time access requests; saved queries;
-distributed query cancellation; durable audit delivery and SIEM export;
-classification-driven masking; MongoDB and SQL Server engines; SSH/bastion
-tunnels.
-
-## Contributing and security
-
-Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Please report
-vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+Questions and bugs go to [issues](https://github.com/visplabs/visp-gate/issues).
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[code of conduct](CODE_OF_CONDUCT.md). Report vulnerabilities privately as
+[SECURITY.md](SECURITY.md) describes.
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE)
-for attributions.
+<!-- OWNER: confirm this promise before launch -->
+
+[Apache License 2.0](LICENSE). Nothing is held back for a paid edition. See
+[NOTICE](NOTICE) for attributions.

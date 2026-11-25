@@ -2,6 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMockTransport } from '../src/api/mock';
 import { requestText } from '../src/api/client';
 import { cloudLine } from '../src/lib/cloud';
+import { DEMO_AGENT } from '../src/api/fixtures';
+import {
+  agentState,
+  byActivity,
+  lastActive,
+  tokenState,
+} from '../src/features/agents/facts';
 import type {
   Agent,
   AgentLogin,
@@ -89,18 +96,22 @@ describe('mock agents follow the API contract', () => {
         (t) => t.id === tokens[0]!.id,
       )?.revoked_at,
     ).not.toBeNull();
-    // Pages: 3 agents, 2 per page.
-    for (const name of ['second', 'third'])
+    // Pages: the two demo agents and 4 more, 2 per page.
+    for (const name of ['second', 'third', 'fourth'])
       await api('/agents', send('POST', { ...body, name }));
     const first = await api<{ items: Agent[]; next_cursor: string | null }>(
       '/agents?limit=2',
     );
     expect(first.items).toHaveLength(2);
-    const rest = await api<{ items: Agent[]; next_cursor: string | null }>(
+    const second = await api<{ items: Agent[]; next_cursor: string | null }>(
       `/agents?limit=2&cursor=${first.next_cursor}`,
     );
+    expect(second.items).toHaveLength(2);
+    const rest = await api<{ items: Agent[]; next_cursor: string | null }>(
+      `/agents?limit=2&cursor=${second.next_cursor}`,
+    );
     expect(rest).toMatchObject({ next_cursor: null });
-    expect(rest.items).toHaveLength(1);
+    expect(rest.items).toHaveLength(2);
     await api(`/agents/${agent.id}`, send('DELETE'));
     await expect(api(`/agents/${agent.id}`)).rejects.toMatchObject({
       status: 404,
@@ -317,5 +328,173 @@ describe('theme before first paint', () => {
       () => ({ matches: false }),
     );
     expect(document.documentElement.dataset.theme).toBe('dark');
+  });
+});
+
+describe('connect an agent', () => {
+  const token = `vda_agent_${'a'.repeat(43)}`;
+  const url = 'https://gate.example.com/api/v1/mcp';
+  it('prints a Claude Code command with the gate token, never a password', async () => {
+    const { snippetFor } = await import('../src/features/agents/connect');
+    expect(snippetFor('claude-code', token, url).text).toBe(
+      `claude mcp add --transport http visp-gate ${url} --header "Authorization: Bearer ${token}"`,
+    );
+  });
+  it('prints the Cursor file and the generic MCP config under visp-gate', async () => {
+    const { snippetFor } = await import('../src/features/agents/connect');
+    const cursor = snippetFor('cursor', token, url);
+    expect(cursor.title).toBe('.cursor/mcp.json');
+    expect(JSON.parse(cursor.text)).toEqual({
+      mcpServers: {
+        'visp-gate': { url, headers: { Authorization: `Bearer ${token}` } },
+      },
+    });
+    expect(JSON.parse(snippetFor('other', token, url).text)).toEqual({
+      mcpServers: {
+        'visp-gate': {
+          type: 'http',
+          url,
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      },
+    });
+    for (const client of ['claude-code', 'cursor', 'other'] as const)
+      expect(snippetFor(client, token, url).text).not.toMatch(
+        /database-gateway|password/i,
+      );
+  });
+  it('the mock agent first calls a little after its token is made', async () => {
+    const api = createMockTransport({ delay: 0, firstCallMs: 150 });
+    await api(
+      '/auth/login',
+      send('POST', { email: 'admin@visp.dev', password: 'demo-password' }),
+    );
+    const { items } = await api<{ items: Cluster[] }>('/clusters');
+    const agent = await api<Agent>(
+      '/agents',
+      send('POST', { name: 'first-call', cluster_ids: [items[0]!.id] }),
+    );
+    const made = await api<NewAgentToken>(
+      `/agents/${agent.id}/tokens`,
+      send('POST', {}),
+    );
+    type Sessions = {
+      items: { token: { id: string }; started_at: string; active: boolean }[];
+    };
+    const before = await api<Sessions>(`/agents/${agent.id}/sessions`);
+    expect(before.items).toEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const after = await api<Sessions>(`/agents/${agent.id}/sessions`);
+    const live = after.items.find((session) => session.active);
+    expect(live?.token.id).toBe(made.id);
+    // The session that the connect page shows began with that first call.
+    const created = (await api<Agent>(`/agents/${agent.id}`)).tokens[0]!;
+    expect(Date.parse(live!.started_at)).toBeGreaterThanOrEqual(
+      Date.parse(created.created_at),
+    );
+  });
+});
+
+describe('the mock tells the truth about agents', () => {
+  it('starts with the demo agent, whose token was used by its live session', async () => {
+    const { api } = await signIn();
+    const { items } = await api<{ items: Agent[] }>('/agents');
+    const demo = items.find((agent) => agent.id === DEMO_AGENT.id)!;
+    expect(demo).toMatchObject({
+      name: 'support-assistant',
+      owner: { email: 'member@visp.dev' },
+      paused: false,
+    });
+    type Sessions = {
+      items: { active: boolean; last_step_at: string; token: { id: string } }[];
+    };
+    const sessions = await api<Sessions>(`/agents/${demo.id}/sessions`);
+    const live = sessions.items.find((session) => session.active)!;
+    // A token that made calls says so: never "never used" next to a live
+    // session. The server writes the time at most once a minute.
+    const token = (await api<Agent>(`/agents/${demo.id}`)).tokens.find(
+      (t) => t.id === live.token.id,
+    )!;
+    expect(token.last_used_at).not.toBeNull();
+    expect(
+      Date.parse(live.last_step_at) - Date.parse(token.last_used_at!),
+    ).toBeLessThan(60_000);
+    // The demo's history says which statements the agent ran.
+    const history = await api<{ items: { agent_id?: string | null }[] }>(
+      '/history?limit=50',
+    );
+    expect(
+      history.items.filter((row) => row.agent_id === DEMO_AGENT.id).length,
+    ).toBeGreaterThan(0);
+  });
+  it('gives a new agent no past: no session before its token, none from yesterday', async () => {
+    const { api, clusters } = await signIn();
+    const agent = await api<Agent>(
+      '/agents',
+      send('POST', { name: 'fresh', cluster_ids: [clusters[0]!.id] }),
+    );
+    expect(agent.tokens).toEqual([]);
+    await api(`/agents/${agent.id}/tokens`, send('POST', {}));
+    const { items } = await api<{
+      items: { active: boolean; started_at: string }[];
+    }>(`/agents/${agent.id}/sessions`);
+    expect(items.map((session) => session.active)).toEqual([true]);
+    const made = (await api<Agent>(`/agents/${agent.id}`)).tokens[0]!;
+    expect(Date.parse(items[0]!.started_at)).toBeGreaterThanOrEqual(
+      Date.parse(made.created_at),
+    );
+    expect(made.last_used_at).not.toBeNull();
+    expect(lastActive({ tokens: [made] })).toBe(made.last_used_at);
+  });
+  it('counts the overview as the server does: the last 24 hours', async () => {
+    const { api } = await signIn();
+    const overview = await api<{
+      queries_24h: number;
+      blocked_24h: number;
+      errors_24h: number;
+    }>('/overview');
+    const ok = await api<{ items: unknown[] }>('/history?status=ok&limit=200');
+    // In the demo the Allowed tile and the list it opens agree.
+    expect(
+      overview.queries_24h - overview.blocked_24h - overview.errors_24h,
+    ).toBe(ok.items.length);
+  });
+});
+
+describe('agent facts', () => {
+  const token = (fields: Partial<Agent['tokens'][number]>) => ({
+    id: crypto.randomUUID(),
+    hint: 'abcd',
+    created_at: '2026-11-01T00:00:00Z',
+    expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+    revoked_at: null,
+    last_used_at: null,
+    ...fields,
+  });
+  it('names a token and an agent state from the fields the API sends', () => {
+    expect(tokenState(token({}))).toBe('Active');
+    expect(tokenState(token({ revoked_at: '2026-11-02T00:00:00Z' }))).toBe(
+      'Revoked',
+    );
+    expect(tokenState(token({ expires_at: '2026-11-02T00:00:00Z' }))).toBe(
+      'Expired',
+    );
+    expect(agentState({ paused: true, tokens: [token({})] })).toBe('paused');
+    expect(agentState({ paused: false, tokens: [] })).toBe('idle');
+    expect(agentState({ paused: false, tokens: [token({})] })).toBe('active');
+  });
+  it('orders agents by their last call, never-used ones last', () => {
+    const agent = (name: string, used: string | null, created: string) => ({
+      name,
+      created_at: created,
+      tokens: [token({ last_used_at: used })],
+    });
+    expect(
+      byActivity([
+        agent('quiet', null, '2026-11-03T00:00:00Z'),
+        agent('busy', '2026-11-20T00:00:00Z', '2026-11-01T00:00:00Z'),
+        agent('older', '2026-11-10T00:00:00Z', '2026-11-01T00:00:00Z'),
+      ]).map((item) => item.name),
+    ).toEqual(['busy', 'older', 'quiet']);
   });
 });

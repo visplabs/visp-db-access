@@ -94,7 +94,9 @@ test('production console runs, masks, exports, blocks and requests approval', as
     .getByRole('button', { name: 'Review', exact: true })
     .filter({ hasText: 'Verified support correction' })
     .click();
-  await expect(page.getByText('You requested this query.')).toBeVisible();
+  await expect(
+    page.getByText('You asked for this: you cannot approve it'),
+  ).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'Approve', exact: true }),
   ).toHaveCount(0);
@@ -114,13 +116,13 @@ test('approval review executes once and exposes results and timeline', async ({
   await page.getByLabel('Review note').fill('Verified WHERE target');
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(
-    page.getByRole('button', { name: 'Execute approved query' }),
+    page.getByRole('button', { name: 'Run approved write' }),
   ).toBeVisible();
-  await page.getByRole('button', { name: 'Execute approved query' }).click();
+  await page.getByRole('button', { name: 'Run approved write' }).click();
   await page.getByRole('button', { name: 'Confirm', exact: true }).click();
   await expect(page.getByText('1 row affected.')).toBeVisible();
   await expect(
-    page.getByRole('button', { name: 'Execute approved query' }),
+    page.getByRole('button', { name: 'Run approved write' }),
   ).toHaveCount(0);
 });
 test('schema, policy, health, command palette and themes work', async ({
@@ -467,7 +469,7 @@ test('approved requests survive account switches and the requester can execute',
     .click();
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(
-    page.getByRole('button', { name: 'Execute approved query' }),
+    page.getByRole('button', { name: 'Run approved write' }),
   ).toBeVisible();
   await page.getByRole('button', { name: 'Close approval' }).click();
   await page.getByRole('button', { name: 'User menu' }).click();
@@ -491,7 +493,7 @@ test('approved requests survive account switches and the requester can execute',
     .getByRole('button', { name: 'Review', exact: true })
     .filter({ hasText: reason })
     .click();
-  await page.getByRole('button', { name: 'Execute approved query' }).click();
+  await page.getByRole('button', { name: 'Run approved write' }).click();
   await page.getByRole('button', { name: 'Confirm', exact: true }).click();
   await expect(page.getByText('1 row affected.')).toBeVisible();
 });
@@ -501,12 +503,12 @@ test('hardened history and approval states show their badges and execution error
 }) => {
   await page.getByRole('link', { name: 'History', exact: true }).click();
   await page.getByRole('combobox', { name: 'Query status' }).click();
-  await page.getByRole('option', { name: 'running', exact: true }).click();
+  await page.getByRole('option', { name: 'Running', exact: true }).click();
   await expect(
     page.locator('small.muted').filter({ hasText: 'Running' }),
   ).toHaveText('Running');
   await page.getByRole('combobox', { name: 'Query status' }).click();
-  await page.getByRole('option', { name: 'unknown', exact: true }).click();
+  await page.getByRole('option', { name: 'Unknown', exact: true }).click();
   await expect(
     page.locator('small.muted').filter({ hasText: 'Unknown' }),
   ).toBeVisible();
@@ -515,7 +517,8 @@ test('hardened history and approval states show their badges and execution error
     .first()
     .click();
   await page.getByRole('tab', { name: /^All/ }).click();
-  await expect(page.locator('.badge.info')).toHaveText('Executing');
+  // A running request has not finished: its status, not a verdict.
+  await expect(page.locator('.badge.info')).toHaveText('Running');
   // Three requests failed: one could not reach its database, one found
   // that its data had changed after the approval, and one lost its node.
   const failures = page.getByRole('listitem').filter({
@@ -529,7 +532,7 @@ test('hardened history and approval states show their badges and execution error
     page.getByRole('region', { name: 'Query approval' }).getByRole('alert'),
   ).toHaveText('Target database unavailable');
   await expect(
-    page.getByRole('button', { name: 'Execute approved query' }),
+    page.getByRole('button', { name: 'Run approved write' }),
   ).toHaveCount(0);
 });
 

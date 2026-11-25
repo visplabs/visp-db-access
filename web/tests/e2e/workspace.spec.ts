@@ -51,8 +51,10 @@ test('setup checklist uses API state and deep-links the first-run steps', async 
   await installAuditTransport(page, { path: '/', kind: 'empty' });
   await signIn(page);
   const setup = page.getByRole('region', { name: 'Workspace setup' });
-  await expect(setup).toContainText('0 of 4 complete');
-  await setup.getByRole('link', { name: 'Add a cluster', exact: true }).click();
+  await expect(setup).toContainText('0 of 5 done');
+  await setup
+    .getByRole('link', { name: 'Add a database', exact: true })
+    .click();
   await expect(
     page.getByRole('dialog', { name: 'Add a cluster' }),
   ).toBeVisible();
@@ -199,6 +201,8 @@ test('mobile approval review has no horizontal page overflow and respects four-e
     .getByRole('button', { name: 'Review', exact: true })
     .first()
     .click();
+  // On a phone the note opens from the one-row decision bar.
+  await page.getByRole('button', { name: 'Add note', exact: true }).click();
   await page.getByLabel('Review note').fill('Verified target rows');
   await expect(
     page.getByRole('button', { name: 'Approve', exact: true }),
@@ -208,7 +212,11 @@ test('mobile approval review has no horizontal page overflow and respects four-e
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
-  await expect(page.getByRole('dialog').getByText(/Expires in/)).toBeVisible();
+  await expect(
+    page
+      .getByRole('region', { name: 'Query approval' })
+      .getByText(/Expires in/),
+  ).toBeVisible();
   await page.screenshot({
     path: 'screenshots/audit/after/mobile-approval-review.png',
     fullPage: true,
@@ -242,7 +250,7 @@ test('approval actions expire promptly in both themes and viewport sizes', async
         page.getByRole('button', { name: 'Approve', exact: true }),
       ).toHaveCount(0);
       await expect(
-        page.getByRole('button', { name: 'Execute approved query' }),
+        page.getByRole('button', { name: 'Run approved write' }),
       ).toHaveCount(0);
       const mode = `${width}-${theme}`,
         axe = await new AxeBuilder({ page }).analyze();

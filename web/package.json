@@ -17,7 +17,8 @@
     "audit:dev": "node scripts/audit-dev.mjs",
     "audit:ui": "node scripts/ui-audit.mjs after",
     "audit:states": "node scripts/ui-state-audit.mjs after",
-    "screenshots:readme": "node scripts/readme-screenshots.mjs"
+    "screenshots:readme": "node scripts/readme-screenshots.mjs",
+    "screenshots:hero": "node scripts/readme-screenshots.mjs --gif"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

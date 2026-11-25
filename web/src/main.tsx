@@ -7,6 +7,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import './styles.css';
 import './styles/refinement.css';
+import './styles/redesign.css';
+import './styles/redesign-approvals.css';
+import './styles/redesign-sessions.css';
+import './styles/redesign-connect.css';
+import './styles/redesign-overview.css';
 import { ApiError } from './api/errors';
 import { PreferencesProvider } from './lib/preferences';
 import { ThemeProvider } from './lib/theme';
@@ -55,6 +60,11 @@ const AgentsPage = lazy(() =>
     default: module.AgentsPage,
   })),
 );
+const SessionPage = lazy(() =>
+  import('./features/agents/session-page').then((module) => ({
+    default: module.SessionPage,
+  })),
+);
 const UsersPage = lazy(() =>
   import('./features/admin/users').then((module) => ({
     default: module.UsersPage,
@@ -101,8 +111,9 @@ if (root)
         <Tooltip.Provider delayDuration={300}>
           <ThemeProvider>
             <PreferencesProvider>
-              <ToastProvider>
-                <BrowserRouter>
+              {/* Inside the router: a toast closes when the page changes. */}
+              <BrowserRouter>
+                <ToastProvider>
                   <RouteBoundary>
                     <Routes>
                       <Route path="/login" element={<Login />} />
@@ -141,6 +152,10 @@ if (root)
                         <Route path="/approvals" element={<ApprovalsPage />} />
                         <Route path="/history" element={<HistoryPage />} />
                         <Route path="/agents" element={<AgentsPage />} />
+                        <Route
+                          path="/agents/:agentId/sessions/:sessionId"
+                          element={<SessionPage />}
+                        />
                         <Route
                           path="/users"
                           element={
@@ -194,8 +209,8 @@ if (root)
                       </Route>
                     </Routes>
                   </RouteBoundary>
-                </BrowserRouter>
-              </ToastProvider>
+                </ToastProvider>
+              </BrowserRouter>
             </PreferencesProvider>
           </ThemeProvider>
         </Tooltip.Provider>

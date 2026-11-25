@@ -18,7 +18,12 @@ import {
   Tip,
   SwitchRow,
   SegmentedControl,
+  VerdictChip,
+  ActorBadge,
+  RiskMeter,
+  SqlPreview,
 } from '.';
+import { VERDICTS } from '../../lib/verdict';
 import { useToast } from './toast';
 import { BrandMark } from './brand';
 export function KitchenSink() {
@@ -46,6 +51,68 @@ export function KitchenSink() {
         </div>
         <BrandMark />
       </div>
+      <section className="settings-section" aria-labelledby="verdicts-heading">
+        <h2 id="verdicts-heading">Verdicts and actors</h2>
+        <div className="kitchen-verdicts" data-testid="kitchen-verdicts">
+          {(['sm', 'md'] as const).map((size) => (
+            <div className="inline wrap" key={size}>
+              {VERDICTS.map((verdict) => (
+                <VerdictChip key={verdict} verdict={verdict} size={size} />
+              ))}
+            </div>
+          ))}
+          <div className="inline wrap">
+            <VerdictChip verdict="held" label="Held for review" />
+            <VerdictChip verdict="blocked" label="Blocked · 3 in a row" />
+          </div>
+          <div className="inline wrap">
+            <ActorBadge kind="agent" />
+            <ActorBadge kind="agent" name="billing-bot" />
+            <ActorBadge kind="agent" name="billing-bot" client="Claude Code" />
+            <ActorBadge kind="human" />
+            <ActorBadge kind="human" name="Ada Lovelace" />
+          </div>
+        </div>
+      </section>
+      <section className="settings-section" aria-labelledby="env-heading">
+        <h2 id="env-heading">Environment and verdict</h2>
+        <p className="muted">
+          Environment is where it runs: a square slate tag, no icon. Verdict is
+          what the gate decided: a rounded chip with an icon. One never looks
+          like the other, and a card's edge means one of them, not both.
+        </p>
+        <div className="kitchen-env" data-testid="kitchen-env-vs-verdict">
+          {(
+            [
+              ['production', 'blocked'],
+              ['staging', 'allowed'],
+              ['development', 'held'],
+            ] as const
+          ).map(([environment, verdict]) => (
+            <div className="kitchen-env-row" key={environment}>
+              <span
+                className="kitchen-env-rail"
+                data-environment={environment}
+              />
+              <EnvBadge environment={environment} />
+              <VerdictChip verdict={verdict} />
+              <span className="muted">
+                {environment} database, {verdict} statement
+              </span>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className="settings-section" aria-labelledby="marks-heading">
+        <h2 id="marks-heading">Risk, environment and SQL</h2>
+        <div className="inline wrap">
+          {(['low', 'medium', 'high', 'critical'] as const).map((risk) => (
+            <RiskMeter key={risk} risk={risk} />
+          ))}
+          <RiskMeter risk="high" compact />
+        </div>
+        <SqlPreview sql="UPDATE orders SET status = 'paid' WHERE id = 42" />
+      </section>
       <section className="settings-section">
         <h2>Actions and feedback</h2>
         <div className="inline wrap">
@@ -75,7 +142,6 @@ export function KitchenSink() {
               {tone}
             </Badge>
           ))}
-          <EnvBadge environment="production" />
           {['healthy', 'degraded', 'down', 'unknown'].map((status) => (
             <HealthBadge key={status} status={status} />
           ))}

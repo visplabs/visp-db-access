@@ -554,7 +554,7 @@ export function Badge({
   variant = 'neutral',
 }: {
   children: ReactNode;
-  variant?: 'neutral' | 'env' | 'verdict' | 'status';
+  variant?: 'neutral' | 'verdict' | 'status';
   tone?: string;
   className?: string;
 }) {
@@ -568,11 +568,14 @@ export function Badge({
     </span>
   );
 }
+/** Where something runs, the same on every screen: a square slate tag that
+ * never looks like a verdict; production is ink-filled with a hazard cap so
+ * it is never missed. */
 export function EnvBadge({ environment }: { environment: string }) {
   return (
-    <Badge variant="env" className="env-badge" tone={environment}>
+    <span className="env-mark" data-environment={environment}>
       {environment.charAt(0).toUpperCase() + environment.slice(1)}
-    </Badge>
+    </span>
   );
 }
 export function HealthBadge({
@@ -767,3 +770,7 @@ export function ChipInput({
     </Field>
   );
 }
+export { VerdictChip, ActorBadge } from './verdict';
+export { RiskMeter } from './risk';
+export { SqlPreview, SqlText } from './sql-preview';
+export type { GateVerdict } from '../../lib/verdict';

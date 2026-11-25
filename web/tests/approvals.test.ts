@@ -32,6 +32,15 @@ import {
   whatHappened,
   shortDigest,
 } from '../src/lib/approval-presentation';
+import {
+  checksOf,
+  formatSql,
+  nextStep,
+  pairRows,
+  statementLine,
+  timelineOf,
+  type Viewer,
+} from '../src/features/approvals/decision';
 
 const post = (body?: unknown): RequestInit => ({
   method: 'POST',
@@ -720,5 +729,238 @@ describe('the mock reads the SQL shapes it supports', () => {
       previewWrite(sql, cluster, policy);
     }
     expect(performance.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe('the approval review as a decision', () => {
+  const live: Viewer = {
+    live: true,
+    mine: false,
+    admin: true,
+    canExecute: false,
+  };
+  const request = (fields: Partial<Approval> = {}): Approval => ({
+    id: 'a1',
+    cluster_id: 'c1',
+    cluster_name: 'checkout-staging',
+    requester: { id: 'u1', email: 'member@visp.dev', name: 'Jordan Lee' },
+    sql: "UPDATE users SET name = 'x' WHERE id = 1",
+    reason: 'Fix a name',
+    analysis: {
+      verdict: 'requires_approval',
+      risk: 'high',
+      statements: [],
+      rewritten_sql: null,
+      issues: [],
+    },
+    status: 'pending',
+    error: null,
+    error_code: null,
+    sql_truncated: false,
+    agent: null,
+    preview: null,
+    receipt: null,
+    reviewer: null,
+    review_note: null,
+    result: null,
+    created_at: '2026-11-25T10:00:00Z',
+    reviewed_at: null,
+    executed_at: null,
+    expires_at: '2026-11-26T10:00:00Z',
+    ...fields,
+  });
+  const agent = { id: 'g1', name: 'support-assistant' };
+  const shown = {
+    supported: true,
+    kind: 'update' as const,
+    affected_rows: 2,
+    notes: [],
+  };
+
+  it('names the one next step for each viewer and state', () => {
+    const title = (fields: Partial<Approval>, viewer = live) =>
+      nextStep(request(fields), viewer).title;
+    expect(title({})).toBe('Waiting for your review');
+    expect(title({ agent })).toBe('Preview needed before approval');
+    expect(title({ agent, preview: shown })).toBe('Waiting for your review');
+    expect(title({ agent: { id: null, name: 'old' } })).toBe(
+      'The agent that asked was deleted',
+    );
+    expect(title({}, { ...live, mine: true })).toBe(
+      'You asked for this: you cannot approve it',
+    );
+    expect(title({}, { ...live, admin: false })).toBe(
+      'Waiting for a cluster admin',
+    );
+    // Until the cluster is known, nothing is said about permission.
+    expect(title({}, { ...live, admin: undefined })).toBe('Waiting for review');
+    expect(title({}, { ...live, live: false })).toBe(
+      'Expired: it will not run',
+    );
+    expect(title({ status: 'approved' })).toBe('Approved — not run yet');
+    expect(title({ status: 'approved' }, { ...live, live: false })).toBe(
+      'Expired before it ran',
+    );
+    expect(
+      title({
+        status: 'rejected',
+        reviewer: { id: 'u2', email: 'r@visp.dev', name: 'Alex Morgan' },
+      }),
+    ).toBe('Rejected by Alex Morgan');
+    expect(title({ status: 'executed' })).toBe('Done: it ran');
+    expect(title({ status: 'failed', error_code: 'effect_changed' })).toBe(
+      'Not run: the data changed after the approval',
+    );
+    expect(title({ status: 'failed', error_code: 'outcome_unknown' })).toBe(
+      'Unknown whether it ran',
+    );
+    expect(title({ status: 'withdrawn' })).toBe('Withdrawn by the requester');
+  });
+
+  it('shows a verdict only for a decision, from the shared mapper', () => {
+    const verdict = (fields: Partial<Approval>, viewer = live) =>
+      nextStep(request(fields), viewer).verdict;
+    expect(verdict({})).toBe('held');
+    expect(verdict({ status: 'executed' })).toBe('allowed');
+    expect(verdict({ status: 'rejected' })).toBe('blocked');
+    expect(verdict({ status: 'expired' })).toBeUndefined();
+    // Approved or running: nothing has run, so it is not Allowed yet.
+    expect(verdict({ status: 'approved' })).toBeUndefined();
+    expect(verdict({ status: 'executing' })).toBeUndefined();
+    // A pending request past its expiry is no longer held.
+    expect(verdict({}, { ...live, live: false })).toBeUndefined();
+  });
+
+  it('lists checks from the analysis: blocks, then warnings, then passes', () => {
+    const statement = {
+      kind: 'update' as const,
+      sql: '',
+      tables: ['users'],
+      functions: [],
+      risk: 'high' as const,
+      issues: [],
+      has_where: true,
+      has_limit: false,
+    };
+    const checks = checksOf({
+      statements: [statement],
+      issues: [
+        { severity: 'warning', code: 'write_approval', message: 'Review it.' },
+      ],
+    });
+    expect(checks.map((check) => check.level)).toEqual([
+      'warn',
+      'pass',
+      'pass',
+      'pass',
+    ]);
+    // A missing WHERE is not passed, and a block comes first.
+    const blocked = checksOf({
+      statements: [{ ...statement, has_where: false }],
+      issues: [
+        { severity: 'info', code: 'note', message: 'A note.' },
+        { severity: 'block', code: 'missing_where', message: 'No WHERE.' },
+      ],
+    });
+    expect(blocked.map((check) => [check.level, check.text])).toEqual([
+      ['block', 'No WHERE.'],
+      ['note', 'A note.'],
+      ['pass', 'It is one statement.'],
+    ]);
+    expect(statementLine({ statements: [statement, statement] })).toBe(
+      'UPDATE on users',
+    );
+  });
+
+  it('puts one clause on a line without changing a token', () => {
+    const sql =
+      "UPDATE users SET name = 'a where b' WHERE id IN (1, 2) AND (x = 1 OR y = 2) RETURNING id";
+    const formatted = formatSql(sql);
+    expect(formatted).toBe(
+      "UPDATE users\nSET name = 'a where b'\nWHERE id IN (1, 2)\n  AND (x = 1 OR y = 2)\nRETURNING id",
+    );
+    expect(formatted.replace(/\s+/g, ' ')).toBe(sql);
+    // SQL written over several lines is shown as written.
+    expect(formatSql('SELECT 1\nFROM t')).toBe('SELECT 1\nFROM t');
+    expect(formatSql("INSERT INTO t (a) VALUES ('x')")).toBe(
+      "INSERT INTO t (a)\nVALUES ('x')",
+    );
+  });
+
+  it('keeps one timeline of what happened', () => {
+    const steps = (fields: Partial<Approval>, alive = true) =>
+      timelineOf(request(fields), alive).map((step) => [
+        step.label,
+        step.state,
+      ]);
+    expect(steps({ agent })).toEqual([
+      ['Asked', 'done'],
+      ['Preview needed', 'current'],
+      ['Review', 'upcoming'],
+      ['Run', 'upcoming'],
+      ['Receipt', 'upcoming'],
+    ]);
+    expect(
+      steps({
+        status: 'executed',
+        preview: shown,
+        reviewed_at: '2026-11-25T10:05:00Z',
+        executed_at: '2026-11-25T10:06:00Z',
+      }),
+    ).toEqual([
+      ['Asked', 'done'],
+      ['Previewed', 'done'],
+      ['Approved', 'done'],
+      ['Ran', 'done'],
+      ['Receipt signed', 'done'],
+    ]);
+    expect(steps({ status: 'withdrawn' })).toEqual([
+      ['Asked', 'done'],
+      ['Never previewed', 'skipped'],
+      ['Withdrawn', 'ended'],
+      ['Not run', 'skipped'],
+    ]);
+    // Approved, then withdrawn before it ran.
+    expect(
+      steps({ status: 'withdrawn', reviewed_at: '2026-11-25T10:05:00Z' }).slice(
+        2,
+      ),
+    ).toEqual([
+      ['Approved', 'done'],
+      ['Withdrawn', 'ended'],
+    ]);
+    expect(steps({}, false)[2]).toEqual(['Expired', 'ended']);
+    expect(
+      steps({ status: 'rejected', reviewed_at: '2026-11-25T10:05:00Z' }),
+    ).toContainEqual(['Rejected', 'ended']);
+    expect(
+      steps({
+        preview: { supported: false, reason: MYSQL_REASON, notes: [] },
+      })[1],
+    ).toEqual(['Not previewed', 'skipped']);
+  });
+
+  it('pairs before and after rows by their key, in the order of after', () => {
+    const before = {
+      columns: ['id', 'name'],
+      hidden: [],
+      rows: [
+        [1, 'a'],
+        [2, 'b'],
+      ],
+      total: 2,
+    };
+    const after = {
+      ...before,
+      rows: [
+        [2, 'x'],
+        [1, 'y'],
+        [3, 'z'],
+      ],
+    };
+    expect(pairRows(before, after, 'id')).toEqual([
+      { before: [2, 'b'], after: [2, 'x'] },
+      { before: [1, 'a'], after: [1, 'y'] },
+    ]);
   });
 });

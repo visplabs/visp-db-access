@@ -1,0 +1,877 @@
+/* Redesign: the overview screen. Owned by the overview implementer.
+   One loud element, the gate's tiles in the verdict colours; everything
+   around them stays quiet: hairlines, one surface, small type. */
+.ov {
+  max-width: 1280px;
+}
+.ov-heading {
+  margin-bottom: var(--space-6);
+}
+.ov-heading h1 {
+  font-size: var(--text-title);
+}
+.ov-heading p {
+  margin-top: 2px;
+}
+
+.ov-section-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.ov-section-head h2 {
+  font-size: 15px;
+  margin: 0;
+}
+.ov-count {
+  color: var(--label-secondary);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.ov-section-tools,
+.ov-head-link {
+  margin-left: auto;
+}
+.ov-section-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+.ov-head-link,
+.ov-section-tools > a {
+  font-size: var(--text-sm);
+}
+.ov-calm {
+  margin: 0;
+  padding: var(--space-4) var(--space-4);
+  border: 1px dashed var(--rule);
+  border-radius: 8px;
+  color: var(--label-secondary);
+  font-size: var(--text-sm);
+}
+.ov-calm a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ov-owner {
+  color: var(--label-secondary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+.ov-who {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.ov-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--text-xs);
+  color: var(--label-primary);
+  font-weight: 500;
+}
+.ov-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+/* What the gate did: three joined tiles, each in its verdict's colours. */
+.ov-gate {
+  margin-bottom: var(--space-8);
+}
+.ov-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.ov-tiles > li + li {
+  border-left: 1px solid var(--rule);
+}
+.ov-tile {
+  --tile-fg: var(--verdict-allowed-fg);
+  --tile-bg: var(--verdict-allowed-bg);
+  --tile-line: var(--verdict-allowed-line);
+  position: relative;
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  gap: 2px;
+  height: 100%;
+  padding: 18px 20px 18px;
+  color: var(--label-primary);
+  text-decoration: none;
+  background: color-mix(in srgb, var(--tile-bg) 55%, var(--surface));
+  transition: background var(--motion-fast) ease;
+}
+.ov-tile::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  border-top: 3px solid var(--tile-fg);
+}
+.ov-tile[data-verdict='held'] {
+  --tile-fg: var(--verdict-held-fg);
+  --tile-bg: var(--verdict-held-bg);
+  --tile-line: var(--verdict-held-line);
+}
+/* Held waits on a person: its rail is dashed, like its chip. */
+.ov-tile[data-verdict='held']::before {
+  border-top-style: dashed;
+}
+.ov-tile[data-verdict='blocked'] {
+  --tile-fg: var(--verdict-blocked-fg);
+  --tile-bg: var(--verdict-blocked-bg);
+  --tile-line: var(--verdict-blocked-line);
+}
+.ov-tile:hover {
+  background: var(--tile-bg);
+  text-decoration: none;
+}
+.ov-tile:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -4px;
+}
+.ov-tile-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+/* The time a tile covers: "24 h" or "Now", so two windows never read as one. */
+.ov-tile-window {
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  color: var(--label-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.ov-tile-number {
+  font-size: 48px;
+  line-height: 1;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+  color: var(--tile-fg);
+}
+.ov-tile-meaning {
+  margin-top: 6px;
+  font-size: var(--text-sm);
+  color: var(--label-secondary);
+}
+.ov-tile-note {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--tile-line);
+  font-size: var(--text-xs);
+  color: var(--label-secondary);
+}
+/* A zero is a result, not a gap: the number goes quiet, the line says so. */
+.ov-tile[data-zero] {
+  background: var(--surface);
+}
+.ov-tile[data-zero]::before {
+  border-top-color: var(--tile-line);
+}
+.ov-tile[data-zero] .ov-tile-number {
+  color: var(--label-tertiary);
+}
+.ov-tile[data-zero] .ov-tile-meaning {
+  color: var(--label-primary);
+}
+.ov-split {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  margin-top: var(--space-3);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.ov-split > i {
+  flex-basis: 0;
+  min-width: 2px;
+  background: var(--verdict-allowed-fg);
+}
+.ov-split > i[data-verdict='blocked'] {
+  background: var(--verdict-blocked-fg);
+}
+/* Failed on the database: no verdict, so no verdict colour. */
+.ov-split > i[data-verdict='failed'] {
+  background: var(--label-tertiary);
+}
+
+/* Two columns when there is room: work on the left, databases on the right. */
+.ov-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-8);
+}
+.ov-main,
+.ov-side {
+  display: grid;
+  align-content: start;
+  gap: var(--space-8);
+  min-width: 0;
+}
+.ov-main {
+  container-type: inline-size;
+}
+.ov-side {
+  gap: var(--space-4);
+  container-type: inline-size;
+}
+@media (min-width: 1180px) {
+  .ov-columns {
+    grid-template-columns: minmax(0, 1fr) 320px;
+  }
+}
+
+/* Needs you: reviews ranked by risk and expiry, then the caller's own. */
+.ov-group {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--label-secondary);
+}
+.ov-group:first-of-type {
+  margin-top: 0;
+}
+.ov-reviews,
+.ov-activity-list,
+.ov-health-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.ov-reviews > li + li,
+.ov-activity-list > li + li,
+.ov-health-list > li + li {
+  border-top: 1px solid var(--rule);
+}
+.ov-review {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'who who'
+    'what what'
+    'risk go'
+    'expiry go';
+  gap: 6px var(--space-4);
+  align-items: center;
+  padding: 12px 16px;
+}
+.ov-review-who {
+  grid-area: who;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 0;
+}
+.ov-review-what {
+  grid-area: what;
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--label-primary);
+  overflow-wrap: anywhere;
+}
+.ov-review-risk,
+.ov-review-expiry {
+  font-size: var(--text-xs);
+  color: var(--label-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ov-review-risk {
+  grid-area: risk;
+}
+.ov-review-expiry {
+  grid-area: expiry;
+}
+.ov-review-go {
+  grid-area: go;
+}
+@container (min-width: 640px) {
+  .ov-review {
+    grid-template-columns: minmax(0, 1fr) 116px auto;
+    grid-template-areas:
+      'who risk go'
+      'what expiry go';
+    row-gap: 4px;
+  }
+}
+/* Recent activity: one line per query where the column fits. */
+.ov-activity-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'verdict time'
+    'sql sql'
+    'who cluster';
+  gap: 4px 12px;
+  align-items: center;
+  padding: 10px 16px;
+  color: var(--label-primary);
+  text-decoration: none;
+}
+.ov-activity-row:hover {
+  background: var(--hover-fill);
+  text-decoration: none;
+}
+.ov-activity-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+.ov-activity-verdict {
+  grid-area: verdict;
+  align-self: start;
+}
+.ov-activity-sql {
+  grid-area: sql;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-activity-who {
+  grid-area: who;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ov-activity-row .ov-cluster {
+  grid-area: cluster;
+  justify-self: end;
+  max-width: 100%;
+  white-space: nowrap;
+}
+.ov-activity-row .ov-cluster,
+.ov-activity-who .actor-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ov-activity-time {
+  grid-area: time;
+  justify-self: end;
+  color: var(--label-secondary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+.ov-run-status {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  color: var(--label-secondary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+@container (min-width: 520px) {
+  .ov-activity-row {
+    grid-template-columns: 104px minmax(0, 1fr) auto;
+    grid-template-areas:
+      'verdict sql time'
+      'verdict who cluster';
+  }
+}
+@container (min-width: 720px) {
+  .ov-activity-row {
+    grid-template-columns:
+      100px minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 1.25fr)
+      76px;
+    grid-template-areas: 'verdict sql who cluster time';
+  }
+  .ov-activity-verdict {
+    align-self: center;
+  }
+  .ov-activity-row .ov-cluster {
+    justify-self: start;
+  }
+}
+
+/* Database health: counts, then only the databases in trouble. */
+.ov-health-counts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0 0 var(--space-3);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.ov-health-counts > div {
+  padding: 10px 12px;
+  min-width: 0;
+}
+.ov-health-counts > div:nth-child(even) {
+  border-left: 1px solid var(--rule);
+}
+.ov-health-counts > div:nth-child(n + 3) {
+  border-top: 1px solid var(--rule);
+}
+@container (min-width: 520px) {
+  .ov-health-counts {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .ov-health-counts > div + div {
+    border-left: 1px solid var(--rule);
+  }
+  .ov-health-counts > div:nth-child(n + 3) {
+    border-top: 0;
+  }
+}
+.ov-health-counts dt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--label-secondary);
+  white-space: nowrap;
+}
+.ov-health-counts dd {
+  margin: 2px 0 0;
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ov-health-counts [data-zero] dd {
+  color: var(--label-tertiary);
+}
+.ov-health-counts [data-status='down']:not([data-zero]) dd {
+  color: var(--danger);
+}
+.ov-health-counts [data-status='degraded']:not([data-zero]) dd {
+  color: var(--warning);
+}
+.ov-health-list a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  align-items: center;
+  padding: 10px 14px;
+  color: var(--label-primary);
+  text-decoration: none;
+}
+.ov-health-list a:hover {
+  background: var(--hover-fill);
+  text-decoration: none;
+}
+.ov-health-list a:focus-visible,
+.ov-discovery:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+.ov-health-name {
+  min-width: 0;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.ov-health-why {
+  grid-column: 1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  font-size: var(--text-xs);
+  color: var(--label-secondary);
+}
+.ov-health-list .health {
+  grid-column: 2;
+  grid-row: 1;
+  white-space: nowrap;
+}
+.ov-discovery {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--label-primary);
+  text-decoration: none;
+}
+.ov-discovery:hover {
+  background: var(--hover-fill);
+  text-decoration: none;
+}
+.ov-discovery > span {
+  display: grid;
+  flex: 1;
+  font-size: var(--text-sm);
+}
+.ov-discovery > span > span {
+  font-size: var(--text-xs);
+  color: var(--label-secondary);
+}
+.ov-discovery > svg {
+  flex: none;
+  color: var(--label-secondary);
+}
+
+/* First run: a short guided path that leads the page. */
+.ov-setup {
+  container-type: inline-size;
+  margin-bottom: var(--space-8);
+  padding: 18px 20px 16px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.ov-setup-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.ov-setup-head h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.ov-setup-head p {
+  margin: 2px 0 0;
+  color: var(--label-secondary);
+  font-size: var(--text-sm);
+}
+.ov-setup-meter {
+  display: flex;
+  gap: 4px;
+  margin: 14px 0 16px;
+}
+.ov-setup-meter > i {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--subtle);
+}
+.ov-setup-meter > i[data-done] {
+  background: var(--verdict-allowed-fg);
+}
+.ov-setup-steps {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+@container (min-width: 760px) {
+  .ov-setup-steps {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+.ov-setup-steps > li {
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+.ov-setup-steps > li[data-state='next'] {
+  border-color: var(--action);
+  background: var(--action-soft);
+}
+.ov-setup-steps > li[data-state='done'] {
+  border-style: dashed;
+}
+.ov-setup-steps > li > div {
+  flex: 1 1 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  justify-items: start;
+  gap: 2px;
+  min-width: 0;
+}
+.ov-setup-steps strong,
+.ov-setup-steps a:not(.button) {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.ov-setup-steps li[data-state='done'] a {
+  color: var(--label-secondary);
+}
+.ov-setup-steps p {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--label-secondary);
+}
+.ov-setup-steps .button {
+  max-width: 100%;
+  height: auto;
+  min-height: 28px;
+  margin-top: 8px;
+  padding-block: 4px;
+  /* A narrow step wraps the button's words; they never cross the card. */
+  white-space: normal;
+  text-align: left;
+}
+.ov-setup-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--rule);
+  border-radius: 50%;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--label-secondary);
+}
+li[data-state='next'] > .ov-setup-mark {
+  border-color: var(--action);
+  background: var(--action);
+  color: var(--on-action);
+}
+li[data-state='done'] > .ov-setup-mark {
+  border-color: var(--verdict-allowed-line);
+  background: var(--verdict-allowed-bg);
+  color: var(--verdict-allowed-fg);
+}
+/* The toggle that shows every step; only phones hide any. */
+.ov-setup-all {
+  display: none;
+  margin-top: 10px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--action);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* Agents: who acts through the gate, and what each did last. */
+.ov-agents {
+  margin-bottom: var(--space-8);
+}
+.ov-agents .ov-head-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+/* One row per agent: who, where, its state, and its last session. */
+.ov-agent-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.ov-agent {
+  display: grid;
+  grid-template-columns:
+    minmax(200px, 1.1fr) minmax(160px, 1fr) 88px
+    minmax(240px, 1.6fr);
+  align-items: center;
+  gap: 10px 16px;
+  min-width: 0;
+  padding: 10px 12px 10px 16px;
+}
+.ov-agent + .ov-agent {
+  border-top: 1px solid var(--rule);
+}
+.ov-agent-who,
+.ov-agent-reach {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.ov-agent-reach {
+  font-size: var(--text-sm);
+}
+@media (max-width: 980px) {
+  .ov-agent {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 12px 14px;
+  }
+  .ov-agent-reach {
+    grid-column: 1;
+  }
+  .ov-agent > .agent-state {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+  .ov-agent-session {
+    grid-column: 1 / -1;
+  }
+}
+.ov-agent-open {
+  display: inline-flex;
+  max-width: 100%;
+  border-radius: 7px;
+  color: inherit;
+  text-decoration: none;
+}
+.ov-agent-open:hover .actor-name {
+  text-decoration: underline;
+}
+.ov-agent-open:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.ov-agent-session {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--subtle);
+  color: var(--label-primary);
+  font-size: var(--text-sm);
+  text-decoration: none;
+}
+span.ov-agent-session {
+  display: block;
+  color: var(--label-secondary);
+}
+a.ov-agent-session:hover {
+  background: color-mix(in srgb, var(--subtle) 70%, var(--rule));
+}
+a.ov-agent-session:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.ov-agent-session > svg {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  color: var(--label-tertiary);
+}
+.ov-agent-session-when {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.ov-agent-session-what {
+  overflow: hidden;
+  color: var(--label-secondary);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-agent-live {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--verdict-allowed-fg);
+}
+.ov-agents-empty {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-4);
+  padding: var(--space-4);
+  border: 1px dashed var(--rule);
+  border-radius: 10px;
+  color: var(--label-secondary);
+  font-size: var(--text-sm);
+}
+.ov-agents-empty > svg {
+  flex: none;
+  color: var(--label-primary);
+}
+.ov-agents-empty p {
+  flex: 1 1 320px;
+  margin: 0;
+}
+.ov-agents-empty strong {
+  color: var(--label-primary);
+}
+
+/* Phones: tiles stack as rows, the number at the end. */
+@media (max-width: 640px) {
+  .ov-tiles {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ov-tiles > li + li {
+    border-left: 0;
+    border-top: 1px solid var(--rule);
+  }
+  .ov-tile {
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 12px;
+    padding: 14px 16px;
+  }
+  .ov-tile-top {
+    margin-bottom: 4px;
+  }
+  .ov-tile-number {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    align-self: center;
+    font-size: 34px;
+  }
+  .ov-tile-meaning,
+  .ov-tile-note {
+    grid-column: 1;
+    margin-top: 0;
+  }
+  .ov-setup {
+    padding: 16px;
+  }
+  /* Setup does not fill a phone's first screen: the next step shows, the
+     others wait behind "Show all steps". */
+  .ov-setup:not([data-all]) .ov-setup-steps > li:not([data-state='next']) {
+    display: none;
+  }
+  .ov-setup-all {
+    display: inline-block;
+  }
+  .ov-agents-empty > svg {
+    display: none;
+  }
+  .ov-setup-meter {
+    margin: 10px 0 12px;
+  }
+  .ov-heading {
+    margin-bottom: var(--space-4);
+  }
+  .ov-agents,
+  .ov-setup,
+  .ov-gate {
+    margin-bottom: var(--space-6);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ov-tile {
+    transition: none;
+  }
+}

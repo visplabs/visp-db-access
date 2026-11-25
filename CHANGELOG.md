@@ -7,6 +7,41 @@ change the API and storage schema; migrations run automatically at startup.
 
 ## [Unreleased]
 
+### Changed
+
+- Console redesign. An approval reads as a decision: the next step and the
+  risk, who asked and why, the rows a write changes before and after, the
+  checks, one timeline, and actions that stay in view. A request that is
+  approved but has not run says so ("Approved — not run yet", "Running").
+- The console's brand reads "visp gate". A toast shows in the top bar's own
+  band on a wide screen, and just under the top bar on a phone, so it never
+  covers the project picker or a bar of actions.
+- An agent's session has its own page: a summary, then a trail of its steps,
+  with why each refused step was refused and what the agent was told.
+- "Connect an agent" is a four-step page that makes the agent and its token,
+  prints the command or config for Claude Code, Cursor or any MCP client, and
+  shows the first call arrive.
+- The overview puts agents first, with each one's live session, and shows
+  what the gate did in three tiles, "At the gate": allowed and blocked in the
+  last 24 hours, and held now. The agent page shows what the agent can reach,
+  how the gate answers it, its sessions and its tokens.
+- One vocabulary on every screen: Allowed, Masked, Held and Blocked, each a
+  chip with an icon and a word. Agents and people have their own badges.
+  Environments are slate tags, never a verdict colour; the console's run
+  button wears its environment's tag.
+- The README is rewritten around agents, with an MCP quickstart, a hero GIF
+  and new screenshots. Printed MCP configs (the demo's setup step included)
+  name the server `visp-gate`.
+
+### Fixed
+
+- The demo gateway no longer exits at start with code 1 and no message. It
+  read the metadata password from a file with no final newline, and `read`
+  returns 1 at end of file.
+- The threat model no longer says an agent's call rate and the stops after
+  refused queries or proposals are counted per node. Since 0.2.1 they are
+  shared across nodes.
+
 ## [0.2.1] - 2026-11-25
 
 ### Changed

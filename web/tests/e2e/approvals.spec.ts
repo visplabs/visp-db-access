@@ -56,6 +56,8 @@ const settled = (page: Page) =>
   );
 const detail = (page: Page) =>
   page.getByRole('region', { name: 'Query approval' });
+/** The header of the request: its state and the one next action. */
+const title = (page: Page) => detail(page).locator('.ar-title');
 
 test('a reviewer previews an agent’s request, approves and runs it, and sees a valid receipt', async ({
   page,
@@ -67,16 +69,23 @@ test('a reviewer previews an agent’s request, approves and runs it, and sees a
     .filter({ hasText: 'Anonymize the names' });
   // The first test of a run waits for a cold dev server to build the page.
   await expect(row).toBeVisible({ timeout: 20000 });
-  await expect(row).toContainText(
-    'Asked by agent support-assistant for Jordan Lee',
+  // An agent's request says so on an inverted tab, with the person it is for.
+  await expect(row.locator('.actor-badge[data-actor="agent"]')).toHaveText(
+    /Agent\s*support-assistant/,
   );
+  await expect(row).toContainText('for Jordan Lee');
   await row.click();
   const view = detail(page);
-  await expect(
-    view.getByText('Asked by agent support-assistant for Jordan Lee'),
-  ).toBeVisible();
+  await expect(view.getByRole('region', { name: 'Who asked' })).toContainText(
+    /Asked by\s*Agent\s*support-assistant\s*for Jordan Lee/,
+  );
+  // The header says the one next step for this reviewer.
+  await expect(title(page)).toHaveText('Preview needed before approval');
+  await expect(view.locator('.ar-header .verdict-chip')).toHaveText('Held');
   // Nothing has run, so nothing can be approved yet.
-  await expect(view.getByText('Nothing has run yet.')).toBeVisible();
+  await expect(
+    view.getByText('Nothing has run yet.', { exact: true }),
+  ).toBeVisible();
   await expect(
     view.getByRole('button', { name: 'Approve', exact: true }),
   ).toBeDisabled();
@@ -103,22 +112,28 @@ test('a reviewer previews an agent’s request, approves and runs it, and sees a
   const changes = view.getByRole('region', { name: 'What changes' });
   await expect(changes).toContainText('Changes 2 rows in users.');
   await expect(changes).toContainText('It will run only on these exact rows.');
-  const before = changes.getByRole('region', { name: 'Before: rows' }),
-    after = changes.getByRole('region', { name: 'After: rows' });
+  // Rows that pair one to one are one diff: each changed value shows its
+  // old and its new value, a masked one stays masked.
+  const diff = changes.getByRole('region', { name: 'Before and after: rows' });
   await expect(
-    before.getByRole('columnheader', { name: 'email · masked' }),
+    diff.getByRole('columnheader', { name: 'email · masked' }),
   ).toBeVisible();
   await expect(
-    after.getByRole('columnheader', { name: 'email · masked' }),
+    diff.getByRole('columnheader', { name: 'name · written' }),
   ).toBeVisible();
-  await expect(before.getByRole('cell', { name: '••••••' })).toHaveCount(2);
-  await expect(before.getByRole('cell', { name: 'Maya Patel' })).toBeVisible();
+  await expect(diff.getByRole('cell', { name: '••••••' })).toHaveCount(2);
   await expect(
-    after.getByRole('cell', { name: 'Changed: Closed account' }),
-  ).toHaveCount(2);
-  await expect(changes).toContainText(
-    'Changed values are bold and underlined.',
-  );
+    diff.getByRole('cell', {
+      name: 'Changed from Maya Patel to Closed account',
+    }),
+  ).toBeVisible();
+  await expect(diff.locator('.cell-changed')).toHaveCount(2);
+  await expect(diff.locator('.cell-changed del')).toHaveText([
+    'Maya Patel',
+    'Oliver Davis',
+  ]);
+  await expect(changes).toContainText('marks a changed value.');
+  await expect(title(page)).toHaveText('Waiting for your review');
 
   await expect(
     view.getByRole('button', { name: 'Approve', exact: true }),
@@ -145,8 +160,10 @@ test('a reviewer previews an agent’s request, approves and runs it, and sees a
     receipt.getByRole('button', { name: 'Copy digest' }),
   ).toBeVisible();
   await expect(
-    view.getByRole('button', { name: 'Execute approved query' }),
+    view.getByRole('button', { name: 'Run approved write' }),
   ).toHaveCount(0);
+  await expect(title(page)).toHaveText('Done: it ran');
+  await expect(view.locator('.ar-header .verdict-chip')).toHaveText('Allowed');
 
   // A receipt that names another key is not verified, and says so plainly.
   await go(page, `/approvals?tab=all&id=${SIGNED_EARLIER}`);
@@ -206,9 +223,8 @@ test('a preview of a request decided meanwhile says what happened', async ({
   ).toHaveText(
     'Only a pending request without a preview can be previewed This request was rejected by Alex Morgan a moment ago.',
   );
-  await expect(
-    view.locator('.section-toolbar [data-variant="status"]'),
-  ).toHaveText('Rejected');
+  await expect(title(page)).toHaveText('Rejected by Alex Morgan');
+  await expect(view.locator('.ar-header .verdict-chip')).toHaveText('Blocked');
 });
 
 test('an insert lists each column once and marks a protected one as masked', async ({
@@ -257,9 +273,10 @@ test('the requester withdraws an agent’s request', async ({ page }) => {
     'and the agent support-assistant sees it as withdrawn. This cannot be undone.',
   );
   await confirm.getByRole('button', { name: 'Confirm', exact: true }).click();
-  await expect(
-    view.locator('.section-toolbar [data-variant="status"]'),
-  ).toHaveText('Withdrawn');
+  await expect(title(page)).toHaveText('Withdrawn by the requester');
+  await expect(view.locator('.ar-header [data-variant="status"]')).toHaveText(
+    'Withdrawn',
+  );
   await expect(
     view.getByRole('button', { name: 'Withdraw request', exact: true }),
   ).toHaveCount(0);
@@ -334,7 +351,7 @@ test('rows that cannot be paired mark the written columns, never a guessed cell'
       'Rows cannot be matched one to one here; written columns are marked.',
     );
     await expect(changes.locator('.cell-changed')).toHaveCount(0);
-    await expect(changes.getByText('Changed values are bold')).toHaveCount(0);
+    await expect(changes.getByText('marks a changed value')).toHaveCount(0);
     await expect(
       changes.getByRole('columnheader', { name: /· written/ }),
     ).toHaveCount(2);
@@ -356,9 +373,10 @@ test('a deleted agent’s request can only be rejected', async ({ page }) => {
   await signIn(page);
   await go(page, `/approvals?tab=all&id=${DELETED_AGENT}`);
   const view = detail(page);
-  await expect(view).toContainText(
-    'Asked by agent nightly-cleanup (deleted) for Jordan Lee',
+  await expect(view.getByRole('region', { name: 'Who asked' })).toContainText(
+    /Agent\s*nightly-cleanup \(deleted\)\s*for Jordan Lee/,
   );
+  await expect(title(page)).toHaveText('The agent that asked was deleted');
   await expect(view).toContainText(
     'The agent that asked was deleted, so this request cannot be previewed or approved.',
   );
@@ -371,9 +389,7 @@ test('a deleted agent’s request can only be rejected', async ({ page }) => {
   ).toBeDisabled();
   await view.getByLabel('Review note').fill('The agent is gone');
   await view.getByRole('button', { name: 'Reject', exact: true }).click();
-  await expect(
-    view.locator('.section-toolbar [data-variant="status"]'),
-  ).toHaveText('Rejected');
+  await expect(title(page)).toHaveText('Rejected by Alex Morgan');
 });
 
 test('a conflict refreshes the screen and says why in place; a double click acts once', async ({
@@ -395,18 +411,18 @@ test('a conflict refreshes the screen and says why in place; a double click acts
   );
   // The buttons went away; focus did not drop to the page.
   await expect(view.locator('[data-focus-target]')).toBeFocused();
-  await expect(
-    view.locator('.section-toolbar [data-variant="status"]'),
-  ).toHaveText('Rejected');
+  await expect(title(page)).toHaveText('Rejected by Alex Morgan');
   await expect(
     page.getByRole('listitem').filter({ hasText: 'Correct a customer name' }),
   ).toHaveCount(0);
   // A double click on Approve approves once.
   await go(page, `/approvals?tab=all&id=${id(820)}`);
   await view.getByRole('button', { name: 'Approve', exact: true }).dblclick();
-  await expect(
-    view.locator('.section-toolbar [data-variant="status"]'),
-  ).toHaveText('Approved');
+  await expect(title(page)).toHaveText('Approved — not run yet');
+  // Nothing has run yet: a status, not the Allowed verdict.
+  await expect(view.locator('.ar-header [data-variant="status"]')).toHaveText(
+    'Approved — not run yet',
+  );
   await expect(view.getByRole('alert')).toHaveCount(0);
   await expect(view.locator('[data-focus-target]')).toBeFocused();
   const audit = (await api(
@@ -469,7 +485,12 @@ test('the preview and the receipt fit a phone and pass axe in both themes', asyn
     await setTheme(page, theme);
     await page.setViewportSize({ width: 390, height: 844 });
     await go(page, `/approvals?tab=all&id=${SIGNED_EARLIER}`);
-    const sheet = page.getByRole('dialog', { name: 'Query approval' });
+    // On a phone the request is its own view, with a way back to the list.
+    const sheet = detail(page);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(
+      sheet.getByRole('button', { name: 'All requests' }),
+    ).toBeVisible();
     await expect(
       sheet.getByText('Changes 1 row in subscriptions.'),
     ).toBeVisible();
@@ -507,11 +528,7 @@ test('the preview and the receipt fit a phone and pass axe in both themes', asyn
       animations: 'disabled',
     });
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(
-      page
-        .getByRole('dialog', { name: 'Query approval' })
-        .getByText('Changes 2 rows'),
-    ).toBeVisible();
+    await expect(detail(page).getByText('Changes 2 rows')).toBeVisible();
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
@@ -526,4 +543,351 @@ test('the preview and the receipt fit a phone and pass axe in both themes', asyn
     // A fresh page for the second theme: the preview runs once.
     await signIn(page);
   }
+});
+
+test('the decision fits one screen: header, who asked, checks, a dense list and a bar that stays', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await signIn(page);
+  await go(page, '/approvals');
+  // Plain words above the list; no counting jargon.
+  await expect(page.getByText('7 requests', { exact: true })).toBeVisible();
+  await expect(page.getByText(/loaded accessible requests/)).toHaveCount(0);
+  // At least seven requests are in view at once.
+  const list = page.locator('.ar-list-pane');
+  const box = (await list.boundingBox())!;
+  const rows = await page
+    .locator('.ar-row')
+    .evaluateAll((els) => els.map((el) => el.getBoundingClientRect().bottom));
+  expect(
+    rows.filter((bottom) => bottom <= box.y + box.height).length,
+  ).toBeGreaterThanOrEqual(7);
+  const row = page
+    .getByRole('button', { name: 'Review', exact: true })
+    .filter({ hasText: 'Correct a customer name' });
+  await expect(row.locator('.env-mark')).toHaveText('Production');
+  await row.click();
+  await expect(row).toHaveAttribute('aria-pressed', 'true');
+  expect(new URL(page.url()).searchParams.get('id')).toBe(MYSQL_PENDING);
+  const view = detail(page);
+  await expect(title(page)).toHaveText('Waiting for your review');
+  // Who asked, where and when: production is named, and the reason is the
+  // requester's own words.
+  const who = view.getByRole('region', { name: 'Who asked' });
+  await expect(who.locator('.actor-badge[data-actor="human"]')).toHaveText(
+    'Jordan Lee',
+  );
+  await expect(who.locator('.env-mark')).toHaveText('Production');
+  await expect(who).toContainText('MySQL');
+  await expect(who).toContainText(
+    'Correct a customer name after a verified support request.',
+  );
+  await expect(view.locator('.ar-decision')).toHaveAttribute(
+    'data-environment',
+    'production',
+  );
+  // The SQL is shown once, one clause to a line.
+  await expect(view.getByLabel('SQL preview')).toHaveCount(1);
+  await expect(view.getByLabel('SQL preview')).toHaveText(
+    "UPDATE users\nSET name = 'Maya Patel'\nWHERE id = 42",
+  );
+  // A MySQL write has no preview: said plainly, as a caution.
+  await expect(
+    view
+      .getByRole('region', { name: 'What changes' })
+      .locator('.ar-state[data-state="caution"]'),
+  ).toContainText('No preview.');
+  // The checks: the verdict, then a row per finding.
+  const checks = view.getByRole('region', { name: 'Checks' });
+  await expect(checks.locator('.verdict-chip')).toHaveText('Held');
+  await expect(checks.locator('li[data-level="warn"]')).toHaveCount(1);
+  await expect(checks.locator('li[data-level="pass"]')).toHaveCount(3);
+  await expect(checks).toContainText('UPDATE on users');
+  // The risk is in the header, in full view.
+  const risk = (await view.locator('.ar-header .risk-gauge').boundingBox())!;
+  expect(risk.y).toBeGreaterThan(48);
+  expect(risk.y + risk.height).toBeLessThanOrEqual(900);
+  await expect(view.locator('.ar-header .risk-gauge')).toHaveText(/High risk/);
+  // One timeline.
+  const steps = view
+    .getByRole('region', { name: 'What happened' })
+    .locator('li strong');
+  await expect(steps).toHaveText([
+    'Asked',
+    'Not previewed',
+    'Review',
+    'Run',
+    'Receipt',
+  ]);
+  // The bar is in view, below the body, and does not move as the body scrolls.
+  const approve = view.getByRole('button', { name: 'Approve', exact: true });
+  const before = (await approve.boundingBox())!;
+  expect(before.y + before.height).toBeLessThanOrEqual(900);
+  const body = (await view.locator('.ar-body').boundingBox())!,
+    bar = (await view.locator('.ar-bar').boundingBox())!;
+  expect(body.y + body.height).toBeLessThanOrEqual(bar.y + 0.5);
+  // The header sits below the top bar, so nothing shows through it.
+  const header = (await view.locator('.ar-header').boundingBox())!;
+  expect(header.y).toBeGreaterThanOrEqual(48);
+  await view.locator('.ar-body').evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  expect((await approve.boundingBox())!.y).toBe(before.y);
+  await settled(page);
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+});
+
+test('the requester is told why they cannot approve, and a narrow screen has a way back', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await signIn(page, 'member@visp.dev');
+  await go(page, `/approvals?tab=mine&id=${AGENT_REQUEST}`);
+  const view = detail(page);
+  await expect(title(page)).toHaveText(
+    'You asked for this: you cannot approve it',
+  );
+  // The list is a separate view here.
+  await expect(page.locator('.ar-list-pane')).toBeHidden();
+  await expect(
+    view.getByRole('button', { name: 'Preview', exact: true }),
+  ).toBeVisible();
+  await view.getByRole('button', { name: 'All requests' }).click();
+  await expect(view).toBeHidden();
+  const row = page.locator(`#row-${AGENT_REQUEST}`);
+  await expect(row).toBeVisible();
+  await expect(row).toBeFocused();
+  expect(new URL(page.url()).searchParams.get('id')).toBeNull();
+  expect(new URL(page.url()).searchParams.get('tab')).toBe('mine');
+  await settled(page);
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+});
+
+for (const [width, height] of [
+  [844, 390],
+  [390, 844],
+] as const)
+  test(`at ${width}x${height} the rows to decide on get the height; the header scrolls away under a status line`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height });
+    await signIn(page);
+    await go(page, `/approvals?tab=all&id=${AGENT_REQUEST}`);
+    const view = detail(page);
+    await view.getByRole('button', { name: 'Preview', exact: true }).click();
+    await page
+      .getByRole('dialog', { name: 'Preview this write?' })
+      .getByRole('button', { name: 'Confirm', exact: true })
+      .click();
+    await expect(view.getByText('Changes 2 rows')).toBeVisible();
+    await settled(page);
+    // The bar is one row; the note waits behind "Add note".
+    const bar = view.locator('.ar-bar');
+    expect((await bar.boundingBox())!.height).toBeLessThanOrEqual(60);
+    await expect(view.getByLabel('Review note')).toHaveCount(0);
+    const approve = view.getByRole('button', { name: 'Approve', exact: true });
+    expect(
+      (await approve.boundingBox())!.y + (await approve.boundingBox())!.height,
+    ).toBeLessThanOrEqual(height);
+    // Scroll "What changes" up to the status line.
+    await view.locator('.ar-decision').evaluate((el) => {
+      const region = el.querySelector('.ar-changes')!;
+      const status = el.querySelector('.ar-header-top')!;
+      el.scrollTop +=
+        region.getBoundingClientRect().top -
+        status.getBoundingClientRect().bottom;
+    });
+    const measure = await view.evaluate((el) => {
+      const rect = (selector: string) =>
+        el.querySelector(selector)!.getBoundingClientRect();
+      const region = rect('.ar-changes'),
+        status = rect('.ar-header-top'),
+        bar = rect('.ar-bar'),
+        title = rect('.ar-title');
+      return {
+        room: bar.top - status.bottom,
+        visible:
+          Math.min(region.bottom, bar.top) - Math.max(region.top, status.top),
+        region: region.height,
+        titleGone: title.bottom <= status.bottom,
+        statusTop: status.top,
+      };
+    });
+    // The space between the status line and the bar is at least 45% of
+    // the screen, and "What changes" fills it (or shows whole).
+    expect(measure.room).toBeGreaterThanOrEqual(0.45 * height);
+    expect(measure.visible).toBeGreaterThanOrEqual(
+      Math.min(measure.region, 0.45 * height) - 1,
+    );
+    // The title scrolled away; the status line stayed, with the verdict.
+    expect(measure.titleGone).toBe(true);
+    expect(measure.statusTop).toBeGreaterThanOrEqual(48);
+    await expect(view.locator('.ar-header-top .verdict-chip')).toBeVisible();
+    await expect(view.locator('.ar-header-top .verdict-chip')).toHaveText(
+      'Held',
+    );
+    // The note opens from the bar, focused.
+    await view.getByRole('button', { name: 'Add note', exact: true }).click();
+    await expect(view.getByLabel('Review note')).toBeFocused();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  });
+
+test('on a compact bar Reject asks for its note; nothing toasts what the screen says', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 844, height: 390 });
+  await signIn(page);
+  await go(page, `/approvals?tab=all&id=${MYSQL_PENDING}`);
+  const view = detail(page);
+  await view.getByRole('button', { name: 'Reject', exact: true }).click();
+  const note = view.getByLabel('Review note');
+  await expect(note).toBeFocused();
+  await expect(note).toHaveAttribute('aria-invalid', 'true');
+  await expect(note).toHaveAccessibleDescription(
+    /^Write why you reject it, then press Reject again\./,
+  );
+  await expect(title(page)).toHaveText('Waiting for your review');
+  await note.fill('Not a verified request');
+  await view.getByRole('button', { name: 'Reject', exact: true }).click();
+  await expect(title(page)).toHaveText('Rejected by Alex Morgan');
+  await expect(page.locator('.toast')).toHaveCount(0);
+});
+
+test('closing a request gives focus back to its row; a link to a missing request says so', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await signIn(page);
+  await go(page, `/approvals?id=${MYSQL_PENDING}`);
+  await expect(title(page)).toHaveText('Waiting for your review');
+  await detail(page).getByRole('button', { name: 'Close approval' }).click();
+  await expect(page.locator(`#row-${MYSQL_PENDING}`)).toBeFocused();
+  // A bogus or forbidden id: said plainly, with a way back and no retry.
+  await go(page, `/approvals?id=${id(999)}`);
+  const view = detail(page);
+  await expect(
+    view.getByRole('heading', {
+      name: 'This request is not here (or you cannot see it)',
+    }),
+  ).toBeVisible();
+  await expect(view.getByRole('button', { name: 'Try again' })).toHaveCount(0);
+  await view.getByRole('button', { name: 'All requests' }).click();
+  expect(new URL(page.url()).searchParams.get('id')).toBeNull();
+  await expect(page.locator('.ar-list')).toBeFocused();
+  await settled(page);
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+});
+
+test('approved and running requests have not run: they show their status, not Allowed', async ({
+  page,
+}) => {
+  await signIn(page);
+  await go(page, '/approvals?tab=all');
+  for (const words of ['Approved — not run yet', 'Running']) {
+    const row = page.locator('.ar-row').filter({
+      has: page.locator('[data-variant="status"]', { hasText: words }),
+    });
+    await expect(row.first()).toBeVisible();
+    await expect(row.first().locator('.verdict-chip')).toHaveCount(0);
+    await row.first().click();
+    await expect(
+      detail(page).locator('.ar-header [data-variant="status"]'),
+    ).toHaveText(words);
+    await expect(detail(page).locator('.ar-header .verdict-chip')).toHaveCount(
+      0,
+    );
+  }
+});
+
+test('at 1440x900 who asked and what changes share one view, with no empty timeline heading', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await signIn(page);
+  await go(page, `/approvals?tab=all&id=${AGENT_REQUEST}`);
+  const view = detail(page);
+  await view.getByRole('button', { name: 'Preview', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: 'Preview this write?' })
+    .getByRole('button', { name: 'Confirm', exact: true })
+    .click();
+  const headline = view.getByText('Changes 2 rows');
+  await expect(headline).toBeVisible();
+  const body = (await view.locator('.ar-body').boundingBox())!;
+  const asked = (await view.locator('.ar-who-line').boundingBox())!,
+    changes = (await headline.boundingBox())!;
+  expect(asked.y).toBeGreaterThanOrEqual(body.y);
+  expect(changes.y + changes.height).toBeLessThanOrEqual(body.y + body.height);
+  await expect(view.locator('.ar-who-line')).toContainText(
+    /Asked by\s*Agent\s*support-assistant/,
+  );
+  // Every "What happened" heading has steps under it.
+  for (const section of await view.locator('.ar-timeline').all())
+    expect(await section.locator('li').count()).toBeGreaterThan(0);
+});
+
+test('an environment never looks like a verdict', async ({ page }) => {
+  await signIn(page);
+  await go(page, '/ui?kitchen-sink');
+  const sample = page.getByTestId('kitchen-env-vs-verdict');
+  await expect(sample.locator('.env-mark')).toHaveCount(3);
+  const looks = await sample.evaluate((el) => {
+    const style = (node: Element) => getComputedStyle(node);
+    return {
+      env: [...el.querySelectorAll('.env-mark')].map((mark) => ({
+        icon: mark.querySelector('svg') !== null,
+        radius: parseFloat(style(mark).borderTopLeftRadius),
+        upper: style(mark).textTransform,
+        color: style(mark).color,
+        fill: style(mark).backgroundColor,
+      })),
+      verdict: [...el.querySelectorAll('.verdict-chip')].map((chip) => ({
+        radius: parseFloat(style(chip).borderTopLeftRadius),
+        color: style(chip).color,
+        fill: style(chip).backgroundColor,
+      })),
+    };
+  });
+  const verdictColours = new Set(
+    looks.verdict.flatMap((chip) => [chip.color, chip.fill]),
+  );
+  for (const mark of looks.env) {
+    // A square uppercase tag without an icon, in no verdict hue.
+    expect(mark.icon).toBe(false);
+    expect(mark.upper).toBe('uppercase');
+    expect(mark.radius).toBeLessThan(
+      Math.min(...looks.verdict.map((chip) => chip.radius)),
+    );
+    expect(verdictColours.has(mark.color)).toBe(false);
+    expect(verdictColours.has(mark.fill)).toBe(false);
+  }
+});
+
+test('a toast sits under the top bar on a phone, off every action bar, and closes on the next page', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signIn(page);
+  await go(page, '/ui?kitchen-sink');
+  await page.getByRole('button', { name: 'Create item' }).click();
+  const toast = page.locator('.toast');
+  await expect(toast).toHaveText('Created');
+  await settled(page);
+  const box = (await toast.boundingBox())!;
+  // On a phone it sits just under the top bar, not over the picker in it.
+  expect(box.y).toBeGreaterThanOrEqual(48);
+  expect(box.y + box.height).toBeLessThanOrEqual(48 + 8 + 76);
+  // Announced politely; focus stays where it was.
+  await expect(page.locator('.toasts')).toHaveAttribute('aria-live', 'polite');
+  await expect(page.getByRole('button', { name: 'Create item' })).toBeFocused();
+  // Older than a second when the page changes: it belongs to the page left.
+  await page.waitForTimeout(1100);
+  await go(page, '/approvals');
+  await expect(toast).toHaveCount(0);
 });

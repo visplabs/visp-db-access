@@ -10,7 +10,7 @@ const safeRedirect = (from: string | undefined) =>
   from && from.startsWith('/') && !/^\/[/\\]/.test(from) ? from : '/overview';
 export function Login() {
   useEffect(() => {
-    document.title = 'Sign in — visp';
+    document.title = 'Sign in — visp gate';
   }, []);
   const navigate = useNavigate(),
     location = useLocation(),
@@ -21,9 +21,7 @@ export function Login() {
     <main className="login">
       <div className="login-brand">
         <BrandMark size={32} />
-        <strong>
-          visp <span>· gate</span>
-        </strong>
+        <strong>visp gate</strong>
       </div>
       <p className="login-subtitle">Guarded database access</p>
       <form

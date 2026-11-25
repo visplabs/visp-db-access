@@ -51,7 +51,7 @@ test('policy converts fractional seconds to milliseconds and resets a customized
   await expect(writes).toBeChecked();
   await expect(page.locator('.save-bar')).toBeVisible();
 });
-test('desktop approval inbox becomes a phone sheet and retains the review note', async ({
+test('desktop approval inbox becomes a phone view and retains the review note', async ({
   page,
 }) => {
   await go(page, '/approvals');
@@ -66,7 +66,11 @@ test('desktop approval inbox becomes a phone sheet and retains the review note',
   await page.getByLabel('Review note').fill('Verified target rows');
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(
-    page.getByRole('dialog', { name: 'Query approval' }),
+    page.getByRole('region', { name: 'Query approval' }),
+  ).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'All requests' }),
   ).toBeVisible();
   await expect(page.getByLabel('Review note')).toHaveValue(
     'Verified target rows',

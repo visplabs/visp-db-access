@@ -1,6 +1,11 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { format, resolveConfig } from 'prettier';
-import { deadLinks, linkedDocs, rewriteLinks } from './docs-links.mjs';
+import {
+  deadLinks,
+  dropImages,
+  linkedDocs,
+  rewriteLinks,
+} from './docs-links.mjs';
 
 // Publish owned copies without changing the authoritative contract files.
 // The console links to api.md and architecture.md; every sibling document they
@@ -27,7 +32,7 @@ const published = new Set(sources.keys());
 await mkdir('public/docs', { recursive: true });
 for (const [name, source] of sources) {
   const content = rewriteLinks(
-    await readFile(`../docs/${source}`, 'utf8'),
+    dropImages(await readFile(`../docs/${source}`, 'utf8')),
     published,
   );
   const dead = deadLinks(content, published);

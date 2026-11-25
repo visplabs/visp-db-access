@@ -146,10 +146,11 @@ docker compose -f deploy/demo/docker-compose.yml down -v
 
 ## Useful scripts
 
-| Command (in `web/`)                        | Purpose                                                                                                                                     |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run screenshots:readme`               | Regenerate `docs/images/` from a mock server on port 5179 (start it first: `npm run dev:mock -- --host 127.0.0.1 --port 5179 --strictPort`) |
-| `npm run audit:ui`, `npm run audit:states` | Capture every route and state with axe reports (mock server on port 5175)                                                                   |
+| Command (in `web/`)                        | Purpose                                                                                                                                                           |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run screenshots:readme`               | Regenerate the still pictures in `docs/images/` from a mock server on port 5179 (start it first: `npm run dev:mock -- --host 127.0.0.1 --port 5179 --strictPort`) |
+| `npm run screenshots:hero`                 | Regenerate `docs/images/hero.gif` from the same mock server. It needs ImageMagick's `convert` on the `PATH`, and prints the frames, length and size               |
+| `npm run audit:ui`, `npm run audit:states` | Capture every route and state with axe reports (mock server on port 5175)                                                                                         |
 
 ## Releasing
 

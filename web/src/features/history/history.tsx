@@ -332,7 +332,11 @@ export function HistoryPage() {
               'cancelled',
             ].map((value) => ({
               value,
-              label: value,
+              // The words the Status column uses.
+              label:
+                value === 'ok'
+                  ? 'Completed'
+                  : value.charAt(0).toUpperCase() + value.slice(1),
             })),
           ]}
         />

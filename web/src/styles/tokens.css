@@ -28,6 +28,9 @@
     0 12px 32px rgb(0 0 0 / 12%);
   --rule: #dde2e9;
   --subtle: #e9edf2;
+  /* Legacy names: these back the status roles (--success, --warning,
+     --danger) and the console's run buttons. Environment marks and rails
+     use --env-*-fill/-ink/-line and --env-rail-* below. */
   --env-prod: #c22f3c;
   --env-prod-soft: #fbe9eb;
   --env-staging: #b7791f;
@@ -96,6 +99,50 @@
   --editor-default-height: 280px;
   --receipt-max-height: 320px;
   --preview-height: 96px;
+  /* Verdicts: the four answers of the gate, its signature. Each has a
+     foreground (text and icon), a soft ground and a hairline. Text on its
+     ground is AA (4.5:1) or better in both themes; see components/ui/README.md.
+     Hues sit beside the risk colours, never on them: green leans away from the
+     development teal, red is deeper than production. */
+  --verdict-allowed-fg: #156b48;
+  --verdict-allowed-bg: #e3f3eb;
+  --verdict-allowed-line: #9fd3b9;
+  --verdict-masked-fg: #5a3ea3;
+  --verdict-masked-bg: #eeeafa;
+  --verdict-masked-line: #c6b8ee;
+  --verdict-held-fg: #8a4a00;
+  --verdict-held-bg: #fcefd6;
+  --verdict-held-line: #e8c27f;
+  --verdict-blocked-fg: #b01f2e;
+  --verdict-blocked-bg: #fbe7e9;
+  --verdict-blocked-line: #eeb0b7;
+  /* Who acted. An agent is marked by an inverted "Agent" tab; a person has
+     no fill. */
+  --actor-agent-fg: var(--on-ink);
+  --actor-agent-bg: var(--ink);
+  --actor-line: var(--rule);
+  /* Environments: where something runs, never what the gate decided. They
+     take no verdict hue: a slate ladder told apart by weight and pattern.
+     Production is a solid ink tag with a hazard cap and a striped ink rail,
+     never missed; staging is a slate outline; development is quiet. Text on
+     its fill is AA in both themes (see components/ui/README.md). */
+  --env-prod-fill: #1d242d;
+  --env-prod-ink: #ffffff;
+  --env-prod-hazard: rgb(255 255 255 / 62%);
+  --env-prod-gap: var(--paper);
+  --env-staging-fill: #e3e8ee;
+  --env-staging-line: #8a96a4;
+  --env-staging-ink: #2f3a47;
+  --env-dev-fill: transparent;
+  --env-dev-line: #c3cbd5;
+  --env-dev-ink: #4a5665;
+  --env-rail-prod: repeating-linear-gradient(
+    -45deg,
+    var(--env-prod-fill) 0 7px,
+    var(--env-prod-gap) 7px 14px
+  );
+  --env-rail-staging: #6b7785;
+  --env-rail-dev: var(--env-dev-line);
   color-scheme: light;
   font-family: var(--font-ui);
   font-size: var(--text-base);
@@ -139,5 +186,26 @@
   --syntax-comment: #8794a2;
   --overlay: rgb(0 0 0 / 0.65);
   --shadow: var(--floating-shadow);
+  --verdict-allowed-fg: #6fd5a3;
+  --verdict-allowed-bg: #102a20;
+  --verdict-allowed-line: #265a43;
+  --verdict-masked-fg: #c4b2ff;
+  --verdict-masked-bg: #221c3a;
+  --verdict-masked-line: #463a72;
+  --verdict-held-fg: #f1bd63;
+  --verdict-held-bg: #2e2410;
+  --verdict-held-line: #634b22;
+  --verdict-blocked-fg: #ff9ca4;
+  --verdict-blocked-bg: #371a1f;
+  --verdict-blocked-line: #6e3039;
+  --env-prod-fill: #e4e9ef;
+  --env-prod-ink: #0e1217;
+  --env-prod-hazard: rgb(14 18 23 / 58%);
+  --env-staging-fill: #26303b;
+  --env-staging-line: #6b7785;
+  --env-staging-ink: #d5dce4;
+  --env-dev-line: #3a4552;
+  --env-dev-ink: #aab4c0;
+  --env-rail-staging: #8794a2;
   color-scheme: dark;
 }

@@ -36,7 +36,7 @@ export function HelpDocument() {
   );
   const title = headings(blocks).find((h) => h.level === 1)?.text ?? name;
   useEffect(() => {
-    document.title = `${title} — visp docs`;
+    document.title = `${title} — visp gate docs`;
   }, [title]);
   useEffect(() => {
     // Jump to the linked section once the document is on the page.
@@ -61,7 +61,7 @@ export function HelpDocument() {
         </Link>
         <span className="help-brand">
           <BrandMark size={20} />
-          visp docs
+          visp gate docs
         </span>
       </header>
       {!valid || doc.isError ? (

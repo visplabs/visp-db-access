@@ -1,5 +1,13 @@
 import { ApiError, type Transport } from './errors';
-import { fixtures, defaultPolicy, demoSchema, now, uuid } from './fixtures';
+import {
+  fixtures,
+  defaultPolicy,
+  demoSchema,
+  DEMO_AGENT,
+  PRICING_AGENT,
+  now,
+  uuid,
+} from './fixtures';
 import { analyzeDemo, constantSelect, preflightDemo } from './mock-guard';
 import { createMockDiscovery } from './mock-discovery';
 import { endpointChanged } from '../lib/connection';
@@ -24,7 +32,10 @@ const required = <T>(value: T | undefined): T =>
 /** A session-isolated, in-memory implementation of the v1 contract. */
 export function createMockTransport({
   delay = 180,
-}: { delay?: number } = {}): Transport {
+  // A new agent token gets its first call this long after it is made, so the
+  // connect screen can show the moment. A mock with no delay answers at once.
+  firstCallMs = delay > 0 ? 4000 : 0,
+}: { delay?: number; firstCallMs?: number } = {}): Transport {
   const state = fixtures();
   const passwords = new Map(
     state.users.map((user) => [user.id, 'demo-password']),
@@ -171,6 +182,8 @@ export function createMockTransport({
       elapsed_ms: result?.elapsed_ms ?? null,
       error,
       created_at: now(),
+      agent_id: null,
+      task: null,
     });
     // As the gateway writes it: the SQL is in the history, not in the audit
     // log. The event is the intent, written before the query runs.
@@ -325,12 +338,34 @@ export function createMockTransport({
       return cluster;
     },
   });
+  /** The demo agents act for the member, on databases the member reaches. */
+  function demoAgents() {
+    const owner = state.users.find((user) => user.org_role === 'member');
+    if (!owner) return [];
+    return [DEMO_AGENT, PRICING_AGENT].flatMap((demo) => {
+      const clusterIds = demo.clusters
+        .map((index) => state.clusters[index]?.id)
+        .filter((id): id is string => !!id);
+      if (clusterIds.length === 0) return [];
+      return [
+        {
+          id: demo.id,
+          name: demo.name,
+          description: demo.description,
+          owner: { id: owner.id, email: owner.email, name: owner.name },
+          cluster_ids: clusterIds.sort((a, b) => a.localeCompare(b)),
+        },
+      ];
+    });
+  }
   const agents = createAgents({
     clusters: () => state.clusters,
     access: (cluster) => clusterAccess(cluster) ?? undefined,
     fail,
     audit: (action, type, id, details) => audit(action, type, id, details),
     now,
+    firstCallMs,
+    seed: demoAgents(),
   });
   const approvals = createApprovals({
     state,
@@ -390,10 +425,13 @@ export function createMockTransport({
       const accessible = state.clusters.filter((cluster) =>
         clusterAccess(cluster),
       );
+      // As the server counts: every row of the last 24 hours on a cluster
+      // the caller can reach, whoever ran it.
+      const since = Date.now() - 86_400_000;
       const entries = state.history.filter(
         (row) =>
-          accessible.some((cluster) => cluster.id === row.cluster_id) &&
-          (session?.org_role === 'admin' || row.user_id === session?.id),
+          Date.parse(row.created_at) > since &&
+          accessible.some((cluster) => cluster.id === row.cluster_id),
       );
       return {
         discovery: actor.org_role === 'admin' ? discovery.summary() : null,
@@ -411,7 +449,13 @@ export function createMockTransport({
             a.status === 'pending' &&
             accessible.some((c) => c.id === a.cluster_id),
         ).length,
-        recent_queries: entries.slice(0, 10),
+        // The history list's first page, as `GET /history` gives it.
+        recent_queries: state.history
+          .filter(
+            (row) =>
+              session?.org_role === 'admin' || row.user_id === session?.id,
+          )
+          .slice(0, 10),
         unhealthy_clusters: accessible.filter(
           (c) => c.health.status !== 'healthy',
         ),
