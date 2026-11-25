@@ -87,7 +87,9 @@ docker compose -f deploy/demo/docker-compose.yml run --rm agent --follow
 This plays an agent over the real Model Context Protocol (MCP) endpoint at
 `/api/v1/mcp`, with the agent's token. It prints each call and
 what came back, and it stops with an error if the gate does not behave as
-this page says. What to look for:
+this page says. `--follow` makes it wait after it asks for the write, until
+a person approves or rejects it in the console (step 3), and then print the
+outcome. Without it the agent stops after asking. What to look for:
 
 | Step | The agent does                                   | The gate answers                                                                                            |
 | ---- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |

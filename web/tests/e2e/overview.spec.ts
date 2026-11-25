@@ -55,8 +55,10 @@ test('agents lead the page: each with its owner, state and last session', async 
 }) => {
   await signIn(page);
   const list = agents(page);
-  await expect(list).toContainText('1 in the workspace');
-  const row = list.getByRole('listitem').first();
+  await expect(list).toContainText('2 in the workspace');
+  const row = list
+    .getByRole('listitem')
+    .filter({ hasText: 'support-assistant' });
   await expect(row.locator('.actor-badge[data-actor="agent"]')).toContainText(
     'support-assistant',
   );
@@ -254,8 +256,8 @@ test('a member sees the tiles and work, with no setup or discovery', async ({
   ).toHaveCount(0);
   await expect(page.getByRole('link', { name: /Discovery/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Everyone' })).toHaveCount(0);
-  // Their own agents: the demo agent is the member's.
-  await expect(agents(page)).toContainText('1 of yours');
+  // Their own agents: the two demo agents are the member's.
+  await expect(agents(page)).toContainText('2 of yours');
   await expect(agents(page)).toContainText('for you');
 });
 
@@ -264,8 +266,14 @@ test('the tiles are reachable by keyboard with a visible focus', async ({
 }) => {
   await signIn(page);
   await page.getByRole('button', { name: 'Dismiss setup' }).click();
+  // The button is gone: the focus moves to the page's heading.
+  await expect(
+    page.getByRole('heading', { level: 1, name: 'Workspace overview' }),
+  ).toBeFocused();
   await gate(page).getByRole('heading', { name: 'At the gate' }).waitFor();
-  const session = agents(page).getByRole('link', { name: /Live session/ });
+  const session = agents(page)
+    .getByRole('link', { name: /Live session/ })
+    .last();
   await expect(session).toBeVisible();
   await session.focus();
   await page.keyboard.press('Tab');

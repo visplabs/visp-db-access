@@ -797,7 +797,7 @@ describe('the approval review as a decision', () => {
     expect(title({}, { ...live, live: false })).toBe(
       'Expired: it will not run',
     );
-    expect(title({ status: 'approved' })).toBe('Approved: not run yet');
+    expect(title({ status: 'approved' })).toBe('Approved — not run yet');
     expect(title({ status: 'approved' }, { ...live, live: false })).toBe(
       'Expired before it ran',
     );

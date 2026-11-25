@@ -143,15 +143,15 @@ export function createAgents(context: {
    * screen waits for that call; zero makes the demo calls exist at once. */
   firstCallMs?: number;
   /** An agent that is there from the start, with a token made days ago. */
-  seed?: Pick<Agent, 'id' | 'name' | 'description' | 'owner' | 'cluster_ids'>;
+  seed?: Pick<Agent, 'id' | 'name' | 'description' | 'owner' | 'cluster_ids'>[];
 }) {
   const { fail, audit, now } = context;
   const agents: Agent[] = [];
-  if (context.seed) {
+  for (const seed of context.seed ?? []) {
     const days = (n: number) =>
       new Date(Date.now() + n * 86_400_000).toISOString();
     agents.push({
-      ...context.seed,
+      ...seed,
       max_level: 'write',
       paused: false,
       hourly_query_budget: 300,

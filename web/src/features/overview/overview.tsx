@@ -22,7 +22,9 @@ function Heading() {
   return (
     <div className="page-heading ov-heading">
       <div>
-        <h1>Workspace overview</h1>
+        <h1 id="ov-title" tabIndex={-1}>
+          Workspace overview
+        </h1>
         <p>What the gate did, and what needs you.</p>
       </div>
       <Link to="/console" className="button primary">

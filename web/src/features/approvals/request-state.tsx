@@ -1,6 +1,6 @@
 import type { Approval } from '../../api/types';
 import { Badge, VerdictChip } from '../../components/ui';
-import { verdictOfApproval } from '../../lib/verdict';
+import { APPROVED_NOT_RUN, verdictOfApproval } from '../../lib/verdict';
 
 const statusTone: Record<Approval['status'], string> = {
   pending: 'warning',
@@ -15,7 +15,7 @@ const statusTone: Record<Approval['status'], string> = {
 };
 /** Statuses whose bare word would mislead: approved has not run yet. */
 const statusWords: Partial<Record<Approval['status'], string>> = {
-  approved: 'Approved — not run yet',
+  approved: APPROVED_NOT_RUN,
   executing: 'Running',
 };
 /** The status of a request in words: for states that are not a verdict

@@ -4,6 +4,7 @@ import {
   defaultPolicy,
   demoSchema,
   DEMO_AGENT,
+  PRICING_AGENT,
   now,
   uuid,
 } from './fixtures';
@@ -337,20 +338,25 @@ export function createMockTransport({
       return cluster;
     },
   });
-  /** The demo agent acts for the member, on databases the member reaches. */
-  function demoAgent() {
+  /** The demo agents act for the member, on databases the member reaches. */
+  function demoAgents() {
     const owner = state.users.find((user) => user.org_role === 'member');
-    const clusterIds = DEMO_AGENT.clusters
-      .map((index) => state.clusters[index]?.id)
-      .filter((id): id is string => !!id);
-    if (!owner || clusterIds.length === 0) return undefined;
-    return {
-      id: DEMO_AGENT.id,
-      name: DEMO_AGENT.name,
-      description: DEMO_AGENT.description,
-      owner: { id: owner.id, email: owner.email, name: owner.name },
-      cluster_ids: clusterIds.sort((a, b) => a.localeCompare(b)),
-    };
+    if (!owner) return [];
+    return [DEMO_AGENT, PRICING_AGENT].flatMap((demo) => {
+      const clusterIds = demo.clusters
+        .map((index) => state.clusters[index]?.id)
+        .filter((id): id is string => !!id);
+      if (clusterIds.length === 0) return [];
+      return [
+        {
+          id: demo.id,
+          name: demo.name,
+          description: demo.description,
+          owner: { id: owner.id, email: owner.email, name: owner.name },
+          cluster_ids: clusterIds.sort((a, b) => a.localeCompare(b)),
+        },
+      ];
+    });
   }
   const agents = createAgents({
     clusters: () => state.clusters,
@@ -359,7 +365,7 @@ export function createMockTransport({
     audit: (action, type, id, details) => audit(action, type, id, details),
     now,
     firstCallMs,
-    seed: demoAgent(),
+    seed: demoAgents(),
   });
   const approvals = createApprovals({
     state,

@@ -134,11 +134,6 @@ async function intact(receipt: Receipt) {
   );
 }
 
-/** Agents the seeded requests come from that are not in the agents list;
- * the mock treats them as active. support-assistant (uuid 900) is the demo
- * agent of the agents list, so its own state counts. */
-const SEEDED_AGENTS = new Map([[uuid(901), 'pricing-bot']]);
-
 export function createApprovals(context: {
   state: State;
   policies: Map<string, Policy>;
@@ -170,9 +165,7 @@ export function createApprovals(context: {
     name: user.name,
   });
   const activeAgent = (approval: Approval) =>
-    !!approval.agent?.id &&
-    (SEEDED_AGENTS.has(approval.agent.id) ||
-      context.agentActive(approval.agent.id) === true);
+    !!approval.agent?.id && context.agentActive(approval.agent.id) === true;
 
   function seed() {
     const [admin, reviewer, member] = state.users;

@@ -698,7 +698,11 @@ function Decision({
             sql={data.sql}
             rewritten={data.analysis.rewritten_sql}
           />
-          <ChecksSection analysis={data.analysis} clusterId={data.cluster_id} />
+          <ChecksSection
+            analysis={data.analysis}
+            clusterId={data.cluster_id}
+            decided={data.status !== 'pending'}
+          />
         </div>
         <Timeline approval={data} live={live} />
       </div>

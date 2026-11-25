@@ -137,3 +137,6 @@ export function verdictOfStep(
   if (step.outcome !== 'ok') return undefined;
   return step.verdict ? verdictOfGuard(step.verdict) : undefined;
 }
+
+/** One wording for a request that is approved but has not run. */
+export const APPROVED_NOT_RUN = 'Approved — not run yet';

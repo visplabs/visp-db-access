@@ -13,6 +13,9 @@ change the API and storage schema; migrations run automatically at startup.
   risk, who asked and why, the rows a write changes before and after, the
   checks, one timeline, and actions that stay in view. A request that is
   approved but has not run says so ("Approved — not run yet", "Running").
+- The console's brand reads "visp gate". A toast shows in the top bar's own
+  band on a wide screen, and just under the top bar on a phone, so it never
+  covers the project picker or a bar of actions.
 - An agent's session has its own page: a summary, then a trail of its steps,
   with why each refused step was refused and what the agent was told.
 - "Connect an agent" is a four-step page that makes the agent and its token,

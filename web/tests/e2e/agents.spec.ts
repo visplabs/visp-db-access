@@ -559,6 +559,10 @@ test('an agent is given a token once on its page, paused, and deleted', async ({
     .click();
   await expect(list(page)).toBeVisible();
   await expect(list(page)).not.toContainText('support-triage');
+  // The focus is on the list's heading, never on the page.
+  await expect(
+    page.getByRole('heading', { level: 1, name: 'Agents' }),
+  ).toBeFocused();
   // It works at a narrow width too.
   await page.setViewportSize({ width: 768, height: 1024 });
   expect(

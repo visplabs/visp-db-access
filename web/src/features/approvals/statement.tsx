@@ -78,10 +78,15 @@ const WORD: Record<CheckLevel, string> = {
 export function ChecksSection({
   analysis,
   clusterId,
+  decided = false,
 }: {
   analysis: Analysis;
   clusterId: string;
+  /** The request is no longer waiting: the checks are what was found when it
+   * was asked, not what is true now. */
+  decided?: boolean;
 }) {
+  const verdict = verdictOfAnalysis(analysis);
   return (
     <section className="ar-checks" aria-label="Checks">
       <h3 className="ar-section-title">
@@ -94,7 +99,10 @@ export function ChecksSection({
         </Link>
       </h3>
       <div className="ar-checks-summary">
-        <VerdictChip verdict={verdictOfAnalysis(analysis)} />
+        <VerdictChip
+          verdict={verdict}
+          label={decided && verdict === 'held' ? 'Held when asked' : undefined}
+        />
         <RiskMeter risk={analysis.risk} />
         <span className="ar-statement-line">{statementLine(analysis)}</span>
       </div>

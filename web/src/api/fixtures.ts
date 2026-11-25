@@ -21,6 +21,14 @@ export const DEMO_AGENT = {
   /** Clusters by index: checkout-staging and commerce-dev. */
   clusters: [2, 3],
 } as const;
+/** The agent behind the seeded request of pricing-bot, for the member too. */
+export const PRICING_AGENT = {
+  id: uuid(901),
+  name: 'pricing-bot',
+  description: 'Keeps order prices and loyalty discounts right.',
+  /** Clusters by index: checkout-staging, where its request is. */
+  clusters: [2],
+} as const;
 /** History rows the demo agent ran, by index, with what it said they are for. */
 const AGENT_ROWS: Record<number, string> = {
   2: 'Read the newest customers for the support summary',

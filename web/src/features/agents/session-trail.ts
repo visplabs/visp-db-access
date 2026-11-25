@@ -2,7 +2,11 @@
 // the plain words for why a step was held or refused. Everything here is
 // computed from the steps the API returns; nothing is guessed.
 import type { AgentStep, Approval } from '../../api/types';
-import { verdictOfStep, type GateVerdict } from '../../lib/verdict';
+import {
+  APPROVED_NOT_RUN,
+  verdictOfStep,
+  type GateVerdict,
+} from '../../lib/verdict';
 
 /** The address of a session's own page. */
 export const sessionPath = (agentId: string, sessionId: string) =>
@@ -146,7 +150,7 @@ export const foldsSql = (sql: string) => sql.includes('\n') || sql.length > 96;
 /** A write request's state, as the trail says it. */
 export const approvalText: Record<Approval['status'], string> = {
   pending: 'Waiting for a person',
-  approved: 'Approved, not run yet',
+  approved: APPROVED_NOT_RUN,
   executing: 'Running',
   executed: 'Ran after approval',
   rejected: 'Rejected by a person',

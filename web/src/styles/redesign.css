@@ -253,6 +253,24 @@
 .toast:not(:last-child) {
   display: none;
 }
+/* On a phone the top bar is full: the toast sits just under it. */
+@media (max-width: 600px) {
+  .toasts {
+    top: 54px;
+  }
+}
+/* The cluster heading wraps inside the room the cluster picker leaves, so
+   the picker is always on the screen. */
+.console-page-heading {
+  flex-wrap: wrap;
+}
+.console-page-heading > :first-child {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.console-page-heading > .select {
+  flex-shrink: 0;
+}
 .toast {
   min-height: 36px;
   max-height: 76px;

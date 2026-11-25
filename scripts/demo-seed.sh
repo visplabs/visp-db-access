@@ -156,9 +156,9 @@ shown_reviewer_password='(the password you set)'
 [[ $admin_password == demo-admin-local-only ]] && shown_admin_password=$admin_password
 [[ $reviewer_password == demo-reviewer-local-only ]] && shown_reviewer_password=$reviewer_password
 if [[ ${VISP_GATE_DEMO_URL:-} == http://gateway:8080 ]]; then
-  agent_command='docker compose -f deploy/demo/docker-compose.yml run --rm agent'
+  agent_command='docker compose -f deploy/demo/docker-compose.yml run --rm agent --follow'
 else
-  agent_command="VISP_GATE_DEMO_URL=$base_url VISP_GATE_AGENT_TOKEN_FILE=${token_file:-<token file>} bash scripts/demo-agent.sh"
+  agent_command="VISP_GATE_DEMO_URL=$base_url VISP_GATE_AGENT_TOKEN_FILE=${token_file:-<token file>} bash scripts/demo-agent.sh --follow"
 fi
 
 cat <<TEXT
@@ -171,7 +171,8 @@ cat <<TEXT
 
 The gate is running. Three things to do:
 
-1. Watch an agent work through the gate (it takes a few seconds):
+1. Watch an agent work through the gate. --follow makes it wait while you
+   approve its write in the console (step 2), then print the outcome:
 
      $agent_command
 

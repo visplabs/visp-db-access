@@ -418,7 +418,7 @@ test('a conflict refreshes the screen and says why in place; a double click acts
   // A double click on Approve approves once.
   await go(page, `/approvals?tab=all&id=${id(820)}`);
   await view.getByRole('button', { name: 'Approve', exact: true }).dblclick();
-  await expect(title(page)).toHaveText('Approved: not run yet');
+  await expect(title(page)).toHaveText('Approved — not run yet');
   // Nothing has run yet: a status, not the Allowed verdict.
   await expect(view.locator('.ar-header [data-variant="status"]')).toHaveText(
     'Approved — not run yet',
@@ -869,7 +869,7 @@ test('an environment never looks like a verdict', async ({ page }) => {
   }
 });
 
-test('a toast sits in the top bar band, off every action bar, and closes on the next page', async ({
+test('a toast sits under the top bar on a phone, off every action bar, and closes on the next page', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -880,8 +880,9 @@ test('a toast sits in the top bar band, off every action bar, and closes on the 
   await expect(toast).toHaveText('Created');
   await settled(page);
   const box = (await toast.boundingBox())!;
-  expect(box.y).toBeGreaterThanOrEqual(0);
-  expect(box.y + box.height).toBeLessThanOrEqual(48);
+  // On a phone it sits just under the top bar, not over the picker in it.
+  expect(box.y).toBeGreaterThanOrEqual(48);
+  expect(box.y + box.height).toBeLessThanOrEqual(48 + 8 + 76);
   // Announced politely; focus stays where it was.
   await expect(page.locator('.toasts')).toHaveAttribute('aria-live', 'polite');
   await expect(page.getByRole('button', { name: 'Create item' })).toBeFocused();

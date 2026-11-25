@@ -292,18 +292,14 @@ async function heroGif() {
     .filter({ hasText: 'support-assistant' })
     .first();
   await row.waitFor();
-  // 1. The list: an agent's write is held for a person.
-  await frame(2.2);
-  await pointAt(page, row);
-  await frame(1.0);
-  // 2. The request: asked by the agent, and nothing has been tried yet.
-  await hidePointer(page);
+  // 1. The request opens first: asked by the agent, held for a person, and
+  // nothing has been tried yet. The GIF starts here, not on an empty pane.
   await row.click();
   const request = page.getByRole('region', { name: 'Query approval' });
   const preview = request.getByRole('button', { name: 'Preview', exact: true });
   await request.getByText('Preview needed before approval').waitFor();
   await page.mouse.move(0, 0);
-  await frame(3.0);
+  await frame(3.2);
   await pointAt(page, preview);
   await frame(1.0);
   // 3. Preview: the write runs in a transaction that is rolled back.
@@ -349,15 +345,27 @@ async function heroGif() {
   await frame(2.2);
   await hidePointer(page);
   await sureConfirm.click();
-  // 5. The result, as the screen shows it.
+  // 5. The result, as the screen shows it: the pane scrolled to its top, so
+  // the header and the receipt are in view, then the timeline, then the top
+  // again (the GIF ends where the result starts).
   await request.getByText('Done: it ran').waitFor({ timeout: 15000 });
+  const timeline = request.getByRole('region', { name: 'What happened' });
+  // The request scrolls inside its pane: find the element that does.
+  const toTop = () =>
+    timeline.evaluate((section) => {
+      for (let el = section; el; el = el.parentElement)
+        if (el.scrollHeight > el.clientHeight && el.scrollTop > 0)
+          el.scrollTop = 0;
+    });
+  await toTop();
   await page.mouse.move(0, 0);
   await frame(2.6);
-  const timeline = request.getByRole('region', { name: 'What happened' });
   await timeline.evaluate((section) =>
     section.scrollIntoView({ block: 'center' }),
   );
-  await frame(3.8);
+  await frame(3.2);
+  await toTop();
+  await frame(2.4);
   await page.close();
 
   // One palette for every frame, so the unchanged parts of the screen stay

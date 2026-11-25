@@ -64,6 +64,15 @@ export function AgentsPage() {
   const agents = useAllPages<Agent>('/agents'),
     clusters = useResource<{ items: Cluster[] }>('/clusters');
   const [params, setParams] = useSearchParams();
+  // After an agent is deleted its page is gone: the focus goes to the list's
+  // heading, never to the page.
+  const deleted = useRef(false);
+  const open = params.has('agent') || params.has('connect');
+  useEffect(() => {
+    if (open || !deleted.current) return;
+    deleted.current = false;
+    document.getElementById('agents-title')?.focus();
+  }, [open]);
   const names = useMemo(
     () => new Map(clusters.data?.items.map((c) => [c.id, c]) ?? []),
     [clusters.data],
@@ -102,14 +111,19 @@ export function AgentsPage() {
         id={chosen}
         clusters={names}
         allClusters={clusters.data?.items ?? []}
-        onGone={() => setParams({})}
+        onGone={() => {
+          deleted.current = true;
+          setParams({});
+        }}
       />
     );
   return (
     <>
       <div className="page-heading agents-heading">
         <div>
-          <h1>Agents</h1>
+          <h1 id="agents-title" tabIndex={-1}>
+            Agents
+          </h1>
           <p>
             Agents act for a person. An agent can never do more than its owner.
           </p>

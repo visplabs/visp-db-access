@@ -96,7 +96,7 @@ describe('mock agents follow the API contract', () => {
         (t) => t.id === tokens[0]!.id,
       )?.revoked_at,
     ).not.toBeNull();
-    // Pages: the demo agent and 4 more, 2 per page.
+    // Pages: the two demo agents and 4 more, 2 per page.
     for (const name of ['second', 'third', 'fourth'])
       await api('/agents', send('POST', { ...body, name }));
     const first = await api<{ items: Agent[]; next_cursor: string | null }>(
@@ -111,7 +111,7 @@ describe('mock agents follow the API contract', () => {
       `/agents?limit=2&cursor=${second.next_cursor}`,
     );
     expect(rest).toMatchObject({ next_cursor: null });
-    expect(rest.items).toHaveLength(1);
+    expect(rest.items).toHaveLength(2);
     await api(`/agents/${agent.id}`, send('DELETE'));
     await expect(api(`/agents/${agent.id}`)).rejects.toMatchObject({
       status: 404,

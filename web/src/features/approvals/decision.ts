@@ -3,7 +3,11 @@
 // Pure functions of what the API sends; the screen only lays them out.
 import type { Analysis, Approval, Issue, RowSample } from '../../api/types';
 import { sqlParts } from '../../lib/activity';
-import { verdictOfApproval, type GateVerdict } from '../../lib/verdict';
+import {
+  APPROVED_NOT_RUN,
+  verdictOfApproval,
+  type GateVerdict,
+} from '../../lib/verdict';
 
 /** What the viewer may do with a request, as the server allows it. */
 export type Viewer = {
@@ -94,7 +98,7 @@ export function nextStep(
           verdict: undefined,
         };
       return {
-        title: 'Approved: not run yet',
+        title: APPROVED_NOT_RUN,
         detail: viewer.canExecute
           ? 'Run it before it expires, or withdraw it.'
           : `${reviewer ?? 'The reviewer'} or the requester can run it before it expires.`,

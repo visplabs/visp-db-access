@@ -73,6 +73,8 @@ export function SetupChecklist() {
       /* Session-only dismissal remains available. */
     }
     setDismissed(true);
+    // The button is gone with the checklist: the focus goes to the heading.
+    requestAnimationFrame(() => document.getElementById('ov-title')?.focus());
   };
   const cluster = clusters.data?.items[0];
   const steps = [

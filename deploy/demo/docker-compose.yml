@@ -6,7 +6,7 @@
 #  For a real installation see docs/DEPLOYMENT.md.
 #
 #  Start:   docker compose -f deploy/demo/docker-compose.yml up
-#  Agent:   docker compose -f deploy/demo/docker-compose.yml run --rm agent
+#  Agent:   docker compose -f deploy/demo/docker-compose.yml run --rm agent --follow
 #  Remove:  docker compose -f deploy/demo/docker-compose.yml down -v
 #
 #  The steps are in docs/DEMO.md. Needs Docker Compose 2.20 or newer.
@@ -148,7 +148,7 @@ services:
       demo-postgres: {condition: service_healthy}
 
   # The scripted agent. Not started by `up`; run it with
-  #   docker compose -f deploy/demo/docker-compose.yml run --rm agent
+  #   docker compose -f deploy/demo/docker-compose.yml run --rm agent --follow
   agent:
     <<: *tools
     pull_policy: never
