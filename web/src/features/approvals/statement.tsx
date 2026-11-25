@@ -32,7 +32,12 @@ export function StatementSection({
         )}
       </h3>
       {changed ? (
-        <pre className="ar-sql" tabIndex={0} aria-label="SQL preview">
+        <pre
+          className="ar-sql"
+          tabIndex={0}
+          role="region"
+          aria-label="SQL preview"
+        >
           {sqlDiff(formatSql(sql), formatSql(rewritten)).map((line, index) => (
             <span className="ar-sql-line" data-diff={line.kind} key={index}>
               <span className="ar-sql-mark" aria-hidden="true">
@@ -53,7 +58,12 @@ export function StatementSection({
           ))}
         </pre>
       ) : (
-        <pre className="ar-sql" tabIndex={0} aria-label="SQL preview">
+        <pre
+          className="ar-sql"
+          tabIndex={0}
+          role="region"
+          aria-label="SQL preview"
+        >
           <SqlText sql={formatSql(sql)} />
         </pre>
       )}

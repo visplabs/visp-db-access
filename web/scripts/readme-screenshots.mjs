@@ -12,6 +12,10 @@ import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// ImageMagick by its full path: a command found through PATH could be any
+// program of that name. On a system that keeps it elsewhere, change this line.
+const CONVERT = '/usr/bin/convert';
+
 const base = process.env.SCREENSHOT_URL ?? 'http://127.0.0.1:5179';
 const out = '../docs/images';
 const gifOnly = process.argv.includes('--gif');
@@ -371,7 +375,7 @@ async function heroGif() {
   // One palette for every frame, so the unchanged parts of the screen stay
   // identical from frame to frame and the optimizer can drop them.
   const palette = join(dir, 'palette.png');
-  execFileSync('convert', [
+  execFileSync(CONVERT, [
     ...frames.map((f) => f.path),
     '+append',
     '+dither',
@@ -381,7 +385,7 @@ async function heroGif() {
     palette,
   ]);
   const gif = `${out}/hero.gif`;
-  execFileSync('convert', [
+  execFileSync(CONVERT, [
     '-loop',
     '0',
     ...frames.flatMap((f) => ['-delay', String(f.delay), f.path]),
