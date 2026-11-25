@@ -33,6 +33,15 @@ change the API and storage schema; migrations run automatically at startup.
   and new screenshots. Printed MCP configs (the demo's setup step included)
   name the server `visp-gate`.
 
+### Fixed
+
+- The demo gateway no longer exits at start with code 1 and no message. It
+  read the metadata password from a file with no final newline, and `read`
+  returns 1 at end of file.
+- The threat model no longer says an agent's call rate and the stops after
+  refused queries or proposals are counted per node. Since 0.2.1 they are
+  shared across nodes.
+
 ## [0.2.1] - 2026-11-25
 
 ### Changed
