@@ -41,7 +41,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 sqlparser = { version = "0.63", features = ["visitor", "serde"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "uuid", "chrono", "json", "rust_decimal", "migrate", "macros"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "uuid", "chrono", "json", "rust_decimal", "migrate", "macros"] }
 rust_decimal = "1"
 secrecy = { version = "0.10", features = ["serde"] }
 axum = { version = "0.8", features = ["macros"] }
