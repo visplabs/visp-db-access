@@ -4030,7 +4030,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vda-connectors"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "chrono",
  "futures",
@@ -4050,7 +4050,7 @@ dependencies = [
 
 [[package]]
 name = "vda-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "aes-gcm",
  "axum-core",
@@ -4080,7 +4080,7 @@ dependencies = [
 
 [[package]]
 name = "vda-discovery"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -4100,7 +4100,7 @@ dependencies = [
 
 [[package]]
 name = "vda-guard"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -4110,7 +4110,7 @@ dependencies = [
 
 [[package]]
 name = "vda-server"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argon2",
